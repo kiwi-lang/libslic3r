@@ -3,27 +3,21 @@
 
 #include "SkeletalTrapezoidation.hpp"
 
-#include <boost/log/trivial.hpp>
-#include <boost/polygon/polygon.hpp>
+#include <stack>
+#include <functional>
+#include <sstream>
 #include <queue>
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <limits>
-#include <utility>
-#include <cassert>
-#include <cstdlib>
+#include <functional>
+#include <boost/log/trivial.hpp>
 
-#include "libslic3r/Geometry/VoronoiUtils.hpp"
-#include "ankerl/unordered_dense.h"
-#include "libslic3r/Arachne/SkeletalTrapezoidationEdge.hpp"
-#include "libslic3r/Arachne/SkeletalTrapezoidationJoint.hpp"
-#include "libslic3r/Arachne/utils/ExtrusionJunction.hpp"
-#include "libslic3r/Arachne/utils/ExtrusionLine.hpp"
+#include "utils/linearAlg2D.hpp"
+#include "Utils.hpp"
+#include "SVG.hpp"
+#include "Geometry/VoronoiVisualUtils.hpp"
+#include "Geometry/VoronoiUtilsCgal.hpp"
+#include "../EdgeGrid.hpp"
 
-#ifndef NDEBUG
-    #include "libslic3r/EdgeGrid.hpp"
-#endif
+#include "Geometry/VoronoiUtils.hpp"
 
 #define SKELETAL_TRAPEZOIDATION_BEAD_SEARCH_MAX 1000 //A limit to how long it'll keep searching for adjacent beads. Increasing will re-use beadings more often (saving performance), but search longer for beading (costing performance).
 
@@ -110,7 +104,7 @@ SkeletalTrapezoidation::node_t &SkeletalTrapezoidation::makeNode(const VD::verte
     }
 }
 
-void SkeletalTrapezoidation::transferEdge(const Point &from, const Point &to, const VD::edge_type &vd_edge, edge_t *&prev_edge, const Point &start_source_point, const Point &end_source_point, const std::vector<Segment> &segments) {
+void SkeletalTrapezoidation::transferEdge(Point from, Point to, const VD::edge_type &vd_edge, edge_t *&prev_edge, Point &start_source_point, Point &end_source_point, const std::vector<Segment> &segments, const bool hole_compensation_flag) {
     auto he_edge_it = vd_edge_to_he_edge.find(vd_edge.twin());
     if (he_edge_it != vd_edge_to_he_edge.end())
     { // Twin segment(s) have already been made
@@ -134,7 +128,7 @@ void SkeletalTrapezoidation::transferEdge(const Point &from, const Point &to, co
             edge->twin = twin;
             twin->twin = edge;
             edge->from->incident_edge = edge;
-            
+            edge->data.setHoleCompensationFlag(hole_compensation_flag);
             if (prev_edge)
             {
                 edge->prev = prev_edge;
@@ -158,7 +152,8 @@ void SkeletalTrapezoidation::transferEdge(const Point &from, const Point &to, co
             assert(twin->prev->twin); // Back rib
             assert(twin->prev->twin->prev); // Prev segment along parabola
             
-            graph.makeRib(prev_edge, start_source_point, end_source_point);
+            constexpr bool is_not_next_to_start_or_end = false; // Only ribs at the end of a cell should be skipped
+            graph.makeRib(prev_edge, start_source_point, end_source_point, is_not_next_to_start_or_end);
         }
         assert(prev_edge);
     }
@@ -197,7 +192,8 @@ void SkeletalTrapezoidation::transferEdge(const Point &from, const Point &to, co
             edge->from = v0;
             edge->to = v1;
             edge->from->incident_edge = edge;
-            
+            edge->data.setHoleCompensationFlag(hole_compensation_flag);
+
             if (prev_edge)
             {
                 edge->prev = prev_edge;
@@ -208,8 +204,10 @@ void SkeletalTrapezoidation::transferEdge(const Point &from, const Point &to, co
             p0 = p1;
             v0 = v1;
             
-            if (p1_idx < discretized.size() - 1) { // Rib for last segment gets introduced outside this function!
-                graph.makeRib(prev_edge, start_source_point, end_source_point);
+            if (p1_idx < discretized.size() - 1)
+            { // Rib for last segment gets introduced outside this function!
+                constexpr bool is_not_next_to_start_or_end = false; // Only ribs at the end of a cell should be skipped
+                graph.makeRib(prev_edge, start_source_point, end_source_point, is_not_next_to_start_or_end);
             }
         }
         assert(prev_edge);
@@ -329,16 +327,63 @@ Points SkeletalTrapezoidation::discretize(const VD::edge_type& vd_edge, const st
     }
 }
 
+bool SkeletalTrapezoidation::computePointCellRange(const VD::cell_type &cell, Point &start_source_point, Point &end_source_point, const VD::edge_type *&starting_vd_edge, const VD::edge_type *&ending_vd_edge, const std::vector<Segment> &segments) {
+    if (cell.incident_edge()->is_infinite())
+        return false; //Infinite edges only occur outside of the polygon. Don't copy any part of this cell.
+
+    // Check if any point of the cell is inside or outside polygon
+    // Copy whole cell into graph or not at all
+
+    // If the cell.incident_edge()->vertex0() is far away so much that it doesn't even fit into Vec2i64, then there is no way that it will be inside the input polygon.
+    if (const VD::vertex_type &vert = *cell.incident_edge()->vertex0();
+        vert.x() >= double(std::numeric_limits<int64_t>::max()) || vert.x() <= double(std::numeric_limits<int64_t>::lowest()) ||
+        vert.y() >= double(std::numeric_limits<int64_t>::max()) || vert.y() <= double(std::numeric_limits<int64_t>::lowest()))
+        return false; // Don't copy any part of this cell
+
+    const Point              source_point       = Geometry::VoronoiUtils::get_source_point(cell, segments.begin(), segments.end());
+    const PolygonsPointIndex source_point_index = Geometry::VoronoiUtils::get_source_point_index(cell, segments.begin(), segments.end());
+    Vec2i64                  some_point         = Geometry::VoronoiUtils::to_point(cell.incident_edge()->vertex0());
+    if (some_point == source_point.cast<int64_t>())
+        some_point = Geometry::VoronoiUtils::to_point(cell.incident_edge()->vertex1());
+
+    //Test if the some_point is even inside the polygon.
+    //The edge leading out of a polygon must have an endpoint that's not in the corner following the contour of the polygon at that vertex.
+    //So if it's inside the corner formed by the polygon vertex, it's all fine.
+    //But if it's outside of the corner, it must be a vertex of the Voronoi diagram that goes outside of the polygon towards infinity.
+    if (!LinearAlg2D::isInsideCorner(source_point_index.prev().p(), source_point_index.p(), source_point_index.next().p(), some_point))
+        return false; // Don't copy any part of this cell
+
+    const VD::edge_type* vd_edge = cell.incident_edge();
+    do {
+        assert(vd_edge->is_finite());
+        if (Vec2i64 p1 = Geometry::VoronoiUtils::to_point(vd_edge->vertex1()); p1 == source_point.cast<int64_t>()) {
+            start_source_point = source_point;
+            end_source_point = source_point;
+            starting_vd_edge = vd_edge->next();
+            ending_vd_edge = vd_edge;
+        } else {
+            assert((Geometry::VoronoiUtils::to_point(vd_edge->vertex0()) == source_point.cast<int64_t>() || !vd_edge->is_secondary()) && "point cells must end in the point! They cannot cross the point with an edge, because collinear edges are not allowed in the input.");
+        }
+    }
+    while (vd_edge = vd_edge->next(), vd_edge != cell.incident_edge());
+    assert(starting_vd_edge && ending_vd_edge);
+    assert(starting_vd_edge != ending_vd_edge);
+    return true;
+}
+
 SkeletalTrapezoidation::SkeletalTrapezoidation(const Polygons& polys, const BeadingStrategy& beading_strategy,
                                                double transitioning_angle, coord_t discretization_step_size,
                                                coord_t transition_filter_dist, coord_t allowed_filter_deviation,
-                                               coord_t beading_propagation_transition_dist
+                                               coord_t beading_propagation_transition_dist, bool enable_hole_compensation,
+                                               const std::vector<int>& hole_indices
     ): transitioning_angle(transitioning_angle),
     discretization_step_size(discretization_step_size),
     transition_filter_dist(transition_filter_dist),
     allowed_filter_deviation(allowed_filter_deviation),
     beading_propagation_transition_dist(beading_propagation_transition_dist),
-    beading_strategy(beading_strategy)
+    beading_strategy(beading_strategy),
+    enable_hole_compensation(enable_hole_compensation),
+    hole_indices(hole_indices)
 {
     constructFromPolygons(polys);
 }
@@ -348,6 +393,8 @@ void SkeletalTrapezoidation::constructFromPolygons(const Polygons& polys)
 #ifdef ARACHNE_DEBUG
     this->outline = polys;
 #endif
+
+    std::set<int> hole_indices_(this->hole_indices.begin(), this->hole_indices.end());
 
     // Check self intersections.
     assert([&polys]() -> bool {
@@ -395,23 +442,26 @@ void SkeletalTrapezoidation::constructFromPolygons(const Polygons& polys)
         const VD::edge_type *ending_voronoi_edge   = nullptr;
         // Compute and store result in above variables
 
-        if (cell.contains_point()) {
-            Geometry::PointCellRange<Point> cell_range = Geometry::VoronoiUtils::compute_point_cell_range(cell, segments.cbegin(), segments.cend());
-            start_source_point    = cell_range.source_point;
-            end_source_point      = cell_range.source_point;
-            starting_voronoi_edge = cell_range.edge_begin;
-            ending_voronoi_edge   = cell_range.edge_end;
+        bool apply_hole_compensation = this->enable_hole_compensation;
 
-            if (!cell_range.is_valid())
+        if (cell.contains_point()) {
+            const bool keep_going = computePointCellRange(cell, start_source_point, end_source_point, starting_voronoi_edge, ending_voronoi_edge, segments);
+            if (!keep_going)
                 continue;
+
+            const PolygonsPointIndex  source_point_idx = Geometry::VoronoiUtils::get_source_point_index(cell, segments.begin(), segments.end());
+                apply_hole_compensation &= hole_indices_.find(source_point_idx.poly_idx) != hole_indices_.end();
         } else {
             assert(cell.contains_segment());
             Geometry::SegmentCellRange<Point> cell_range = Geometry::VoronoiUtils::compute_segment_cell_range(cell, segments.cbegin(), segments.cend());
             assert(cell_range.is_valid());
-            start_source_point    = cell_range.source_segment_start_point;
-            end_source_point      = cell_range.source_segment_end_point;
+            start_source_point    = cell_range.segment_start_point;
+            end_source_point      = cell_range.segment_end_point;
             starting_voronoi_edge = cell_range.edge_begin;
             ending_voronoi_edge   = cell_range.edge_end;
+
+            const Segment& source_segment = Geometry::VoronoiUtils::get_source_segment(cell, segments.cbegin(), segments.cend());
+            apply_hole_compensation &= hole_indices_.find(source_segment.poly_idx) != hole_indices_.end();
         }
 
         if (!starting_voronoi_edge || !ending_voronoi_edge) {
@@ -422,22 +472,23 @@ void SkeletalTrapezoidation::constructFromPolygons(const Polygons& polys)
         // Copy start to end edge to graph
         assert(Geometry::VoronoiUtils::is_in_range<coord_t>(*starting_voronoi_edge));
         edge_t *prev_edge = nullptr;
-        transferEdge(start_source_point, Geometry::VoronoiUtils::to_point(starting_voronoi_edge->vertex1()).cast<coord_t>(), *starting_voronoi_edge, prev_edge, start_source_point, end_source_point, segments);
+        transferEdge(start_source_point, Geometry::VoronoiUtils::to_point(starting_voronoi_edge->vertex1()).cast<coord_t>(), *starting_voronoi_edge, prev_edge, start_source_point, end_source_point, segments,apply_hole_compensation);
         node_t *starting_node                    = vd_node_to_he_node[starting_voronoi_edge->vertex0()];
         starting_node->data.distance_to_boundary = 0;
 
-        graph.makeRib(prev_edge, start_source_point, end_source_point);
+        constexpr bool is_next_to_start_or_end = true;
+        graph.makeRib(prev_edge, start_source_point, end_source_point, is_next_to_start_or_end);
         for (const VD::edge_type* vd_edge = starting_voronoi_edge->next(); vd_edge != ending_voronoi_edge; vd_edge = vd_edge->next()) {
             assert(vd_edge->is_finite());
             assert(Geometry::VoronoiUtils::is_in_range<coord_t>(*vd_edge));
 
             Point v1 = Geometry::VoronoiUtils::to_point(vd_edge->vertex0()).cast<coord_t>();
             Point v2 = Geometry::VoronoiUtils::to_point(vd_edge->vertex1()).cast<coord_t>();
-            transferEdge(v1, v2, *vd_edge, prev_edge, start_source_point, end_source_point, segments);
-            graph.makeRib(prev_edge, start_source_point, end_source_point);
+            transferEdge(v1, v2, *vd_edge, prev_edge, start_source_point, end_source_point, segments,apply_hole_compensation);
+            graph.makeRib(prev_edge, start_source_point, end_source_point, vd_edge->next() == ending_voronoi_edge);
         }
 
-        transferEdge(Geometry::VoronoiUtils::to_point(ending_voronoi_edge->vertex0()).cast<coord_t>(), end_source_point, *ending_voronoi_edge, prev_edge, start_source_point, end_source_point, segments);
+        transferEdge(Geometry::VoronoiUtils::to_point(ending_voronoi_edge->vertex0()).cast<coord_t>(), end_source_point, *ending_voronoi_edge, prev_edge, start_source_point, end_source_point, segments, apply_hole_compensation);
         prev_edge->to->data.distance_to_boundary = 0;
     }
 
@@ -455,8 +506,6 @@ void SkeletalTrapezoidation::constructFromPolygons(const Polygons& polys)
         if (!edge.prev)
             edge.from->incident_edge = &edge;
 }
-
-using NodeSet = SkeletalTrapezoidation::NodeSet;
 
 void SkeletalTrapezoidation::separatePointyQuadEndNodes()
 {
@@ -1740,6 +1789,8 @@ void SkeletalTrapezoidation::generateJunctions(ptr_vector_t<BeadingPropagation>&
             continue;
         }
 
+        bool apply_hole_compensation = edge->data.getHoleCompensationFlag();
+
         Beading* beading = &getOrCreateBeading(edge->to, node_beadings)->beading;
         edge_junctions.emplace_back(std::make_shared<LineJunctions>());
         edge_.data.setExtrusionJunctions(edge_junctions.back());  // initialization
@@ -1793,7 +1844,7 @@ void SkeletalTrapezoidation::generateJunctions(ptr_vector_t<BeadingPropagation>&
             { // Snap to start node if it is really close, in order to be able to see 3-way intersection later on more robustly
                 junction = a;
             }
-            ret.emplace_back(junction, beading->bead_widths[junction_idx], junction_idx);
+            ret.emplace_back(ExtrusionJunction(junction, beading->bead_widths[junction_idx], junction_idx, apply_hole_compensation));
         }
     }
 }
@@ -1930,8 +1981,6 @@ void SkeletalTrapezoidation::addToolpathSegment(const ExtrusionJunction& from, c
 
 void SkeletalTrapezoidation::connectJunctions(ptr_vector_t<LineJunctions>& edge_junctions)
 {
-    using EdgeSet = ankerl::unordered_dense::set<edge_t*>;
-
     EdgeSet unprocessed_quad_starts(graph.edges.size() * 5 / 2);
     for (edge_t& edge : graph.edges)
     {
@@ -2080,7 +2129,7 @@ void SkeletalTrapezoidation::generateLocalMaximaSingleBeads()
             constexpr coord_t n_segments = 6;
             for (coord_t segment = 0; segment < n_segments; segment++) {
                 float a = 2.0 * M_PI / n_segments * segment;
-                line.junctions.emplace_back(node.p + Point(r * cos(a), r * sin(a)), width, inset_index);
+                line.junctions.emplace_back(ExtrusionJunction(node.p + Point(r * cos(a), r * sin(a)), width, inset_index, false));
             }
         }
     }

@@ -1,15 +1,8 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef libslic3r_Timer_hpp_
 #define libslic3r_Timer_hpp_
 
-#include <stdint.h>
 #include <string>
 #include <chrono>
-#include <string_view>
-#include <cinttypes>
 
 namespace Slic3r {
 
@@ -67,7 +60,7 @@ namespace Timing {
     class TimeLimitAlarm {
     public:
         TimeLimitAlarm(uint64_t time_limit_nanoseconds, std::string_view limit_exceeded_message) :
-            m_time_limit_nanoseconds(time_limit_nanoseconds), m_limit_exceeded_message(limit_exceeded_message) { 
+            m_time_limit_nanoseconds(time_limit_nanoseconds), m_limit_exceeded_message(limit_exceeded_message) {
             m_timer.start();
         }
         ~TimeLimitAlarm() {

@@ -1,46 +1,19 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Oleksandra Iushchenko @YuSanka
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Polygon.pm:
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Polygon_hpp_
 #define slic3r_Polygon_hpp_
 
-#include <assert.h>
-#include <math.h>
-#include <oneapi/tbb/scalable_allocator.h>
+#include "libslic3r.h"
 #include <vector>
 #include <string>
-#include <algorithm>
-#include <cstddef>
-#include <initializer_list>
-#include <iterator>
-#include <utility>
-#include <cassert>
-#include <cmath>
-
-#include "libslic3r.h"
 #include "Line.hpp"
-#include "Point.hpp"
 #include "MultiPoint.hpp"
 #include "Polyline.hpp"
 
 namespace Slic3r {
 
 class Polygon;
-class BoundingBox;
-class ColorPolygon;
-
-using Polygons          = std::vector<Polygon, PointsAllocator<Polygon>>;
-using PolygonPtrs       = std::vector<Polygon*, PointsAllocator<Polygon*>>;
-using ConstPolygonPtrs  = std::vector<const Polygon*, PointsAllocator<const Polygon*>>;
-
-using ColorPolygons     = std::vector<ColorPolygon>;
+using Polygons          = std::vector<Polygon>;
+using PolygonPtrs       = std::vector<Polygon*>;
+using ConstPolygonPtrs  = std::vector<const Polygon*>;
 
 // Returns true if inside. Returns border_result if on boundary.
 bool contains(const Polygon& polygon, const Point& p, bool border_result = true);
@@ -54,7 +27,7 @@ public:
 	Polygon(std::initializer_list<Point> points) : MultiPoint(points) {}
     Polygon(const Polygon &other) : MultiPoint(other.points) {}
     Polygon(Polygon &&other) : MultiPoint(std::move(other.points)) {}
-	static Polygon new_scale(const std::vector<Vec2d> &points) { 
+	static Polygon new_scale(const std::vector<Vec2d> &points) {
         Polygon pgn;
         pgn.points.reserve(points.size());
         for (const Vec2d &pt : points)
@@ -78,7 +51,7 @@ public:
     // Split a closed polygon into an open polyline, with the split point duplicated at both ends.
     Polyline split_at_first_point() const { return this->split_at_index(0); }
     Points   equally_spaced_points(double distance) const { return this->split_at_first_point().equally_spaced_points(distance); }
-    
+
     static double area(const Points &pts);
     double area() const;
     bool is_counter_clockwise() const;
@@ -87,6 +60,10 @@ public:
     bool make_clockwise();
     bool is_valid() const { return this->points.size() >= 3; }
     void douglas_peucker(double tolerance);
+
+    // Point &center : out, the center of circle
+    // double &diameter: out, the diameter of circle
+    bool is_approx_circle(double max_deviation, double max_variance, Point &center, double &diameter) const;
 
     // Does an unoriented polygon contain a point?
     bool contains(const Point &point) const { return Slic3r::contains(*this, point, true); }
@@ -102,7 +79,8 @@ public:
 
     bool intersection(const Line& line, Point* intersection) const;
     bool first_intersection(const Line& line, Point* intersection) const;
-    bool intersections(const Line &line, Points *intersections) const;
+    bool intersections(const Line& line, Points* intersections) const;
+    bool overlaps(const Polygons& other) const;
 
     // Considering CCW orientation of this polygon, find all convex resp. concave points
     // with the angle at the vertex larger than a threshold.
@@ -112,6 +90,9 @@ public:
     // Projection of a point onto the polygon.
     Point point_projection(const Point &point) const;
     std::vector<float> parameter_by_length() const;
+
+    //BBS
+    Polygon transform(const Transform3d& trafo) const;
 
     using iterator = Points::iterator;
     using const_iterator = Points::const_iterator;
@@ -136,8 +117,8 @@ inline bool has_duplicate_points(const Polygon &poly) { return has_duplicate_poi
 bool        has_duplicate_points(const Polygons &polys);
 
 // Return True when erase some otherwise False.
-bool remove_same_neighbor(Polygon &polygon);
-bool remove_same_neighbor(Polygons &polygons);
+bool          remove_same_neighbor(Polygon &polygon);
+bool          remove_same_neighbor(Polygons &polygons);
 
 inline double total_length(const Polygons &polylines) {
     double total = 0;
@@ -169,7 +150,7 @@ void remove_collinear(Polygons &polys);
 // Append a vector of polygons at the end of another vector of polygons.
 inline void polygons_append(Polygons &dst, const Polygons &src) { dst.insert(dst.end(), src.begin(), src.end()); }
 
-inline void polygons_append(Polygons &dst, Polygons &&src) 
+inline void polygons_append(Polygons &dst, Polygons &&src)
 {
     if (dst.empty()) {
         dst = std::move(src);
@@ -179,8 +160,7 @@ inline void polygons_append(Polygons &dst, Polygons &&src)
     }
 }
 
-Polygons polygons_simplify(Polygons &&polys, double tolerance, bool strictly_simple = true);
-Polygons polygons_simplify(const Polygons &polys, double tolerance, bool strictly_simple = true);
+Polygons polygons_simplify(const Polygons &polys, double tolerance);
 
 inline void polygons_rotate(Polygons &polys, double angle)
 {
@@ -207,7 +187,7 @@ inline size_t count_points(const Polygons &polys) {
     return n_points;
 }
 
-inline Points to_points(const Polygons &polys) 
+inline Points to_points(const Polygons &polys)
 {
     Points points;
     points.reserve(count_points(polys));
@@ -216,7 +196,7 @@ inline Points to_points(const Polygons &polys)
     return points;
 }
 
-inline Lines to_lines(const Polygon &poly) 
+inline Lines to_lines(const Polygon &poly)
 {
     Lines lines;
     lines.reserve(poly.points.size());
@@ -228,7 +208,7 @@ inline Lines to_lines(const Polygon &poly)
     return lines;
 }
 
-inline Lines to_lines(const Polygons &polys) 
+inline Lines to_lines(const Polygons &polys)
 {
     Lines lines;
     lines.reserve(count_points(polys));
@@ -279,13 +259,12 @@ inline Polygons to_polygons(const Polylines &polylines)
     Polygons out;
     out.reserve(polylines.size());
     for (const Polyline &polyline : polylines) {
-        if (polyline.size())
-        out.emplace_back(polyline.points);
+        if (polyline.size()) out.emplace_back(polyline.points);
     }
     return out;
 }
 
-inline Polygons to_polygons(const VecOfPoints &paths)
+inline Polygons to_polygons(const std::vector<Points> &paths)
 {
     Polygons out;
     out.reserve(paths.size());
@@ -294,7 +273,7 @@ inline Polygons to_polygons(const VecOfPoints &paths)
     return out;
 }
 
-inline Polygons to_polygons(VecOfPoints &&paths)
+inline Polygons to_polygons(std::vector<Points> &&paths)
 {
     Polygons out;
     out.reserve(paths.size());
@@ -325,47 +304,12 @@ struct PolygonPoint
 };
 using PolygonPoints = std::vector<PolygonPoint>;
 
-// To replace reserve_vector where it's used for Polygons
-template<class I> IntegerOnly<I, Polygons> reserve_polygons(I cap)
-{
-    return reserve_vector<Polygon, I, typename Polygons::allocator_type>(cap);
-}
-
-class ColorPolygon : public Polygon
-{
-public:
-    using Color  = uint8_t;
-    using Colors = std::vector<Color>;
-
-    Colors colors;
-
-    ColorPolygon() = default;
-    explicit ColorPolygon(const Points &points, const Colors &colors) : Polygon(points), colors(colors) {}
-    ColorPolygon(std::initializer_list<Point> points, std::initializer_list<Color> colors) : Polygon(points), colors(colors) {}
-    ColorPolygon(const ColorPolygon &other) : ColorPolygon(other.points, other.colors) {}
-    ColorPolygon(ColorPolygon &&other) noexcept : ColorPolygon(std::move(other.points), std::move(other.colors)) {}
-    ColorPolygon(Points &&points, Colors &&colors) : Polygon(std::move(points)), colors(std::move(colors)) {}
-
-    void reverse() override {
-        Polygon::reverse();
-        std::reverse(this->colors.begin(), this->colors.end());
-    }
-
-    ColorPolygon &operator=(const ColorPolygon &other) {
-        this->points = other.points;
-        this->colors = other.colors;
-        return *this;
-    }
-};
-
-using ColorPolygons = std::vector<ColorPolygon>;
-
-} // namespace Slic3r
+bool overlaps(const Polygons& polys1, const Polygons& polys2);
+} // Slic3r
 
 // start Boost
 #include <boost/polygon/polygon.hpp>
-
-namespace boost::polygon {
+namespace boost { namespace polygon {
     template <>
     struct geometry_concept<Slic3r::Polygon>{ typedef polygon_concept type; };
 
@@ -412,7 +356,7 @@ namespace boost::polygon {
             return polygon;
         }
     };
-    
+
     template <>
     struct geometry_concept<Slic3r::Polygons> { typedef polygon_set_concept type; };
 
@@ -443,7 +387,7 @@ namespace boost::polygon {
           polygons.assign(input_begin, input_end);
         }
     };
-} // namespace boost::polygon
+} }
 // end Boost
 
 #endif

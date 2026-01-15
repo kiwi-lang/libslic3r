@@ -1,24 +1,10 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Enrico Turri @enricoturri1966
-///|/ Copyright (c) 2017 Eyal Soha @eyal0
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Line.pm:
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Line_hpp_
 #define slic3r_Line_hpp_
 
-#include <type_traits>
-#include <cmath>
-#include <utility>
-#include <vector>
-#include <complex>
-
 #include "libslic3r.h"
 #include "Point.hpp"
+
+#include <type_traits>
 
 namespace Slic3r {
 
@@ -28,7 +14,6 @@ class Line3;
 class Linef3;
 class Polyline;
 class ThickLine;
-
 typedef std::vector<Line> Lines;
 typedef std::vector<Line3> Lines3;
 typedef std::vector<ThickLine> ThickLines;
@@ -53,40 +38,13 @@ template<class L> using Scalar = typename Traits<remove_cvref_t<L>>::Scalar;
 template<class L> auto get_a(L &&l) { return Traits<remove_cvref_t<L>>::get_a(l); }
 template<class L> auto get_b(L &&l) { return Traits<remove_cvref_t<L>>::get_b(l); }
 
-template<class L> auto sqlength(L &&l)
-{
-    return (get_b(l) - get_a(l)).squaredNorm();
-}
-
-template<class Scalar, class L>
-auto sqlength(L &&l)
-{
-    return (get_b(l).template cast<Scalar>() - get_a(l).template cast<Scalar>()).squaredNorm();
-}
-
-template<class L, class = std::enable_if_t<Dim<L> == 2> >
-auto angle_to_x(const L &l)
-{
-    auto dx = double(get_b(l).x()) - get_a(l).x();
-    auto dy = double(get_b(l).y()) - get_a(l).y();
-
-    double a = std::atan2(dy, dx);
-    auto s   = std::signbit(a);
-
-    if(s)
-        a += 2. * PI;
-
-    return a;
-}
-
 // Distance to the closest point of line.
 template<class L>
-inline double distance_to_squared(const L &line, const Vec<Dim<L>, Scalar<L>> &point, Vec<Dim<L>, Scalar<L>> *nearest_point)
+double distance_to_squared(const L &line, const Vec<Dim<L>, Scalar<L>> &point, Vec<Dim<L>, Scalar<L>> *nearest_point)
 {
-    using VecType = Vec<Dim<L>, double>;
-    const VecType  v  = (get_b(line) - get_a(line)).template cast<double>();
-    const VecType  va = (point  - get_a(line)).template cast<double>();
-    const double  l2 = v.squaredNorm();
+    const Vec<Dim<L>, double>  v  = (get_b(line) - get_a(line)).template cast<double>();
+    const Vec<Dim<L>, double>  va = (point  - get_a(line)).template cast<double>();
+    const double  l2 = v.squaredNorm();  // avoid a sqrt
     if (l2 == 0.0) {
         // a == b case
         *nearest_point = get_a(line);
@@ -95,20 +53,19 @@ inline double distance_to_squared(const L &line, const Vec<Dim<L>, Scalar<L>> &p
     // Consider the line extending the segment, parameterized as a + t (b - a).
     // We find projection of this point onto the line.
     // It falls where t = [(this-a) . (b-a)] / |b-a|^2
-    const double t = va.dot(v);
+    const double t = va.dot(v) / l2;
     if (t <= 0.0) {
         // beyond the 'a' end of the segment
         *nearest_point = get_a(line);
         return va.squaredNorm();
-    } else if (t >= l2) {
+    } else if (t >= 1.0) {
         // beyond the 'b' end of the segment
         *nearest_point = get_b(line);
         return (point - get_b(line)).template cast<double>().squaredNorm();
     }
 
-    const VecType w = ((t / l2) * v).eval();
-    *nearest_point = (get_a(line).template cast<double>() + w).template cast<Scalar<L>>();
-    return (w - va).squaredNorm();
+    *nearest_point = (get_a(line).template cast<double>() + t * v).template cast<Scalar<L>>();
+    return (t * v - va).squaredNorm();
 }
 
 // Distance to the closest point of line.
@@ -190,16 +147,12 @@ template<class L> bool intersection(const L &l1, const L &l2, Vec<Dim<L>, Scalar
     return false; // not intersecting
 }
 
-inline Point midpoint(const Point &a, const Point &b) {
-    return (a + b) / 2;
-}
-
 } // namespace line_alg
 
 class Line
 {
 public:
-    Line() = default;
+    Line() {}
     Line(const Point& _a, const Point& _b) : a(_a), b(_b) {}
     explicit operator Lines() const { Lines lines; lines.emplace_back(*this); return lines; }
     void   scale(double factor) { this->a *= factor; this->b *= factor; }
@@ -207,8 +160,8 @@ public:
     void   translate(double x, double y) { this->translate(Point(x, y)); }
     void   rotate(double angle, const Point &center) { this->a.rotate(angle, center); this->b.rotate(angle, center); }
     void   reverse() { std::swap(this->a, this->b); }
-    double length() const { return (b.cast<double>() - a.cast<double>()).norm(); }
-    Point  midpoint() const { return line_alg::midpoint(this->a, this->b); }
+    double length() const { return (b - a).cast<double>().norm(); }
+    Point  midpoint() const { return (this->a + this->b) / 2; }
     bool   intersection_infinite(const Line &other, Point* point) const;
     bool   operator==(const Line &rhs) const { return this->a == rhs.a && this->b == rhs.b; }
     double distance_to_squared(const Point &point) const { return distance_to_squared(point, this->a, this->b); }
@@ -216,7 +169,6 @@ public:
     double distance_to(const Point &point) const { return distance_to(point, this->a, this->b); }
     double distance_to_infinite_squared(const Point &point, Point *closest_point) const { return line_alg::distance_to_infinite_squared(*this, point, closest_point); }
     double perp_distance_to(const Point &point) const;
-    double perp_signed_distance_to(const Point &point) const;
     bool   parallel_to(double angle) const;
     bool   parallel_to(const Line& line) const;
     bool   perpendicular_to(double angle) const;
@@ -231,7 +183,7 @@ public:
 	bool   clip_with_bbox(const BoundingBox &bbox);
     // Extend the line from both sides by an offset.
     void   extend(double offset);
-
+    bool   overlap(const Line &line, double &overlap_length) const;
     static inline double distance_to_squared(const Point &point, const Point &a, const Point &b) { return line_alg::distance_to_squared(Line{a, b}, Vec<2, coord_t>{point}); }
     static double distance_to(const Point &point, const Point &a, const Point &b) { return sqrt(distance_to_squared(point, a, b)); }
 
@@ -257,18 +209,6 @@ public:
     double a_width, b_width;
 };
 
-class CurledLine : public Line
-{
-public:
-    CurledLine() : curled_height(0.0f) {}
-    CurledLine(const Point& a, const Point& b) : Line(a, b), curled_height(0.0f) {}
-    CurledLine(const Point& a, const Point& b, float curled_height) : Line(a, b), curled_height(curled_height) {}
-
-    float curled_height;
-};
-
-using CurledLines = std::vector<CurledLine>;
-
 class Line3
 {
 public:
@@ -290,7 +230,6 @@ class Linef
 public:
     Linef() : a(Vec2d::Zero()), b(Vec2d::Zero()) {}
     Linef(const Vec2d& _a, const Vec2d& _b) : a(_a), b(_b) {}
-    virtual ~Linef() = default;
 
     Vec2d a;
     Vec2d b;
@@ -311,21 +250,72 @@ public:
     Vec3d   vector() const { return this->b - this->a; }
     Vec3d   unit_vector() const { return (length() == 0.0) ? Vec3d::Zero() : vector().normalized(); }
     double  length() const { return vector().norm(); }
-
+    void    reverse() { std::swap(this->a, this->b); }
     Vec3d a;
     Vec3d b;
 
     static const constexpr int Dim = 3;
     using Scalar = Vec3d::Scalar;
+
+    static void get_point_projection_to_line(const Vec3d &pt, const Vec3d &line_start, const Vec3d &line_dir, Vec3d &intersection_pt, float &proj_length)
+    {
+        auto line_dir_ = line_dir.normalized();
+        auto BA         = pt - line_start;
+        proj_length    = BA.dot(line_dir_);
+        intersection_pt = line_start + proj_length * line_dir_;
+    }
+    float get_distance_of_point_to_line(const Vec3d &pt)
+    {
+        Vec3d intersection_pt;
+        float proj_length;
+        get_point_projection_to_line(pt, a, vector(), intersection_pt, proj_length);
+        return (intersection_pt - pt).norm();
+    }
 };
 
+class Line3float
+{
+public:
+    Line3float() : a(Vec3f::Zero()), b(Vec3f::Zero()) {}
+    Line3float(const Vec3f &_a, const Vec3f &_b) : a(_a), b(_b) {}
+
+    Vec3f  vector() const { return this->b - this->a; }
+    Vec3f  unit_vector() const { return (length() == 0.0) ? Vec3f::Zero() : vector().normalized(); }
+    double length() const { return vector().norm(); }
+
+    Vec3f a;
+    Vec3f b;
+
+    static const constexpr int Dim = 3;
+    using Scalar                   = Vec3f::Scalar;
+};
+typedef std::vector<Line3float> Line3floats;
 BoundingBox get_extents(const Lines &lines);
+
+using Line_3D = Linef3;
+
+class Polygon_3D
+{
+public:
+    Polygon_3D(const std::vector<Vec3d> &points) : m_points(points) {}
+
+    std::vector<Line_3D> get_lines()
+    {
+        std::vector<Line_3D> lines;
+        lines.reserve(m_points.size());
+        if (m_points.size() > 2) {
+            for (int i = 0; i < m_points.size() - 1; ++i) { lines.push_back(Line_3D(m_points[i], m_points[i + 1])); }
+            lines.push_back(Line_3D(m_points.back(), m_points.front()));
+        }
+        return lines;
+    }
+    std::vector<Vec3d> m_points;
+};
 
 } // namespace Slic3r
 
 // start Boost
 #include <boost/polygon/polygon.hpp>
-
 namespace boost { namespace polygon {
     template <>
     struct geometry_concept<Slic3r::Line> { typedef segment_concept type; };
@@ -334,7 +324,7 @@ namespace boost { namespace polygon {
     struct segment_traits<Slic3r::Line> {
         typedef coord_t coordinate_type;
         typedef Slic3r::Point point_type;
-    
+
         static inline point_type get(const Slic3r::Line& line, direction_1d dir) {
             return dir.to_int() ? line.b : line.a;
         }

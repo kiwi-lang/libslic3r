@@ -1,24 +1,9 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_MutablePolygon_hpp_
 #define slic3r_MutablePolygon_hpp_
-
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <algorithm>
-#include <initializer_list>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstddef>
 
 #include "Point.hpp"
 #include "Polygon.hpp"
 #include "ExPolygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -323,26 +308,22 @@ inline bool operator!=(const MutablePolygon &p1, const MutablePolygon &p2) { ret
 // Remove exact duplicate points. May reduce the polygon down to empty polygon.
 void remove_duplicates(MutablePolygon &polygon);
 void remove_duplicates(MutablePolygon &polygon, double eps);
-
-// Remove nearly duplicate points. If a distance between two points is less than scaled_eps
-// and if the angle between its surrounding lines is less than max_angle, the point will be removed.
-// May reduce the polygon down to empty polygon.
-void remove_duplicates(MutablePolygon &polygon, coord_t scaled_eps, const double max_angle);
+void remove_duplicates(MutablePolygon& polygon, coord_t scaled_eps, const double max_angle);
 inline ExPolygons remove_duplicates(ExPolygons expolygons, coord_t scaled_eps, double max_angle)
 {
     MutablePolygon mp;
-    for (ExPolygon &expolygon : expolygons) {
+    for (ExPolygon& expolygon : expolygons) {
         mp.assign(expolygon.contour, expolygon.contour.size() * 2);
         remove_duplicates(mp, scaled_eps, max_angle);
         mp.polygon(expolygon.contour);
-        for (Polygon &hole : expolygon.holes) {
+        for (Polygon& hole : expolygon.holes) {
             mp.assign(hole, hole.size() * 2);
             remove_duplicates(mp, scaled_eps, max_angle);
             mp.polygon(hole);
         }
-        expolygon.holes.erase(std::remove_if(expolygon.holes.begin(), expolygon.holes.end(), [](const auto &p) { return p.empty(); }), expolygon.holes.end());
+        expolygon.holes.erase(std::remove_if(expolygon.holes.begin(), expolygon.holes.end(), [](const auto& p) { return p.empty(); }), expolygon.holes.end());
     }
-    expolygons.erase(std::remove_if(expolygons.begin(), expolygons.end(), [](const auto &p) { return p.empty(); }), expolygons.end());
+    expolygons.erase(std::remove_if(expolygons.begin(), expolygons.end(), [](const auto& p) { return p.empty(); }), expolygons.end());
     return expolygons;
 }
 

@@ -2,18 +2,12 @@
 //CuraEngine is released under the terms of the AGPLv3 or higher.
 
 #include "SkeletalTrapezoidationGraph.hpp"
+#include <unordered_map>
 
-#include <ankerl/unordered_dense.h>
 #include <boost/log/trivial.hpp>
-#include <algorithm>
-#include <iostream>
-#include <cassert>
-#include <cinttypes>
 
+#include "utils/linearAlg2D.hpp"
 #include "../Line.hpp"
-#include "libslic3r/Arachne/SkeletalTrapezoidationEdge.hpp"
-#include "libslic3r/Arachne/SkeletalTrapezoidationJoint.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r::Arachne
 {
@@ -186,8 +180,8 @@ bool STHalfEdgeNode::isLocalMaximum(bool strict) const
 
 void SkeletalTrapezoidationGraph::collapseSmallEdges(coord_t snap_dist)
 {
-    ankerl::unordered_dense::map<edge_t*, Edges::iterator> edge_locator;
-    ankerl::unordered_dense::map<node_t*, Nodes::iterator> node_locator;
+    std::unordered_map<edge_t*, std::list<edge_t>::iterator> edge_locator;
+    std::unordered_map<node_t*, std::list<node_t>::iterator> node_locator;
     
     for (auto edge_it = edges.begin(); edge_it != edges.end(); ++edge_it)
     {
@@ -199,7 +193,7 @@ void SkeletalTrapezoidationGraph::collapseSmallEdges(coord_t snap_dist)
         node_locator.emplace(&*node_it, node_it);
     }
     
-    auto safelyRemoveEdge = [this, &edge_locator](edge_t* to_be_removed, Edges::iterator& current_edge_it, bool& edge_it_is_updated)
+    auto safelyRemoveEdge = [this, &edge_locator](edge_t* to_be_removed, std::list<edge_t>::iterator& current_edge_it, bool& edge_it_is_updated)
     {
         if (current_edge_it != edges.end()
             && to_be_removed == &*current_edge_it)
@@ -319,7 +313,8 @@ void SkeletalTrapezoidationGraph::collapseSmallEdges(coord_t snap_dist)
     }
 }
 
-void SkeletalTrapezoidationGraph::makeRib(edge_t *&prev_edge, const Point &start_source_point, const Point &end_source_point) {
+void SkeletalTrapezoidationGraph::makeRib(edge_t*& prev_edge, Point start_source_point, Point end_source_point, bool is_next_to_start_or_end)
+{
     Point p;
     Line(start_source_point, end_source_point).distance_to_infinite_squared(prev_edge->to->p, &p);
     coord_t dist = (prev_edge->to->p - p).cast<int64_t>().norm();
@@ -329,12 +324,14 @@ void SkeletalTrapezoidationGraph::makeRib(edge_t *&prev_edge, const Point &start
     nodes.emplace_front(SkeletalTrapezoidationJoint(), p);
     node_t* node = &nodes.front();
     node->data.distance_to_boundary = 0;
-    
+
     edges.emplace_front(SkeletalTrapezoidationEdge(SkeletalTrapezoidationEdge::EdgeType::EXTRA_VD));
     edge_t* forth_edge = &edges.front();
+    forth_edge->data.setHoleCompensationFlag(prev_edge->data.getHoleCompensationFlag());
     edges.emplace_front(SkeletalTrapezoidationEdge(SkeletalTrapezoidationEdge::EdgeType::EXTRA_VD));
     edge_t* back_edge = &edges.front();
-    
+    back_edge->data.setHoleCompensationFlag(prev_edge->data.getHoleCompensationFlag());
+
     prev_edge->next = forth_edge;
     forth_edge->prev = prev_edge;
     forth_edge->from = prev_edge->to;
@@ -344,7 +341,7 @@ void SkeletalTrapezoidationGraph::makeRib(edge_t *&prev_edge, const Point &start
     back_edge->from = node;
     back_edge->to = prev_edge->to;
     node->incident_edge = back_edge;
-    
+
     prev_edge = back_edge;
 }
 
@@ -356,6 +353,8 @@ std::pair<SkeletalTrapezoidationGraph::edge_t*, SkeletalTrapezoidationGraph::edg
     node_t* node_after = edge.to;
     
     Point p = mid_node->p;
+
+    bool apply_hole_compensation = edge.data.getHoleCompensationFlag();
 
     const Line source_segment = getSource(edge);
     Point      px;
@@ -376,6 +375,11 @@ std::pair<SkeletalTrapezoidationGraph::edge_t*, SkeletalTrapezoidationGraph::edg
     edge_t* outward_edge = &edges.back();
     edges.emplace_back(SkeletalTrapezoidationEdge(SkeletalTrapezoidationEdge::EdgeType::TRANSITION_END));
     edge_t* inward_edge = &edges.back();
+
+    first->data.setHoleCompensationFlag(apply_hole_compensation);
+    second->data.setHoleCompensationFlag(apply_hole_compensation);
+    outward_edge->data.setHoleCompensationFlag(apply_hole_compensation);
+    inward_edge->data.setHoleCompensationFlag(apply_hole_compensation);
 
     if (edge_before)
     {

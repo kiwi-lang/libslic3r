@@ -1,17 +1,11 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Vojtěch Bubník @bubnikv, Filip Sykala @Jony01
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef libslic3r_Triangulation_hpp_
 #define libslic3r_Triangulation_hpp_
 
+#include <vector>
+#include <set>
 #include <libslic3r/Point.hpp>
 #include <libslic3r/Polygon.hpp>
 #include <libslic3r/ExPolygon.hpp>
-#include <vector>
-#include <set>
-#include <cstdint>
-#include <utility>
 
 namespace Slic3r {
 
@@ -23,7 +17,7 @@ public:
     // define oriented connection of 2 vertices(defined by its index)
     using HalfEdge  = std::pair<uint32_t, uint32_t>;
     using HalfEdges = std::vector<HalfEdge>;
-    using Indices   = std::vector<Vec3i>;
+    using Indices   = std::vector<Vec3i32>;
 
     /// <summary>
     /// Connect points by triangulation to create filled surface by triangles
@@ -32,7 +26,7 @@ public:
     /// </summary>
     /// <param name="points">Points to connect</param>
     /// <param name="edges">Constraint for edges, pair is from point(first) to
-    /// point(second), sorted lexicographically</param> 
+    /// point(second), sorted lexicographically</param>
     /// <returns>Triangles</returns>
     static Indices triangulate(const Points &points,
                                const HalfEdges &half_edges);
@@ -46,7 +40,7 @@ public:
     using Changes = std::vector<uint32_t>;
 
     /// <summary>
-    /// Create conversion map from original index into new 
+    /// Create conversion map from original index into new
     /// with respect of duplicit point
     /// </summary>
     /// <param name="points">input set of points</param>

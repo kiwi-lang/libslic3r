@@ -4,19 +4,17 @@
 #ifndef BEADING_STRATEGY_H
 #define BEADING_STRATEGY_H
 
-#include <math.h>
 #include <memory>
-#include <string>
-#include <vector>
-#include <cmath>
 
-#include "libslic3r/libslic3r.h"
+#include "../../libslic3r.h"
 
 namespace Slic3r::Arachne
 {
 
 template<typename T> constexpr T pi_div(const T div) { return static_cast<T>(M_PI) / div; }
 
+constexpr int WallContourMarkedWidth = 0;
+constexpr int FirstWallContourMarkedWidth = 1;
 /*!
  * Mostly virtual base class template.
  *

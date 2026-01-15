@@ -1,16 +1,7 @@
-///|/ Copyright (c) Prusa Research 2022 Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef SRC_LIBSLIC3R_SHORTEDGECOLLAPSE_HPP_
 #define SRC_LIBSLIC3R_SHORTEDGECOLLAPSE_HPP_
 
-#include <stddef.h>
-#include <cstddef>
-
 #include "libslic3r/TriangleMesh.hpp"
-
-struct indexed_triangle_set;
 
 namespace Slic3r{
 

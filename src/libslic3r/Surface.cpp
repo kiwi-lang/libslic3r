@@ -1,18 +1,6 @@
-///|/ Copyright (c) Prusa Research 2016 - 2019 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
-///|/
-///|/ ported from lib/Slic3r/Surface.pm:
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "BoundingBox.hpp"
 #include "Surface.hpp"
 #include "SVG.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -50,10 +38,10 @@ const char* surface_type_to_color_name(const SurfaceType surface_type)
         case stBottom:          return "rgb(0,255,0)"; // "green";
         case stBottomBridge:    return "rgb(0,0,255)"; // "blue";
         case stInternal:        return "rgb(255,255,128)"; // yellow 
+        case stFloatingVerticalShell:
         case stInternalSolid:   return "rgb(255,0,255)"; // magenta
         case stInternalBridge:  return "rgb(0,255,255)";
         case stInternalVoid:    return "rgb(128,128,128)";
-        case stSolidOverBridge: return "rgb(255,128,0)"; // orange
         case stPerimeter:       return "rgb(128,0,0)"; // maroon
         default:                return "rgb(64,64,64)";
     };
@@ -90,8 +78,6 @@ void export_surface_type_legend_to_svg(SVG &svg, const Point &pos)
     svg.draw_legend(Point(pos_x, pos_y), "internal bridge", surface_type_to_color_name(stInternalBridge));
     pos_x += step_x;
     svg.draw_legend(Point(pos_x, pos_y), "internal void"  , surface_type_to_color_name(stInternalVoid));
-    pos_x += step_x;
-    svg.draw_legend(Point(pos_x, pos_y), "over bridge"    , surface_type_to_color_name(stSolidOverBridge));
 }
 
 bool export_to_svg(const char *path, const Surfaces &surfaces, const float transparency)

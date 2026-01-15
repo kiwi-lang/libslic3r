@@ -1,19 +1,10 @@
-///|/ Copyright (c) Prusa Research 2017 - 2021 Vojtěch Bubník @bubnikv
-///|/
-///|/ ported from lib/Slic3r/Format/STL.pm:
-///|/ Copyright (c) Prusa Research 2017 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <string>
-#include <utility>
-#include <cstring>
+#include "../libslic3r.h"
+#include "../Model.hpp"
+#include "../TriangleMesh.hpp"
 
-#include "libslic3r/Model.hpp"
-#include "libslic3r/TriangleMesh.hpp"
 #include "STL.hpp"
+
+#include <string>
 
 #ifdef _WIN32
 #define DIR_SEPARATOR '\\'
@@ -23,11 +14,13 @@
 
 namespace Slic3r {
 
-bool load_stl(const char *path, Model *model, const char *object_name_in)
+bool load_stl(const char *path, Model *model, const char *object_name_in, ImportstlProgressFn stlFn, int custom_header_length)
 {
     TriangleMesh mesh;
-    if (! mesh.ReadSTLFile(path)) {
-//    die "Failed to open $file\n" if !-e $path;
+    std::string design_id;
+
+    if (!mesh.ReadSTLFile(path, true, stlFn, custom_header_length)) {
+        //    die "Failed to open $file\n" if !-e $path;
         return false;
     }
     if (mesh.empty()) {

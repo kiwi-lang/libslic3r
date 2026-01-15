@@ -1,32 +1,12 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Fill/Concentric.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillRectilinear_hpp_
 #define slic3r_FillRectilinear_hpp_
 
-#include <stddef.h>
-#include <initializer_list>
-#include <cstddef>
+#include "../libslic3r.h"
 
-#include "libslic3r/libslic3r.h"
 #include "FillBase.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/ShortestPath.hpp"
 
 namespace Slic3r {
 
-class PrintRegionConfig;
 class Surface;
 
 class FillRectilinear : public Fill
@@ -73,11 +53,11 @@ public:
 	bool no_sort() const override { return true; }
 };
 
-class FillMonotonicLines : public FillRectilinear
+class FillMonotonicLine : public FillRectilinear
 {
 public:
-    Fill* clone() const override { return new FillMonotonicLines(*this); }
-    ~FillMonotonicLines() override = default;
+    Fill* clone() const override { return new FillMonotonicLine(*this); }
+    ~FillMonotonicLine() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
     bool no_sort() const override { return true; }
 };
@@ -146,6 +126,22 @@ protected:
     float _layer_angle(size_t idx) const override { return 0.f; }
 };
 
+class FillMonotonicLineWGapFill : public Fill
+{
+public:
+    ~FillMonotonicLineWGapFill() override = default;
+    void fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) override;
+    bool is_self_crossing() override { return false; }
+
+    bool apply_gap_compensation{ false };
+protected:
+    Fill* clone() const override { return new FillMonotonicLineWGapFill(*this); };
+    bool no_sort() const override { return true; }
+
+private:
+    void fill_surface_by_lines(const Surface* surface, const FillParams& params, Polylines& polylines_out);
+};
+
 class FillZigZag : public FillRectilinear
 {
 public:
@@ -153,6 +149,40 @@ public:
     ~FillZigZag() override = default;
 
     bool has_consistent_pattern() const override { return true; }
+};
+
+class FillCrossZag : public FillRectilinear
+{
+public:
+    Fill *clone() const override { return new FillCrossZag(*this); }
+    ~FillCrossZag() override = default;
+
+    bool has_consistent_pattern() const override { return true; }
+};
+
+class FillLockedZag : public FillRectilinear
+{
+public:
+    Fill *clone() const override { return new FillLockedZag(*this); }
+    ~FillLockedZag() override = default;
+    LockRegionParam lock_param;
+    InfillPattern   skin_pattern     = InfillPattern(0);
+    InfillPattern   skeleton_pattern = InfillPattern(0);
+    void fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) override;
+
+    bool has_consistent_pattern() const override { return true; }
+    void set_lock_region_param(const LockRegionParam &lock_param) override { this->lock_param = lock_param;};
+    void fill_surface_locked_zag(const Surface *                          surface,
+                                  const FillParams &                       params,
+                                  std::vector<std::pair<Polylines, Flow>> &multi_width_polyline);
+    void      get_skin_and_skeleton_area(ExPolygons &skin, ExPolygons &skeleton, const Surface &surface);
+    Polylines generate_skeleton_pattern(FillParams params, Surface surface, const ExPolygons &skeleton);
+    Polylines generate_skin_pattern(FillParams params, Surface surface, const ExPolygons &skin);
+
+    void set_skin_and_skeleton_pattern(const InfillPattern &skin_pattern, const InfillPattern &skeleton_pattern){
+        this->skin_pattern = skin_pattern;
+        this->skeleton_pattern = skeleton_pattern;
+    };
 };
 
 Points sample_grid_pattern(const ExPolygon &expolygon, coord_t spacing, const BoundingBox &global_bounding_box);

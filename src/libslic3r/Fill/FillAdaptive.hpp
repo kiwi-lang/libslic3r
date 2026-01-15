@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2021 Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Adaptive cubic infill was inspired by the work of @mboerwinkle
 // as implemented for Cura.
 // https://github.com/Ultimaker/CuraEngine/issues/381
@@ -15,16 +11,7 @@
 #ifndef slic3r_FillAdaptive_hpp_
 #define slic3r_FillAdaptive_hpp_
 
-#include <Eigen/Geometry>
-#include <memory>
-#include <utility>
-#include <vector>
-
 #include "FillBase.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
 
 struct indexed_triangle_set;
 
@@ -36,7 +23,6 @@ namespace FillAdaptive
 {
 
 struct Octree;
-
 // To keep the definition of Octree opaque, we have to define a custom deleter.
 struct OctreeDeleter { void operator()(Octree *p); };
 using  OctreePtr = std::unique_ptr<Octree, OctreeDeleter>;

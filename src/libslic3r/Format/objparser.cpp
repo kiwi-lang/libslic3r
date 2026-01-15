@@ -1,46 +1,20 @@
-///|/ Copyright (c) Prusa Research 2017 - 2021 Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Enrico Turri @enricoturri1966
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
+#include <stdlib.h>
+#include <string.h>
+
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
-#include <LocalesUtils.hpp>
-#include <fast_float.h>
-#include <new>
-#include <system_error>
-#include <utility>
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 #include "objparser.hpp"
 
+#include "libslic3r/LocalesUtils.hpp"
+
 namespace ObjParser {
-
-// To fix issues with obj loading on macOS Sonoma, we use the following function instead of strtod that
-// was used before. Apparently the locales are not handled as they should. We already saw this before in
-// https://github.com/prusa3d/PrusaSlicer/issues/10380.
-static double strtod_clocale(const char* str, char const** str_end)
-{
-	double val = 0.;
-	auto [pend, ec] = fast_float::from_chars(str, *str_end, val);
-	if (pend != str && ec != std::errc::result_out_of_range)
-		*str_end = pend; // success
-	else
-		*str_end = str;
-	return val;
-}
-
+#define EATWS()  while (*line == ' ' || *line == '\t') ++line
 static bool obj_parseline(const char *line, ObjData &data)
 {
-#define EATWS() while (*line == ' ' || *line == '\t') ++ line
-
 	if (*line == 0)
 		return true;
-
     assert(Slic3r::is_decimal_separator_point());
-
 	// Ignore whitespaces at the beginning of the line.
 	//FIXME is this a good idea?
 	EATWS();
@@ -63,33 +37,33 @@ static bool obj_parseline(const char *line, ObjData &data)
 			if (c2 != ' ' && c2 != '\t')
 				return false;
 			EATWS();
-			const char *endptr = 0;
-			double u = strtod_clocale(line, &endptr);
+			char *endptr = 0;
+			double u = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t'))
 				return false;
 			line = endptr;
 			EATWS();
 			double v = 0;
 			if (*line != 0) {
-				v = strtod_clocale(line, &endptr);
+				v = strtod(line, &endptr);
 				if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 					return false;
 				line = endptr;
 				EATWS();
 			}
-			double w = 0;
+			/*double w = 0;
 			if (*line != 0) {
-				w = strtod_clocale(line, &endptr);
+				w = strtod(line, &endptr);
 				if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 					return false;
 				line = endptr;
 				EATWS();
-			}
+			}*/
 			if (*line != 0)
 				return false;
 			data.textureCoordinates.push_back((float)u);
 			data.textureCoordinates.push_back((float)v);
-			data.textureCoordinates.push_back((float)w);
+			//data.textureCoordinates.push_back((float)w);
 			break;
 		}
 		case 'n':
@@ -100,18 +74,18 @@ static bool obj_parseline(const char *line, ObjData &data)
 			if (c2 != ' ' && c2 != '\t')
 				return false;
 			EATWS();
-			const char *endptr = 0;
-			double x = strtod_clocale(line, &endptr);
+			char *endptr = 0;
+			double x = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t'))
 				return false;
 			line = endptr;
 			EATWS();
-			double y = strtod_clocale(line, &endptr);
+			double y = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t'))
 				return false;
 			line = endptr;
 			EATWS();
-			double z = strtod_clocale(line, &endptr);
+			double z = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 				return false;
 			line = endptr;
@@ -130,20 +104,20 @@ static bool obj_parseline(const char *line, ObjData &data)
 			if (c2 != ' ' && c2 != '\t')
 				return false;
 			EATWS();
-			const char *endptr = 0;
-			double u = strtod_clocale(line, &endptr);
+			char *endptr = 0;
+			double u = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 				return false;
 			line = endptr;
 			EATWS();
-			double v = strtod_clocale(line, &endptr);
+			double v = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 				return false;
 			line = endptr;
 			EATWS();
 			double w = 0;
 			if (*line != 0) {
-				w = strtod_clocale(line, &endptr);
+				w = strtod(line, &endptr);
 				if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 					return false;
 				line = endptr;
@@ -162,39 +136,62 @@ static bool obj_parseline(const char *line, ObjData &data)
 			if (c2 != ' ' && c2 != '\t')
 				return false;
 			EATWS();
-			const char *endptr = 0;
-			double x = strtod_clocale(line, &endptr);
+			char *endptr = 0;
+			double x = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t'))
 				return false;
 			line = endptr;
 			EATWS();
-			double y = strtod_clocale(line, &endptr);
+			double y = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t'))
 				return false;
 			line = endptr;
 			EATWS();
-			double z = strtod_clocale(line, &endptr);
+			double z = strtod(line, &endptr);
 			if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
 				return false;
 			line = endptr;
 			EATWS();
-			double w = 1.0;
-			if (*line != 0) {
-				w = strtod_clocale(line, &endptr);
-				if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
-					return false;
-				line = endptr;
-				EATWS();
+            double color_x = 0.0, color_y = 0.0, color_z = 0.0, color_w = 0.0;//undefine color
+            if (*line != 0) {
+                if (!data.has_vertex_color) {
+                    data.has_vertex_color = true;
+                }
+                color_x = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
+                    return false;
+                line = endptr;
+                EATWS();
+                color_y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
+                     return false;
+                line = endptr;
+                EATWS();
+                color_z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0))
+                    return false;
+                line = endptr;
+                EATWS();
+                color_w = 1.0;//default define alpha = 1.0
+                if (*line != 0) {
+                    color_w = strtod(line, &endptr);
+                    if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                    line = endptr;
+                    EATWS();
+                }
 			}
             // the following check is commented out because there may be obj files containing extra data, as those generated by Meshlab,
             // see https://dev.prusa3d.com/browse/SPE-1019 for an example,
-            // and this would lead to a crash because no vertex would be stored 
+            // and this would lead to a crash because no vertex would be stored
 //            if (*line != 0)
 //                return false;
             data.coordinates.push_back((float)x);
 			data.coordinates.push_back((float)y);
 			data.coordinates.push_back((float)z);
-			data.coordinates.push_back((float)w);
+            data.coordinates.push_back((float) color_x);
+            data.coordinates.push_back((float) color_y);
+            data.coordinates.push_back((float) color_z);
+            data.coordinates.push_back((float) color_w);
 			break;
 		}
 		}
@@ -240,7 +237,7 @@ static bool obj_parseline(const char *line, ObjData &data)
 				}
 			}
 			if (vertex.coordIdx < 0)
-                vertex.coordIdx += (int)data.coordinates.size() / 4;
+                vertex.coordIdx += (int) data.coordinates.size() / OBJ_VERTEX_LENGTH;
             else
 				-- vertex.coordIdx;
 			if (vertex.normalIdx < 0)
@@ -254,6 +251,24 @@ static bool obj_parseline(const char *line, ObjData &data)
 			data.vertices.push_back(vertex);
 			EATWS();
 		}
+        if (data.usemtls.size() > 0) {
+			data.usemtls.back().vertexIdxEnd = (int) data.vertices.size();
+		}
+        if (data.usemtls.size() > 0) {
+            int face_index_count = 0;
+            for (int i = data.vertices.size() - 1; i >= 0; i--) {
+                if (data.vertices[i].coordIdx == -1) {
+					break;
+				}
+                face_index_count++;
+            }
+            if (face_index_count == 3) {//tri
+                data.usemtls.back().face_end++;
+			} else if (face_index_count == 4) {//quad
+                data.usemtls.back().face_end++;
+                data.usemtls.back().face_end++;
+			}
+        }
 		vertex.coordIdx			= -1;
 		vertex.normalIdx		= -1;
 		vertex.textureCoordIdx	= -1;
@@ -285,10 +300,23 @@ static bool obj_parseline(const char *line, ObjData &data)
 		// usemtl [material name]
 		// printf("usemtl %s\r\n", line);
 		EATWS();
+        if (data.usemtls.size()>0) {
+			data.usemtls.back().vertexIdxEnd = (int) data.vertices.size();
+		}
 		ObjUseMtl usemtl;
         usemtl.vertexIdxFirst = (int)data.vertices.size();
         usemtl.name = line;
 		data.usemtls.push_back(usemtl);
+        if (data.usemtls.size() == 1) {
+            data.usemtls.back().face_start = 0;
+		}
+		else {//>=2
+            auto count       = data.usemtls.size();
+            auto& last_usemtl = data.usemtls[count-1];
+            auto& last_last_usemtl  = data.usemtls[count - 2];
+            last_usemtl.face_start = last_last_usemtl.face_end + 1;
+		}
+        data.usemtls.back().face_end = data.usemtls.back().face_start - 1;
 		break;
 	}
 	case 'o':
@@ -345,6 +373,208 @@ static bool obj_parseline(const char *line, ObjData &data)
 
 	return true;
 }
+static std::string cur_mtl_name = "";
+static bool        mtl_parseline(const char *line, MtlData &data)
+{
+    if (*line == 0) return true;
+    assert(Slic3r::is_decimal_separator_point());
+    // Ignore whitespaces at the beginning of the line.
+    // FIXME is this a good idea?
+    EATWS();
+
+    char c1 = *line++;
+    switch (c1) {
+        case '#': {// Comment, ignore the rest of the line.
+            if (*(line++) == 'F' && *(line++) == 'i' && *(line++) == 'r' && *(line++) == 's' && *(line++) == 't') {         // First
+                if (*(line++) == 'T' && *(line++) == 'i' && *(line++) == 'm' && *(line++) == 'e' ) { // Time
+                    if (*(line++) == 'U' && *(line++) == 's' && *(line++) == 'i' && *(line++) == 'n' && *(line++) == 'g') { // Using
+                        if (*(line++) == 'M' && *(line++) == 'a' && *(line++) == 'k' && *(line++) == 'e' && *(line++) == 'r' && *(line++) == 'L' && *(line++) == 'a' &&
+                            *(line++) == 'b') { // MakerLab
+                            data.first_time_using_makerlab = true;
+                        }
+                    }
+                }
+			}
+            break;
+        }
+		case 'n': {
+			if (*(line++) != 'e' || *(line++) != 'w' || *(line++) != 'm' || *(line++) != 't' || *(line++) != 'l')
+				return false;
+			EATWS();
+			ObjNewMtl new_mtl;
+            cur_mtl_name = line;
+            data.new_mtl_unmap[cur_mtl_name] = std::make_shared<ObjNewMtl>();
+            data.mtl_orders.emplace_back(cur_mtl_name);
+			break;
+		}
+        case 'm': {
+            if (*(line++) != 'a' || *(line++) != 'p' || *(line++) != '_' || *(line++) != 'K' || *(line++) != 'd') return false;
+            EATWS();
+            if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+				data.new_mtl_unmap[cur_mtl_name]->map_Kd = line;
+			}
+            break;
+        }
+        case 'N': {
+            char cur_char = *(line++);
+            if (cur_char == 's') {
+                EATWS();
+                char * endptr = 0;
+                double ns     = strtod(line, &endptr);
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+					data.new_mtl_unmap[cur_mtl_name]->Ns = (float) ns;
+				}
+            } else if (cur_char == 'i') {
+                EATWS();
+                char * endptr = 0;
+                double ni    = strtod(line, &endptr);
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+					data.new_mtl_unmap[cur_mtl_name]->Ni = (float) ni;
+				}
+            }
+            break;
+        }
+        case 'K': {
+            char cur_char = *(line++);
+            if (cur_char == 'a') {
+                EATWS();
+                char * endptr = 0;
+                double x      = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                line = endptr;
+                EATWS();
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Ka[0] = x;
+                    data.new_mtl_unmap[cur_mtl_name]->Ka[1] = y;
+                    data.new_mtl_unmap[cur_mtl_name]->Ka[2] = z;
+                }
+            } else if (cur_char == 'd') {
+                EATWS();
+                char * endptr = 0;
+                double x      = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                line = endptr;
+                EATWS();
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Kd[0] = x;
+                    data.new_mtl_unmap[cur_mtl_name]->Kd[1] = y;
+                    data.new_mtl_unmap[cur_mtl_name]->Kd[2] = z;
+                }
+            } else if (cur_char == 's') {
+                EATWS();
+                char * endptr = 0;
+                double x      = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                line = endptr;
+                EATWS();
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Ks[0] = x;
+                    data.new_mtl_unmap[cur_mtl_name]->Ks[1] = y;
+                    data.new_mtl_unmap[cur_mtl_name]->Ks[2] = z;
+                }
+            } else if (cur_char == 'e') {
+                EATWS();
+                char * endptr = 0;
+                double x      = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                line = endptr;
+                EATWS();
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Ke[0] = x;
+                    data.new_mtl_unmap[cur_mtl_name]->Ke[1] = y;
+                    data.new_mtl_unmap[cur_mtl_name]->Ke[2] = z;
+                }
+            }
+            break;
+        }
+        case 'i': {
+            if (*(line++) != 'l' || *(line++) != 'l' || *(line++) != 'u' || *(line++) != 'm')
+				return false;
+            EATWS();
+            char * endptr = 0;
+            double illum  = strtod(line, &endptr);
+            if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+				data.new_mtl_unmap[cur_mtl_name]->illum = (float) illum;
+			}
+            break;
+        }
+        case 'd': {
+            EATWS();
+            char * endptr = 0;
+            double d  = strtod(line, &endptr);
+            if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+				data.new_mtl_unmap[cur_mtl_name]->d = (float) d;
+			}
+            break;
+        }
+        case 'T': {
+            char cur_char = *(line++);
+            if (cur_char == 'r') {
+                EATWS();
+                char * endptr = 0;
+                double tr     = strtod(line, &endptr);
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Tr = (float) tr;
+                }
+                break;
+            } else if (cur_char == 'f') {
+                EATWS();
+                char * endptr = 0;
+                double x      = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double y = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t')) return false;
+                line = endptr;
+                EATWS();
+                double z = strtod(line, &endptr);
+                if (endptr == 0 || (*endptr != ' ' && *endptr != '\t' && *endptr != 0)) return false;
+                line = endptr;
+                EATWS();
+                if (data.new_mtl_unmap.find(cur_mtl_name) != data.new_mtl_unmap.end()) {
+                    data.new_mtl_unmap[cur_mtl_name]->Tf[0] = x;
+                    data.new_mtl_unmap[cur_mtl_name]->Tf[1] = y;
+                    data.new_mtl_unmap[cur_mtl_name]->Tf[2] = z;
+                }
+                break;
+            }
+        }
+    }
+    return true;
+}
 
 bool objparse(const char *path, ObjData &data)
 {
@@ -354,20 +584,13 @@ bool objparse(const char *path, ObjData &data)
 	if (pFile == 0)
 		return false;
 
-	constexpr size_t half_buf = 65536;
 	try {
-        char buf[half_buf * 2];
+		char buf[65536 * 2];
 		size_t len = 0;
 		size_t lenPrev = 0;
-        while ((len = ::fread(buf + lenPrev, 1, half_buf-1, pFile)) != 0) {
-            if (std::feof(pFile)) {
-                // Fix issue with missing last trinagle in obj file:
-                // https://github.com/prusa3d/PrusaSlicer/issues/12157
-                // algorithm expect line endings after last face
-                // but file format support it
-                buf[len+lenPrev] = '\n';
-                ++len;
-            }
+		size_t lineCount = 0;
+
+		while ((len = ::fread(buf + lenPrev, 1, 65536, pFile)) != 0) {
 			len += lenPrev;
 			size_t lastLine = 0;
 			for (size_t i = 0; i < len; ++ i)
@@ -379,10 +602,17 @@ bool objparse(const char *path, ObjData &data)
 					//FIXME check the return value and exit on error?
 					// Will it break parsing of some obj files?
 					obj_parseline(c, data);
+
+					/*for ml*/
+					if (lineCount == 0) { data.ml_region = parsemlinfo(c, "region:");}
+                    if (lineCount == 1) { data.ml_name = parsemlinfo(c, "ml_name:"); }
+					if (lineCount == 2) { data.ml_id = parsemlinfo(c, "ml_file_id:");}
+
+					++lineCount;
 					lastLine = i + 1;
 				}
 			lenPrev = len - lastLine;
-            if (lenPrev > half_buf) {
+			if (lenPrev > 65536) {
 		    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Excessive line length";
 				::fclose(pFile);
 				return false;
@@ -394,16 +624,74 @@ bool objparse(const char *path, ObjData &data)
     	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
 	}
 	::fclose(pFile);
-
-	// printf("vertices: %d\r\n", data.vertices.size() / 4);
-	// printf("coords: %d\r\n", data.coordinates.size());
 	return true;
+}
+
+std::string parsemlinfo(const char* input, const char* condition) {
+    const char* regionPtr = std::strstr(input, condition);
+
+	std::string regionContent = "";
+
+    if (regionPtr != nullptr) {
+        regionPtr += std::strlen(condition);
+
+        while (*regionPtr == ' ' || *regionPtr == '\t') {
+            ++regionPtr;
+        }
+
+        const char* endPtr = std::strchr(regionPtr, '\n');
+        size_t length = (endPtr != nullptr) ? (endPtr - regionPtr) : std::strlen(regionPtr);
+
+		regionContent = std::string(regionPtr, length);
+    }
+
+	return regionContent;
+}
+
+
+bool mtlparse(const char *path, MtlData &data)
+{
+    Slic3r::CNumericLocalesSetter locales_setter;
+
+    FILE *pFile = boost::nowide::fopen(path, "rt");
+    if (pFile == 0) return false;
+    cur_mtl_name = "";
+    try {
+        char   buf[65536 * 2];
+        size_t len     = 0;
+        size_t lenPrev = 0;
+        while ((len = ::fread(buf + lenPrev, 1, 65536, pFile)) != 0) {
+            len += lenPrev;
+            size_t lastLine = 0;
+            for (size_t i = 0; i < len; ++i)
+                if (buf[i] == '\r' || buf[i] == '\n') {
+                    buf[i]  = 0;
+                    char *c = buf + lastLine;
+                    while (*c == ' ' || *c == '\t') ++c;
+                    // FIXME check the return value and exit on error?
+                    // Will it break parsing of some obj files?
+                    mtl_parseline(c, data);
+                    lastLine = i + 1;
+                }
+            lenPrev = len - lastLine;
+            if (lenPrev > 65536) {
+                BOOST_LOG_TRIVIAL(error) << "MtlParser: Excessive line length";
+                ::fclose(pFile);
+                return false;
+            }
+            memmove(buf, buf + lastLine, lenPrev);
+        }
+    } catch (std::bad_alloc &) {
+        BOOST_LOG_TRIVIAL(error) << "MtlParser: Out of memory";
+    }
+    ::fclose(pFile);
+    return true;
 }
 
 bool objparse(std::istream &stream, ObjData &data)
 {
     Slic3r::CNumericLocalesSetter locales_setter;
-    
+
     try {
         char buf[65536 * 2];
         size_t len = 0;
@@ -418,6 +706,14 @@ bool objparse(std::istream &stream, ObjData &data)
                     while (*c == ' ' || *c == '\t')
                         ++ c;
                     obj_parseline(c, data);
+
+                    /*for ml*/
+                    if (lastLine < 3) {
+                        data.ml_region = parsemlinfo(c, "region");
+                        data.ml_name = parsemlinfo(c, "ml_name");
+                        data.ml_id = parsemlinfo(c, "ml_file_id");
+                    }
+
                     lastLine = i + 1;
                 }
             lenPrev = len - lastLine;
@@ -428,11 +724,11 @@ bool objparse(std::istream &stream, ObjData &data)
     	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
     	return false;
     }
-    
+
     return true;
 }
 
-template<typename T> 
+template<typename T>
 bool savevector(FILE *pFile, const std::vector<T> &v)
 {
 	size_t cnt = v.size();
@@ -469,7 +765,7 @@ bool savevectornameidx(FILE *pFile, const std::vector<T> &v)
 	return true;
 }
 
-template<typename T> 
+template<typename T>
 bool loadvector(FILE *pFile, std::vector<T> &v)
 {
 	v.clear();
@@ -553,15 +849,20 @@ bool objbinsave(const char *path, const ObjData &data)
 bool objbinload(const char *path, ObjData &data)
 {
 	FILE *pFile = boost::nowide::fopen(path, "rb");
-	if (pFile == 0)
-		return false;
+    if (pFile == 0) {
+        ::fclose(pFile);
+        return false;
+    }
 
 	data.version = 0;
-	if (::fread(&data.version, sizeof(data.version), 1, pFile) != 1)
-		return false;
-	if (data.version != 1)
-		return false;
-
+    if (::fread(&data.version, sizeof(data.version), 1, pFile) != 1) {
+        ::fclose(pFile);
+        return false;
+    }
+    if (data.version != 1) {
+        ::fclose(pFile);
+        return false;
+    }
 	bool result =
 		loadvector(pFile, data.coordinates)			&&
 		loadvector(pFile, data.textureCoordinates)	&&
@@ -604,7 +905,7 @@ extern bool objequal(const ObjData &data1, const ObjData &data2)
 	//FIXME ignore version number
 	// version;
 
-	return 
+	return
 		vectorequal(data1.coordinates,			data2.coordinates)			&&
 		vectorequal(data1.textureCoordinates,	data2.textureCoordinates)	&&
 		vectorequal(data1.normals,				data2.normals)				&&

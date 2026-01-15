@@ -1,19 +1,7 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak, Enrico Turri @enricoturri1966, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Tomáš Mészáros @tamasmeszaros, Vojtěch Král @vojtechkral
-///|/ Copyright (c) SuperSlicer 2019 Remi Durand @supermerill
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2016 Mark Walker
-///|/
-///|/ ported from lib/Slic3r/Point.pm:
-///|/ Copyright (c) Prusa Research 2018 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Point_hpp_
 #define slic3r_Point_hpp_
 
-#include <oneapi/tbb/scalable_allocator.h>
-#include <assert.h>
+#include "libslic3r.h"
 #include <cstddef>
 #include <vector>
 #include <cmath>
@@ -21,25 +9,16 @@
 #include <sstream>
 #include <unordered_map>
 #include <Eigen/Geometry>
-#include <algorithm>
-#include <cstdint>
-#include <iterator>
-#include <limits>
-#include <optional>
-#include <type_traits>
-#include <utility>
-#include <cassert>
 
-#include "libslic3r.h"
 #include "LocalesUtils.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r {
 
 class BoundingBox;
 class BoundingBoxf;
+class Line;
+class MultiPoint;
 class Point;
-
 using Vector = Point;
 
 // Base template for eigen derived vectors
@@ -47,9 +26,6 @@ template<int N, int M, class T>
 using Mat = Eigen::Matrix<T, N, M, Eigen::DontAlign, N, M>;
 
 template<int N, class T> using Vec = Mat<N, 1, T>;
-
-template<typename NumberType>
-using DynVec = Eigen::Matrix<NumberType, Eigen::Dynamic, 1>;
 
 // Eigen types, to replace the Slic3r's own types in the future.
 // Vector types with a fixed point coordinate base type.
@@ -66,23 +42,20 @@ using Vec3i64 = Eigen::Matrix<int64_t,  3, 1, Eigen::DontAlign>;
 // Vector types with a double coordinate base type.
 using Vec2f   = Eigen::Matrix<float,    2, 1, Eigen::DontAlign>;
 using Vec3f   = Eigen::Matrix<float,    3, 1, Eigen::DontAlign>;
-using Vec4f   = Eigen::Matrix<float,    4, 1, Eigen::DontAlign>;
 using Vec2d   = Eigen::Matrix<double,   2, 1, Eigen::DontAlign>;
 using Vec3d   = Eigen::Matrix<double,   3, 1, Eigen::DontAlign>;
+// BBS
+using Vec4f   = Eigen::Matrix<float,    4, 1, Eigen::DontAlign>;
 using Vec4d   = Eigen::Matrix<double,   4, 1, Eigen::DontAlign>;
 
-template<typename BaseType>
-using PointsAllocator = tbb::scalable_allocator<BaseType>;
-//using PointsAllocator = std::allocator<BaseType>;
-using Points         = std::vector<Point, PointsAllocator<Point>>;
+using Points         = std::vector<Point>;
 using PointPtrs      = std::vector<Point*>;
 using PointConstPtrs = std::vector<const Point*>;
 using Points3        = std::vector<Vec3crd>;
 using Pointfs        = std::vector<Vec2d>;
 using Vec2ds         = std::vector<Vec2d>;
 using Pointf3s       = std::vector<Vec3d>;
-
-using VecOfPoints    = std::vector<Points, PointsAllocator<Points>>;
+using VecOfPoints    = std::vector<Points>;
 
 using Matrix2f       = Eigen::Matrix<float,  2, 2, Eigen::DontAlign>;
 using Matrix2d       = Eigen::Matrix<double, 2, 2, Eigen::DontAlign>;
@@ -106,24 +79,31 @@ inline const auto &identity3d = identity<3, double>;
 
 inline bool operator<(const Vec2d &lhs, const Vec2d &rhs) { return lhs.x() < rhs.x() || (lhs.x() == rhs.x() && lhs.y() < rhs.y()); }
 
-// Cross product of two 2D vectors.
-// None of the vectors may be of int32_t type as the result would overflow.
+template<int Options>
+int32_t cross2(const Eigen::MatrixBase<Eigen::Matrix<int32_t, 2, 1, Options>> &v1, const Eigen::MatrixBase<Eigen::Matrix<int32_t, 2, 1, Options>> &v2) = delete;
+
+template<typename T, int Options>
+inline T cross2(const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v1, const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v2)
+{
+    return v1.x() * v2.y() - v1.y() * v2.x();
+}
+
 template<typename Derived, typename Derived2>
 inline typename Derived::Scalar cross2(const Eigen::MatrixBase<Derived> &v1, const Eigen::MatrixBase<Derived2> &v2)
 {
-    static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "cross2(): first parameter is not a 2D vector");
-    static_assert(Derived2::IsVectorAtCompileTime && int(Derived2::SizeAtCompileTime) == 2, "cross2(): first parameter is not a 2D vector");
-    static_assert(! std::is_same<typename Derived::Scalar, int32_t>::value, "cross2(): Scalar type must not be int32_t, otherwise the cross product would overflow.");
     static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value, "cross2(): Scalar types of 1st and 2nd operand must be equal.");
     return v1.x() * v2.y() - v1.y() * v2.x();
 }
 
+template<typename T, int Options>
+inline Eigen::Matrix<T, 2, 1, Eigen::DontAlign> perp(const Eigen::MatrixBase<Eigen::Matrix<T, 2, 1, Options>> &v) { return Eigen::Matrix<T, 2, 1, Eigen::DontAlign>(- v.y(), v.x()); }
+
 // 2D vector perpendicular to the argument.
 template<typename Derived>
-inline Eigen::Matrix<typename Derived::Scalar, 2, 1, Eigen::DontAlign> perp(const Eigen::MatrixBase<Derived> &v)
-{ 
+inline Eigen::Matrix<typename Derived::Scalar, 2, 1, Eigen::DontAlign> perp(const Eigen::MatrixBase<Derived>& v)
+{
     static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "perp(): parameter is not a 2D vector");
-    return { - v.y(), v.x() };
+    return { -v.y(), v.x() };
 }
 
 // Angle from v1 to v2, returning double atan2(y, x) normalized to <-PI, PI>.
@@ -196,16 +176,15 @@ public:
     Point() : Vec2crd(0, 0) {}
     Point(int32_t x, int32_t y) : Vec2crd(coord_t(x), coord_t(y)) {}
     Point(int64_t x, int64_t y) : Vec2crd(coord_t(x), coord_t(y)) {}
-    Point(double x, double y) : Vec2crd(coord_t(std::round(x)), coord_t(std::round(y))) {}
+    Point(double x, double y) : Vec2crd(coord_t(lrint(x)), coord_t(lrint(y))) {}
     Point(const Point &rhs) { *this = rhs; }
-	explicit Point(const Vec2d& rhs) : Vec2crd(coord_t(std::round(rhs.x())), coord_t(std::round(rhs.y()))) {}
+	explicit Point(const Vec2d& rhs) : Vec2crd(coord_t(lrint(rhs.x())), coord_t(lrint(rhs.y()))) {}
 	// This constructor allows you to construct Point from Eigen expressions
-    // This constructor has to be implicit (non-explicit) to allow implicit conversion from Eigen expressions.
     template<typename OtherDerived>
     Point(const Eigen::MatrixBase<OtherDerived> &other) : Vec2crd(other) {}
     static Point new_scale(coordf_t x, coordf_t y) { return Point(coord_t(scale_(x)), coord_t(scale_(y))); }
-    template<typename OtherDerived>
-    static Point new_scale(const Eigen::MatrixBase<OtherDerived> &v) { return Point(coord_t(scale_(v.x())), coord_t(scale_(v.y()))); }
+    static Point new_scale(const Vec2d &v) { return Point(coord_t(scale_(v.x())), coord_t(scale_(v.y()))); }
+    static Point new_scale(const Vec2f &v) { return Point(coord_t(scale_(v.x())), coord_t(scale_(v.y()))); }
 
     // This method allows you to assign Eigen expressions to MyVectorType
     template<typename OtherDerived>
@@ -219,6 +198,29 @@ public:
     Point& operator-=(const Point& rhs) { this->x() -= rhs.x(); this->y() -= rhs.y(); return *this; }
 	Point& operator*=(const double &rhs) { this->x() = coord_t(this->x() * rhs); this->y() = coord_t(this->y() * rhs); return *this; }
     Point operator*(const double &rhs) { return Point(this->x() * rhs, this->y() * rhs); }
+    bool   both_comp(const Point &rhs, const std::string& op) {
+        if (op == ">")
+            return this->x() > rhs.x() && this->y() > rhs.y();
+        else if (op == "<")
+            return this->x() < rhs.x() && this->y() < rhs.y();
+        return false;
+    }
+    bool any_comp(const Point &rhs, const std::string &op)
+    {
+        if (op == ">")
+            return this->x() > rhs.x() || this->y() > rhs.y();
+        else if (op == "<")
+            return this->x() < rhs.x() || this->y() < rhs.y();
+        return false;
+    }
+    bool any_comp(const coord_t val, const std::string &op)
+    {
+        if (op == ">")
+            return this->x() > val || this->y() > val;
+        else if (op == "<")
+            return this->x() < val || this->y() < val;
+        return false;
+    }
 
     void   rotate(double angle) { this->rotate(std::cos(angle), std::sin(angle)); }
     void   rotate(double cos_a, double sin_a) {
@@ -232,16 +234,33 @@ public:
     Point  rotated(double angle) const { Point res(*this); res.rotate(angle); return res; }
     Point  rotated(double cos_a, double sin_a) const { Point res(*this); res.rotate(cos_a, sin_a); return res; }
     Point  rotated(double angle, const Point &center) const { Point res(*this); res.rotate(angle, center); return res; }
+    Point  rotate_90_degree_ccw() const { return Point(-this->y(), this->x()); }
+    int    nearest_point_index(const Points &points) const;
+    int    nearest_point_index(const PointConstPtrs &points) const;
+    int    nearest_point_index(const PointPtrs &points) const;
+    bool   nearest_point(const Points &points, Point* point) const;
+    double ccw(const Point &p1, const Point &p2) const;
+    double ccw(const Line &line) const;
+    double ccw_angle(const Point &p1, const Point &p2) const;
+    Point  projection_onto(const MultiPoint &poly) const;
+    Point  projection_onto(const Line &line) const;
+    bool   is_in_lines(const Points &pts) const;
 };
 
-inline bool operator<(const Point &l, const Point &r) 
-{ 
+inline bool operator<(const Point &l, const Point &r)
+{
     return l.x() < r.x() || (l.x() == r.x() && l.y() < r.y());
 }
 
-inline Point operator* (const Point& l, const double &r)
+inline Point operator* (const Point& l, const double& r)
 {
-    return {coord_t(l.x() * r), coord_t(l.y() * r)};
+    return { coord_t(l.x() * r), coord_t(l.y() * r) };
+}
+
+inline std::ostream &operator<<(std::ostream &os, const Point &pt)
+{
+    os << unscale_(pt.x()) << "," << unscale_(pt.y());
+    return os;
 }
 
 inline bool is_approx(const Point &p1, const Point &p2, coord_t epsilon = coord_t(SCALED_EPSILON))
@@ -249,6 +268,8 @@ inline bool is_approx(const Point &p1, const Point &p2, coord_t epsilon = coord_
 	Point d = (p2 - p1).cwiseAbs();
 	return d.x() < epsilon && d.y() < epsilon;
 }
+
+inline Point turn90_ccw(const Point pt) { return Point(-pt(1), pt(0)); }
 
 inline bool is_approx(const Vec2f &p1, const Vec2f &p2, float epsilon = float(EPSILON))
 {
@@ -274,16 +295,6 @@ inline bool is_approx(const Vec3d &p1, const Vec3d &p2, double epsilon = EPSILON
 	return d.x() < epsilon && d.y() < epsilon && d.z() < epsilon;
 }
 
-inline bool is_approx(const Matrix3d &m1, const Matrix3d &m2, double epsilon = EPSILON)
-{
-    for (size_t i = 0; i < 3; i++)
-        for (size_t j = 0; j < 3; j++)
-            if (!is_approx(m1(i, j), m2(i, j), epsilon))
-                return false;
-
-    return true;
-}
-
 inline Point lerp(const Point &a, const Point &b, double t)
 {
     assert((t >= -EPSILON) && (t <= 1. + EPSILON));
@@ -306,26 +317,18 @@ extern template BoundingBox get_extents<true>(const VecOfPoints &pts);
 
 BoundingBoxf get_extents(const std::vector<Vec2d> &pts);
 
-int nearest_point_index(const Points &points, const Point &pt);
-
-inline std::pair<Point, bool> nearest_point(const Points &points, const Point &pt)
-{
-    int idx = nearest_point_index(points, pt);
-    return idx == -1 ? std::make_pair(Point(), false) : std::make_pair(points[idx], true);
-}
-
 // Test for duplicate points in a vector of points.
 // The points are copied, sorted and checked for duplicates globally.
-bool        has_duplicate_points(Points &&pts);
-inline bool has_duplicate_points(const Points &pts)
+bool        has_duplicate_points(std::vector<Point> &&pts);
+inline bool has_duplicate_points(const std::vector<Point> &pts)
 {
-    Points cpy = pts;
+    std::vector<Point> cpy = pts;
     return has_duplicate_points(std::move(cpy));
 }
 
 // Test for duplicate points in a vector of points.
 // Only successive points are checked for equality.
-inline bool has_duplicate_successive_points(const Points &pts)
+inline bool has_duplicate_successive_points(const std::vector<Point> &pts)
 {
     for (size_t i = 1; i < pts.size(); ++ i)
         if (pts[i - 1] == pts[i])
@@ -335,13 +338,13 @@ inline bool has_duplicate_successive_points(const Points &pts)
 
 // Test for duplicate points in a vector of points.
 // Only successive points are checked for equality. Additionally, first and last points are compared for equality.
-inline bool has_duplicate_successive_points_closed(const Points &pts)
+inline bool has_duplicate_successive_points_closed(const std::vector<Point> &pts)
 {
     return has_duplicate_successive_points(pts) || (pts.size() >= 2 && pts.front() == pts.back());
 }
 
 // Collect adjecent(duplicit points)
-Points collect_duplicates(Points pts /* Copy */);
+Points      collect_duplicates(Points pts /* Copy */);
 
 inline bool shorter_then(const Point& p0, const coord_t len)
 {
@@ -363,7 +366,7 @@ namespace int128 {
 
 // To be used by std::unordered_map, std::unordered_multimap and friends.
 struct PointHash {
-    size_t operator()(const Vec2crd &pt) const noexcept {
+    size_t operator()(const Vec2crd &pt) const {
         return coord_t((89 * 31 + int64_t(pt.x())) * 31 + pt.y());
     }
 };
@@ -375,7 +378,7 @@ struct PointHash {
 template<typename ValueType, typename PointAccessor> class ClosestPointInRadiusLookup
 {
 public:
-    ClosestPointInRadiusLookup(coord_t search_radius, PointAccessor point_accessor = PointAccessor()) : 
+    ClosestPointInRadiusLookup(coord_t search_radius, PointAccessor point_accessor = PointAccessor()) :
 		m_search_radius(search_radius), m_point_accessor(point_accessor), m_grid_log2(0)
     {
         // Resolution of a grid, twice the search radius + some epsilon.
@@ -404,7 +407,7 @@ public:
 			++ m_grid_log2;
 		m_grid_resolution = 1 << m_grid_log2;
 		assert(m_grid_resolution >= gridres);
-		assert(gridres > m_grid_resolution / 2);
+		assert(gridres >= m_grid_resolution / 2);
     }
 
     void insert(const ValueType &value) {
@@ -464,8 +467,8 @@ public:
                 }
             }
         }
-        return (value_min != nullptr && dist_min < coordf_t(m_search_radius) * coordf_t(m_search_radius)) ? 
-            std::make_pair(value_min, dist_min) : 
+        return (value_min != nullptr && dist_min < coordf_t(m_search_radius) * coordf_t(m_search_radius)) ?
+            std::make_pair(value_min, dist_min) :
             std::make_pair(nullptr, std::numeric_limits<double>::max());
     }
 
@@ -585,53 +588,81 @@ inline coord_t align_to_grid(const coord_t coord, const coord_t spacing) {
     assert(aligned <= coord);
     return aligned;
 }
-inline Point   align_to_grid(Point   coord, Point   spacing) 
+inline Point   align_to_grid(Point   coord, Point   spacing)
     { return Point(align_to_grid(coord.x(), spacing.x()), align_to_grid(coord.y(), spacing.y())); }
-inline coord_t align_to_grid(coord_t coord, coord_t spacing, coord_t base) 
+inline coord_t align_to_grid(coord_t coord, coord_t spacing, coord_t base)
     { return base + align_to_grid(coord - base, spacing); }
 inline Point   align_to_grid(Point   coord, Point   spacing, Point   base)
     { return Point(align_to_grid(coord.x(), spacing.x(), base.x()), align_to_grid(coord.y(), spacing.y(), base.y())); }
-
-// MinMaxLimits
-template<typename T> struct MinMax { T min; T max;};
-template<typename T>
-static bool apply(std::optional<T> &val, const MinMax<T> &limit) {
-    if (!val.has_value()) return false;
-    return apply<T>(*val, limit);
-}
-template<typename T>
-static bool apply(T &val, const MinMax<T> &limit)
-{
-    if (val > limit.max) {
-        val = limit.max;
-        return true;
+    // MinMaxLimits
+    template<typename T> struct MinMax
+    {
+        T min;
+        T max;
+    };
+    template<typename T> static bool apply(std::optional<T> &val, const MinMax<T> &limit)
+    {
+        if (!val.has_value()) return false;
+        return apply<T>(*val, limit);
     }
-    if (val < limit.min) {
-        val = limit.min;
-        return true;
+    template<typename T> static bool apply(T &val, const MinMax<T> &limit)
+    {
+        if (val > limit.max) {
+            val = limit.max;
+            return true;
+        }
+        if (val < limit.min) {
+            val = limit.min;
+            return true;
+        }
+        return false;
     }
-    return false;
-}
-
 } // namespace Slic3r
+
+// requseted by ConfigOptionPointsGroups
+namespace std {
+    template<>
+    struct hash<Slic3r::Vec2ds> {
+        size_t operator()(const Slic3r::Vec2ds& vec) {
+            size_t seed = 0;
+            for (const auto& element : vec) {
+                seed ^= std::hash<double>()(element[0]) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                seed ^= std::hash<double>()(element[1]) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+    };
+
+    template<>
+    struct hash<std::vector<int>>
+    {
+        size_t operator()(const std::vector<int> &vec)
+        {
+            size_t seed = 0;
+            for (const auto &element : vec) {
+                seed ^= std::hash<double>()(element) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+    };
+}
 
 // start Boost
 #include <boost/version.hpp>
 #include <boost/polygon/polygon.hpp>
-
 namespace boost { namespace polygon {
     template <>
     struct geometry_concept<Slic3r::Point> { using type = point_concept; };
-   
+
     template <>
     struct point_traits<Slic3r::Point> {
         using coordinate_type = coord_t;
-    
+
         static inline coordinate_type get(const Slic3r::Point& point, orientation_2d orient) {
             return static_cast<coordinate_type>(point((orient == HORIZONTAL) ? 0 : 1));
         }
     };
-    
+
     template <>
     struct point_mutable_traits<Slic3r::Point> {
         using coordinate_type = coord_t;
@@ -645,26 +676,24 @@ namespace boost { namespace polygon {
 } }
 // end Boost
 
-#include <cereal/cereal.hpp>
-
 // Serialization through the Cereal library
 namespace cereal {
-//    template<class Archive> void serialize(Archive& archive, Slic3r::Vec2crd &v) { archive(v.x(), v.y()); }
-//    template<class Archive> void serialize(Archive& archive, Slic3r::Vec3crd &v) { archive(v.x(), v.y(), v.z()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec2i   &v) { archive(v.x(), v.y()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec3i   &v) { archive(v.x(), v.y(), v.z()); }
-//    template<class Archive> void serialize(Archive& archive, Slic3r::Vec2i64 &v) { archive(v.x(), v.y()); }
-//    template<class Archive> void serialize(Archive& archive, Slic3r::Vec3i64 &v) { archive(v.x(), v.y(), v.z()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec2f   &v) { archive(v.x(), v.y()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec3f   &v) { archive(v.x(), v.y(), v.z()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec2d   &v) { archive(v.x(), v.y()); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Vec3d   &v) { archive(v.x(), v.y(), v.z()); }
+//	template<class Archive> void serialize(Archive& archive, Slic3r::Vec2crd &v) { archive(v.x(), v.y()); }
+//	template<class Archive> void serialize(Archive& archive, Slic3r::Vec3crd &v) { archive(v.x(), v.y(), v.z()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec2i   &v) { archive(v.x(), v.y()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec3i   &v) { archive(v.x(), v.y(), v.z()); }
+//	template<class Archive> void serialize(Archive& archive, Slic3r::Vec2i64 &v) { archive(v.x(), v.y()); }
+//	template<class Archive> void serialize(Archive& archive, Slic3r::Vec3i64 &v) { archive(v.x(), v.y(), v.z()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec2f   &v) { archive(v.x(), v.y()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec3f   &v) { archive(v.x(), v.y(), v.z()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec2d   &v) { archive(v.x(), v.y()); }
+	template<class Archive> void serialize(Archive& archive, Slic3r::Vec3d   &v) { archive(v.x(), v.y(), v.z()); }
 
-    template<class Archive> void serialize(Archive& archive, Slic3r::Matrix4d &m){ archive(binary_data(m.data(), 4*4*sizeof(double))); }
-    template<class Archive> void serialize(Archive& archive, Slic3r::Matrix2f &m){ archive(binary_data(m.data(), 2*2*sizeof(float))); }
-        
-    // Eigen Transformation serialization
-    template<class Archive, class T, int N> inline void serialize(Archive& archive, Eigen::Transform<T, N, Eigen::Affine, Eigen::DontAlign>& t){ archive(t.matrix()); }
+	template<class Archive> void load(Archive& archive, Slic3r::Matrix2f &m) { archive.loadBinary((char*)m.data(), sizeof(float) * 4); }
+	template<class Archive> void save(Archive& archive, Slic3r::Matrix2f &m) { archive.saveBinary((char*)m.data(), sizeof(float) * 4); }
+
+    template<class Archive> void load(Archive &archive, Slic3r::Transform3d &m) { archive.loadBinary((char *) m.data(), sizeof(double) * 16); }
+    template<class Archive> void save(Archive &archive, const Slic3r::Transform3d &m) { archive.saveBinary((char *) m.data(), sizeof(double) * 16); }
 }
 
 // To be able to use Vec<> and Mat<> in range based for loops:

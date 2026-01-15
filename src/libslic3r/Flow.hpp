@@ -1,29 +1,14 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Flow.pm:
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2012 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Flow_hpp_
 #define slic3r_Flow_hpp_
-
-#include <assert.h>
-#include <string>
-#include <cassert>
 
 #include "libslic3r.h"
 #include "Config.hpp"
 #include "Exception.hpp"
-#include "ExtrusionRole.hpp"
+#include "ExtrusionEntity.hpp"
 
 namespace Slic3r {
 
 class PrintObject;
-class ConfigOptionFloatOrPercent;
-class ConfigOptionResolver;
 
 // Extra spacing of bridge threads, in mm.
 #define BRIDGE_EXTRA_SPACING 0.05
@@ -36,6 +21,7 @@ enum FlowRole {
     frTopSolidInfill,
     frSupportMaterial,
     frSupportMaterialInterface,
+    frSupportTransition,  // BBS
 };
 
 class FlowError : public Slic3r::InvalidArgument
@@ -95,6 +81,13 @@ public:
 
     bool operator==(const Flow &rhs) const { return m_width == rhs.m_width && m_height == rhs.m_height && m_nozzle_diameter == rhs.m_nozzle_diameter && m_bridge == rhs.m_bridge; }
 
+    bool operator!=(const Flow &rhs) const{
+        return m_width != rhs.m_width || m_height != rhs.m_height || m_nozzle_diameter != rhs.m_nozzle_diameter || m_bridge != rhs.m_bridge;
+    }
+
+    bool operator <(const Flow &rhs) const {
+        return this->mm3_per_mm() < rhs.mm3_per_mm();
+    }
     Flow        with_width (float width)  const { 
         assert(! m_bridge); 
         return Flow(width, m_height, rounded_rectangle_extrusion_spacing(width, m_height), m_nozzle_diameter, m_bridge);
@@ -111,7 +104,7 @@ public:
 
     static Flow bridging_flow(float dmr, float nozzle_diameter) { return Flow { dmr, dmr, bridge_extrusion_spacing(dmr), nozzle_diameter, true }; }
 
-    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height);
+    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloat &width, float nozzle_diameter, float height);
 
     // Spacing of extrusions with rounded extrusion model.
     static float rounded_rectangle_extrusion_spacing(float width, float height);
@@ -145,7 +138,8 @@ private:
     bool        m_bridge { false };
 };
 
-extern Flow support_material_flow(const PrintObject *object, float layer_height = 0.f);
+extern Flow support_material_flow(const PrintObject* object, float layer_height = 0.f);
+extern Flow support_transition_flow(const PrintObject *object); //BBS
 extern Flow support_material_1st_layer_flow(const PrintObject *object, float layer_height = 0.f);
 extern Flow support_material_interface_flow(const PrintObject *object, float layer_height = 0.f);
 

@@ -1,18 +1,12 @@
-///|/ Copyright (c) 2023 Robert Schiele @schiele
-///|/ Copyright (c) Prusa Research 2020 - 2021 Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef PNGREAD_HPP
 #define PNGREAD_HPP
 
-#include <stddef.h>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <istream>
-#include <cstdint>
-#include <algorithm>
-#include <cstddef>
+
+#include <boost/format.hpp>
 
 namespace Slic3r { namespace png {
 
@@ -32,10 +26,18 @@ template<class PxT> struct Image {
 };
 
 using ImageGreyscale = Image<uint8_t>;
+struct ImageColorscale:Image<unsigned char>
+{
+    int bytes_per_pixel;
+};
+
 
 // Only decodes true 8 bit grayscale png images. Returns false for other formats
 // TODO (if needed): implement transformation of rgb images into grayscale...
 bool decode_png(IStream &stream, ImageGreyscale &out_img);
+
+//BBS: decode png for other format
+bool decode_colored_png(IStream &in_buf, ImageColorscale &out_img);
 
 // TODO (if needed)
 // struct RGB { uint8_t r, g, b; };
@@ -48,34 +50,41 @@ struct ReadBuf { const void *buf = nullptr; const size_t sz = 0; };
 
 bool is_png(const ReadBuf &pngbuf);
 
+struct ReadBufStream: public IStream {
+    const ReadBuf &rbuf_ref;
+    size_t pos = 0;
+
+    explicit ReadBufStream(const ReadBuf &buf): rbuf_ref{buf} {}
+
+    size_t read(std::uint8_t *outp, size_t amount) override
+    {
+        if (amount > rbuf_ref.sz - pos) return 0;
+
+        auto buf = static_cast<const std::uint8_t *>(rbuf_ref.buf);
+        std::copy(buf + pos, buf + (pos + amount), outp);
+        pos += amount;
+
+        return amount;
+    }
+
+    bool is_ok() const override { return pos < rbuf_ref.sz; }
+};
+
 template<class Img> bool decode_png(const ReadBuf &in_buf, Img &out_img)
 {
-    struct ReadBufStream: public IStream {
-        const ReadBuf &rbuf_ref; size_t pos = 0;
-
-        explicit ReadBufStream(const ReadBuf &buf): rbuf_ref{buf} {}
-
-        size_t read(std::uint8_t *outp, size_t amount) override
-        {
-            if (amount > rbuf_ref.sz - pos) return 0;
-
-            auto buf = static_cast<const std::uint8_t *>(rbuf_ref.buf);
-            std::copy(buf + pos, buf + (pos + amount), outp);
-            pos += amount;
-
-            return amount;
-        }
-
-        bool is_ok() const override { return pos < rbuf_ref.sz; }
-    } stream{in_buf};
+    struct ReadBufStream stream{in_buf};
 
     return decode_png(stream, out_img);
 }
 
+bool decode_colored_png(const ReadBuf &in_buf, ImageColorscale &out_img);
+
+
 // TODO: std::istream of FILE* could be similarly adapted in case its needed...
 
-bool decode_png(const std::string& png_data, std::vector<unsigned char>& image_data, unsigned& width, unsigned& height);
 
+
+bool write_gl_rgba_to_file(const char* file_name_utf8, size_t width, size_t height, const uint8_t* data_rgb);
 // Down to earth function to store a packed RGB image to file. Mostly useful for debugging purposes.
 bool write_rgb_to_file(const char *file_name_utf8, size_t width, size_t height, const uint8_t *data_rgb);
 bool write_rgb_to_file(const std::string &file_name_utf8, size_t width, size_t height, const uint8_t *data_rgb);

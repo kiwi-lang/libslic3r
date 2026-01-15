@@ -1,18 +1,20 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <random>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-
+#include "libslic3r.h"
 #include "Color.hpp"
+
+#include <random>
 
 static const float INV_255 = 1.0f / 255.0f;
 
 namespace Slic3r {
-
+bool color_is_equal(const RGBA a, const RGBA& b)
+{
+    for (size_t i = 0; i < 4; i++) {
+        if (abs(a[i] - b[i]) > 0.01) {
+            return false;
+        }
+    }
+    return true;
+}
 // Conversion from RGB to HSV color space
 // The input RGB values are in the range [0, 1]
 // The output HSV values are in the ranges h = [0, 360], and s, v = [0, 1]
@@ -31,7 +33,7 @@ static void RGBtoHSV(float r, float g, float b, float& h, float& s, float& v)
 			h = 60.0f * (std::fmod(((g - b) / delta), 6.0f));
 		else if (max_comp == g)
 			h = 60.0f * (((b - r) / delta) + 2.0f);
-		else  // max_comp == b
+		else if (max_comp == b)
 			h = 60.0f * (((r - g) / delta) + 4.0f);
 
 		s = (max_comp > 0.0f) ? delta / max_comp : 0.0f;
@@ -179,6 +181,11 @@ ColorRGBA::ColorRGBA(float r, float g, float b, float a)
 {
 }
 
+ColorRGBA::ColorRGBA(std::array<float, 4> color)
+    : m_data({std::clamp(color[0], 0.0f, 1.0f), std::clamp(color[1], 0.0f, 1.0f), std::clamp(color[2], 0.0f, 1.0f), std::clamp(color[3], 0.0f, 1.0f)})
+{
+
+}
 ColorRGBA::ColorRGBA(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 : m_data({ std::clamp(r * INV_255, 0.0f, 1.0f), std::clamp(g * INV_255, 0.0f, 1.0f), std::clamp(b * INV_255, 0.0f, 1.0f), std::clamp(a * INV_255, 0.0f, 1.0f) })
 {
@@ -224,8 +231,29 @@ ColorRGBA ColorRGBA::operator * (float value) const
 	for (size_t i = 0; i < 3; ++i) {
 		ret.m_data[i] = std::clamp(value * m_data[i], 0.0f, 1.0f);
 	}
-	ret.m_data[3] = m_data[3];
+	ret.m_data[3] = this->m_data[3];
 	return ret;
+}
+
+void ColorRGBA::gamma_correct() {
+    auto coe = 1 / 2.2f;
+    for (int i = 0; i < 4; i++) {
+        m_data[i] = std::pow(m_data[i], coe);
+    }
+}
+
+void ColorRGBA::gamma_correct(RGBA &color)
+{
+    auto coe = 1 / 2.2f;
+    for (int i = 0; i < 4; i++) {
+        color[i] = std::pow(color[i], coe);
+    }
+}
+
+float ColorRGBA::gamma_correct(float value)
+{
+    auto coe = 1 / 2.2f;
+    return std::pow(value, coe);
 }
 
 ColorRGB operator * (float value, const ColorRGB& other) { return other * value; }
@@ -312,9 +340,22 @@ ColorRGB opposite(const ColorRGB& a, const ColorRGB& b)
 	return { out_r, out_g, out_b };
 }
 
-bool can_decode_color(const std::string& color) { return color.size() == 7 && color.front() == '#'; }
+bool can_decode_color(const std::string &color)
+{
+    return (color.size() == 7 && color.front() == '#') || (color.size() == 9 && color.front() == '#');
+}
 
 bool decode_color(const std::string& color_in, ColorRGB& color_out)
+{
+    ColorRGBA rgba;
+    if (!decode_color(color_in, rgba))
+        return false;
+
+    color_out = to_rgb(rgba);
+    return true;
+}
+
+bool decode_color(const std::string& color_in, ColorRGBA& color_out)
 {
 	auto hex_digit_to_int = [](const char c) {
 		return
@@ -323,33 +364,32 @@ bool decode_color(const std::string& color_in, ColorRGB& color_out)
 			(c >= 'a' && c <= 'f') ? int(c - 'a') + 10 : -1;
 	};
 
-	color_out = ColorRGB::BLACK();
-	if (can_decode_color(color_in)) {
-		const char* c = color_in.data() + 1;
-		for (unsigned int i = 0; i < 3; ++i) {
-			const int digit1 = hex_digit_to_int(*c++);
-			const int digit2 = hex_digit_to_int(*c++);
-			if (digit1 != -1 && digit2 != -1)
-				color_out.set(i, float(digit1 * 16 + digit2) * INV_255);
-		}
-	}
-	else
-		return false;
+    color_out = ColorRGBA::BLACK();
+    if (can_decode_color(color_in)) {
+        const char *c = color_in.data() + 1;
+        if (color_in.size() == 7) {
+            for (unsigned int i = 0; i < 3; ++i) {
+                const int digit1 = hex_digit_to_int(*c++);
+                const int digit2 = hex_digit_to_int(*c++);
+                if (digit1 != -1 && digit2 != -1)
+                    color_out.set(i, float(digit1 * 16 + digit2) * INV_255);
+            }
+        } else {
+            for (unsigned int i = 0; i < 4; ++i) {
+                const int digit1 = hex_digit_to_int(*c++);
+                const int digit2 = hex_digit_to_int(*c++);
+                if (digit1 != -1 && digit2 != -1)
+                    color_out.set(i, float(digit1 * 16 + digit2) * INV_255);
+            }
+        }
+    } else
+        return false;
 
-	assert(0.0f <= color_out.r() && color_out.r() <= 1.0f);
-	assert(0.0f <= color_out.g() && color_out.g() <= 1.0f);
-	assert(0.0f <= color_out.b() && color_out.b() <= 1.0f);
-	return true;
-}
-
-bool decode_color(const std::string& color_in, ColorRGBA& color_out)
-{
-	ColorRGB rgb;
-	if (!decode_color(color_in, rgb))
-		return false;
-
-	color_out = to_rgba(rgb, color_out.a());
-	return true;
+    assert(0.0f <= color_out.r() && color_out.r() <= 1.0f);
+    assert(0.0f <= color_out.g() && color_out.g() <= 1.0f);
+    assert(0.0f <= color_out.b() && color_out.b() <= 1.0f);
+    assert(0.0f <= color_out.a() && color_out.a() <= 1.0f);
+    return true;
 }
 
 bool decode_colors(const std::vector<std::string>& colors_in, std::vector<ColorRGB>& colors_out)
@@ -380,7 +420,7 @@ std::string encode_color(const ColorRGB& color)
 }
 
 std::string encode_color(const ColorRGBA& color) { return encode_color(to_rgb(color)); }
- 
+
 ColorRGB to_rgb(const ColorRGBA& other_rgba) { return { other_rgba.r(), other_rgba.g(), other_rgba.b() }; }
 ColorRGBA to_rgba(const ColorRGB& other_rgb) { return { other_rgb.r(), other_rgb.g(), other_rgb.b(), 1.0f }; }
 ColorRGBA to_rgba(const ColorRGB& other_rgb, float alpha) { return { other_rgb.r(), other_rgb.g(), other_rgb.b(), alpha }; }

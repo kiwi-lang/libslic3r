@@ -1,19 +1,13 @@
-///|/ Copyright (c) Prusa Research 2019 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_PolygonTrimmer_hpp_
 #define slic3r_PolygonTrimmer_hpp_
 
+#include "libslic3r.h"
 #include <vector>
 #include <string>
-
-#include "libslic3r.h"
 #include "Line.hpp"
 #include "MultiPoint.hpp"
 #include "Polyline.hpp"
 #include "Polygon.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r {
 
@@ -23,7 +17,7 @@ namespace EdgeGrid {
 
 struct TrimmedLoop
 {
-	Points          			points;
+	std::vector<Point> 			points;
 	// Number of points per segment. Empty if the loop is 
 	std::vector<unsigned int> 	segments;
 

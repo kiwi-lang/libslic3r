@@ -1,19 +1,9 @@
-///|/ Copyright (c) Prusa Research 2016 - 2021 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillLine_hpp_
 #define slic3r_FillLine_hpp_
 
-#include <utility>
+#include "../libslic3r.h"
 
-#include "libslic3r/libslic3r.h"
 #include "FillBase.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
 
 namespace Slic3r {
 

@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Utils_Time_hpp_
 #define slic3r_Utils_Time_hpp_
 
@@ -13,6 +9,7 @@ namespace Utils {
 
 // Should be thread safe.
 time_t get_current_time_utc();
+time_t get_current_milliseconds_time_utc();
 
 enum class TimeZone { local, utc };
 enum class TimeFormat { gcode, iso8601Z };

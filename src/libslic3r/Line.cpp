@@ -1,23 +1,9 @@
-///|/ Copyright (c) Prusa Research 2018 - 2022 Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
-///|/
-///|/ ported from lib/Slic3r/Line.pm:
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <cmath>
-#include <limits>
-#include <cstdlib>
-#include <cstring>
-
 #include "Geometry.hpp"
 #include "Line.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/libslic3r.h"
+#include "Polyline.hpp"
+#include <algorithm>
+#include <cmath>
+#include <sstream>
 
 namespace Slic3r {
 
@@ -64,18 +50,6 @@ double Line::perp_distance_to(const Point &point) const
     return std::abs(cross2(v, va)) / v.norm();
 }
 
-double Line::perp_signed_distance_to(const Point &point) const {
-    // Sign is dependent on the line orientation.
-    // For CCW oriented polygon is possitive distace into shape and negative outside.
-    // For Line({0,0},{0,2}) and point {1,1} the distance is negative one(-1).
-    const Line &line = *this;
-    const Vec2d v = (line.b - line.a).cast<double>();
-    const Vec2d va = (point - line.a).cast<double>();
-    if (line.a == line.b)
-        return va.norm();
-    return cross2(v, va) / v.norm();
-}
-
 double Line::orientation() const
 {
     double angle = this->atan2_();
@@ -102,7 +76,20 @@ bool Line::parallel_to(const Line& line) const
     const Vec2d v2 = (line.b - line.a).cast<double>();
     return sqr(cross2(v1, v2)) < sqr(EPSILON) * v1.squaredNorm() * v2.squaredNorm();
 }
-
+bool Line::overlap(const Line &line, double &overlap_length) const
+{
+    if (!this->parallel_to(line)) return false;
+    Line line_(this->a, line.a);
+    if (line_.length() > scaled(EPSILON) && !this->parallel_to(line_)) return false;
+    coord_t a_min  = std::min(this->a.x(), this->b.x());
+    coord_t a_max  = std::max(this->a.x(), this->b.x());
+    coord_t b_min  = std::min(line.a.x(), line.b.x());
+    coord_t b_max  = std::max(line.a.x(), line.b.x());
+    if (a_min>b_max||a_max<b_min) return false;
+    overlap_length = std::max(0, std::min(a_max, b_max) - std::max(a_min, b_min));
+    overlap_length /= ((double) a_max - a_min) / this->length();
+    return true;
+}
 bool Line::perpendicular_to(double angle) const
 {
     return Slic3r::Geometry::directions_perpendicular(this->direction(), angle);

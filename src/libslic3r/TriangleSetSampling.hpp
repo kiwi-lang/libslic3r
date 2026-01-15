@@ -1,18 +1,8 @@
-///|/ Copyright (c) Prusa Research 2022 Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef SRC_LIBSLIC3R_TRIANGLESETSAMPLING_HPP_
 #define SRC_LIBSLIC3R_TRIANGLESETSAMPLING_HPP_
 
 #include <admesh/stl.h>
-#include <stddef.h>
-#include <vector>
-#include <cstddef>
-
 #include "libslic3r/Point.hpp"
-
-struct indexed_triangle_set;
 
 namespace Slic3r {
 

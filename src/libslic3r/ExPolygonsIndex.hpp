@@ -1,11 +1,7 @@
 #ifndef slic3r_ExPolygonsIndex_hpp_
 #define slic3r_ExPolygonsIndex_hpp_
 
-#include <cstdint>
-#include <vector>
-
 #include "ExPolygon.hpp"
-
 namespace Slic3r {
 
 /// <summary>
@@ -34,8 +30,8 @@ struct ExPolygonsIndex
 /// Keep conversion from ExPolygonsIndex to Index and vice versa
 /// ExPolygonsIndex .. contour(or hole) point from ExPolygons
 /// Index           .. continous number
-/// 
-/// index is used to address lines and points as result from function 
+///
+/// index is used to address lines and points as result from function
 /// Slic3r::to_lines, Slic3r::to_points
 /// </summary>
 class ExPolygonsIndices

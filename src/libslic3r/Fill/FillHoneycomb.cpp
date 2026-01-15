@@ -1,21 +1,8 @@
-///|/ Copyright (c) Prusa Research 2016 - 2021 Vojtěch Bubník @bubnikv
-///|/
-///|/ ported from lib/Slic3r/Fill/Concentric.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <algorithm>
-#include <cmath>
-
 #include "../ClipperUtils.hpp"
 #include "../ShortestPath.hpp"
+#include "../Surface.hpp"
+
 #include "FillHoneycomb.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Polygon.hpp"
 
 namespace Slic3r {
 
@@ -32,7 +19,7 @@ void FillHoneycomb::_fill_surface_single(
     if (it_m == this->cache.end()) {
         it_m = this->cache.insert(it_m, std::pair<CacheID, CacheData>(cache_id, CacheData()));
         CacheData &m        = it_m->second;
-        coord_t min_spacing = coord_t(scale_(this->spacing));
+        coord_t min_spacing = coord_t(scale_(this->spacing)) * params.multiline;
         m.distance          = coord_t(min_spacing / params.density);
         m.hex_side          = coord_t(m.distance / (sqrt(3)/2));
         m.hex_width         = m.distance * 2; // $m->{hex_width} == $m->{hex_side} * sqrt(3);
@@ -82,9 +69,12 @@ void FillHoneycomb::_fill_surface_single(
                 x += m.distance;
             }
             p.rotate(-direction.first, m.hex_center);
+            p.simplify(5 * spacing); // simplify to 5x line width
             all_polylines.push_back(p);
         }
     }
+    // Apply multiline offset if needed
+    multiline_fill(all_polylines, params, 1.1 * spacing);
     
     all_polylines = intersection_pl(std::move(all_polylines), expolygon);
     if (params.dont_connect() || all_polylines.size() <= 1)

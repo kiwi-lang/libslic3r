@@ -1,21 +1,11 @@
-///|/ Copyright (c) Prusa Research 2018 - 2021 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966
-///|/ Copyright (c) SuperSlicer 2018 - 2019 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <cmath>
-#include <algorithm>
-#include <vector>
-#include <cstddef>
-
 #include "../ClipperUtils.hpp"
 #include "../ShortestPath.hpp"
+#include "../Surface.hpp"
+#include <cmath>
+#include <algorithm>
+#include <iostream>
+
 #include "FillGyroid.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -171,7 +161,7 @@ void FillGyroid::_fill_surface_single(
 
     BoundingBox bb = expolygon.contour.bounding_box();
     // Density adjusted to have a good %of weight.
-    double      density_adjusted = std::max(0., params.density * DensityAdjust);
+    double      density_adjusted = std::max(0., params.density * DensityAdjust / params.multiline);
     // Distance between the gyroid waves in scaled coordinates.
     coord_t     distance = coord_t(scale_(this->spacing) / density_adjusted);
 
@@ -189,8 +179,10 @@ void FillGyroid::_fill_surface_single(
 	// shift the polyline to the grid origin
 	for (Polyline &pl : polylines)
 		pl.translate(bb.min);
-
-	polylines = intersection_pl(polylines, expolygon);
+    // Apply multiline offset if needed
+    multiline_fill(polylines, params, spacing);
+	
+    polylines = intersection_pl(polylines, expolygon);
 
     if (! polylines.empty()) {
 		// Remove very small bits, but be careful to not remove infill lines connecting thin walls!

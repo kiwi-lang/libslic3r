@@ -1,23 +1,13 @@
-///|/ Copyright (c) Prusa Research 2021 Filip Sykala @Jony01
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_NSVGUtils_hpp_
 #define slic3r_NSVGUtils_hpp_
 
-#include <stddef.h>
 #include <memory>
 #include <string>
 #include <sstream>
-#include <cmath>
-#include <cstddef>
-
 #include "Polygon.hpp"
 #include "ExPolygon.hpp"
 #include "EmbossShape.hpp" // ExPolygonsWithIds
 #include "nanosvg/nanosvg.h"    // load SVG file
-#include "libslic3r/Point.hpp"
-#include "libslic3r/libslic3r.h"
 
 // Helper function to work with nano svg
 namespace Slic3r {
@@ -47,8 +37,8 @@ struct NSVGLineParams
     // Maximal count of heal iteration
     unsigned max_heal_iteration = 10;
 
-    explicit NSVGLineParams(double tesselation_tolerance): 
-        tesselation_tolerance(tesselation_tolerance), 
+    explicit NSVGLineParams(double tesselation_tolerance):
+        tesselation_tolerance(tesselation_tolerance),
         arc_tolerance(std::pow(tesselation_tolerance, 1/3.))
     {}
 };

@@ -1,61 +1,47 @@
-///|/ Copyright (c) Prusa Research 2021 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966, Filip Sykala @Jony01
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "BuildVolume.hpp"
+#include "ClipperUtils.hpp"
+#include "TriangleMesh.hpp"
+#include "Geometry/ConvexHull.hpp"
+#include "GCode/GCodeProcessor.hpp"
+#include "Point.hpp"
 
 #include <boost/log/trivial.hpp>
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <cassert>
-#include <cstddef>
-
-#include "ClipperUtils.hpp"
-#include "Geometry/ConvexHull.hpp"
-#include "libslic3r/GCode/GCodeProcessor.hpp"
-#include "Point.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExtrusionRole.hpp"
-#include "libslic3r/Geometry/Circle.hpp"
-#include "libslic3r/Polygon.hpp"
-
-#include "MultipleBeds.hpp"
 
 namespace Slic3r {
 
-BuildVolume::BuildVolume(const std::vector<Vec2d> &bed_shape, const double max_print_height) : m_bed_shape(bed_shape), m_max_print_height(max_print_height)
+BuildVolume::BuildVolume(const std::vector<Vec2d> &printable_area, const double printable_height, const std::vector<std::vector<Vec2d>> &extruder_areas, const std::vector<double>& extruder_printable_heights)
+    : m_bed_shape(printable_area), m_max_print_height(printable_height), m_extruder_shapes(extruder_areas), m_extruder_printable_height(extruder_printable_heights)
 {
-    assert(max_print_height >= 0);
+    assert(printable_height >= 0);
+    //assert(extruder_printable_heights.size() == extruder_areas.size());
 
-    m_polygon     = Polygon::new_scale(bed_shape);
+    m_polygon     = Polygon::new_scale(printable_area);
 
     // Calcuate various metrics of the input polygon.
     m_convex_hull = Geometry::convex_hull(m_polygon.points);
     m_bbox        = get_extents(m_convex_hull);
     m_area        = m_polygon.area();
 
-    BoundingBoxf bboxf = get_extents(bed_shape);
-    m_bboxf = BoundingBoxf3{ to_3d(bboxf.min, 0.), to_3d(bboxf.max, max_print_height) };
+    BoundingBoxf bboxf = get_extents(printable_area);
+    m_bboxf = BoundingBoxf3{ to_3d(bboxf.min, 0.), to_3d(bboxf.max, printable_height) };
 
-    if (bed_shape.size() >= 4 && std::abs((m_area - double(m_bbox.size().x()) * double(m_bbox.size().y()))) < sqr(SCALED_EPSILON)) {
+    if (printable_area.size() >= 4 && std::abs((m_area - double(m_bbox.size().x()) * double(m_bbox.size().y()))) < sqr(SCALED_EPSILON)) {
         // Square print bed, use the bounding box for collision detection.
         m_type = Type::Rectangle;
         m_circle.center = 0.5 * (m_bbox.min.cast<double>() + m_bbox.max.cast<double>());
         m_circle.radius = 0.5 * m_bbox.size().cast<double>().norm();
-    } else if (bed_shape.size() > 3) {
+    } else if (printable_area.size() > 3) {
         // Circle was discretized, formatted into text with limited accuracy, thus the circle was deformed.
         // RANSAC is slightly more accurate than the iterative Taubin / Newton method with such an input.
-//        m_circle = Geometry::circle_taubin_newton(bed_shape);
-        m_circle = Geometry::circle_ransac(bed_shape);
+//        m_circle = Geometry::circle_taubin_newton(printable_area);
+        m_circle = Geometry::circle_ransac(printable_area);
         bool is_circle = true;
 #ifndef NDEBUG
         // Measuring maximum absolute error of interpolating an input polygon with circle.
         double max_error = 0;
 #endif // NDEBUG
-        Vec2d prev = bed_shape.back();
-        for (const Vec2d &p : bed_shape) {
+        Vec2d prev = printable_area.back();
+        for (const Vec2d &p : printable_area) {
 #ifndef NDEBUG
             max_error = std::max(max_error, std::abs((p - m_circle.center).norm() - m_circle.radius));
 #endif // NDEBUG
@@ -75,7 +61,7 @@ BuildVolume::BuildVolume(const std::vector<Vec2d> &bed_shape, const double max_p
         }
     }
 
-    if (bed_shape.size() >= 3 && m_type == Type::Invalid) {
+    if (printable_area.size() >= 3 && m_type == Type::Invalid) {
         // Circle check is not used for Convex / Custom shapes, fill it with something reasonable.
         m_circle = Geometry::smallest_enclosing_circle_welzl(m_convex_hull.points);
         m_type   = (m_convex_hull.area() - m_area) < sqr(SCALED_EPSILON) ? Type::Convex : Type::Custom;
@@ -92,7 +78,101 @@ BuildVolume::BuildVolume(const std::vector<Vec2d> &bed_shape, const double max_p
         m_top_bottom_convex_hull_decomposition_bed   = convex_decomposition(m_convex_hull, BedEpsilon);
     }
 
-    BOOST_LOG_TRIVIAL(debug) << "BuildVolume bed_shape clasified as: " << this->type_name();
+    if (m_extruder_shapes.size() > 0)
+    {
+        m_shared_volume.data[0] = m_bboxf.min.x();
+        m_shared_volume.data[1] = m_bboxf.min.y();
+        m_shared_volume.data[2] = m_bboxf.max.x();
+        m_shared_volume.data[3] = m_bboxf.max.y();
+        m_shared_volume.zs[1] = m_bboxf.max.z();
+        for (unsigned int index = 0; index < m_extruder_shapes.size(); index++)
+        {
+            std::vector<Vec2d>& extruder_shape = m_extruder_shapes[index];
+            BuildExtruderVolume extruder_volume;
+
+            if (extruder_shape.empty())
+            {
+                //should not happen
+                BOOST_LOG_TRIVIAL(warning) << boost::format("Found invalid extruder_printable_area of index %1%")%index;
+                assert(false);
+                m_extruder_shapes.clear();
+                return;
+            }
+
+            if ((extruder_shape == printable_area)&&(extruder_printable_heights[index] == printable_height)) {
+                extruder_volume.same_with_bed = true;
+                extruder_volume.type = m_type;
+                extruder_volume.bbox = m_bbox;
+                extruder_volume.bboxf = m_bboxf;
+                extruder_volume.circle = m_circle;
+            }
+            else {
+                Polygon poly             = Polygon::new_scale(extruder_shape);
+
+                double poly_area         = poly.area();
+                extruder_volume.bbox = get_extents(poly);
+                BoundingBoxf temp_bboxf = get_extents(extruder_shape);
+                extruder_volume.bboxf = BoundingBoxf3{ to_3d(temp_bboxf.min, 0.), to_3d(temp_bboxf.max, extruder_printable_heights[index]) };
+
+                if (extruder_shape.size() >= 4 && std::abs((poly_area - double(extruder_volume.bbox.size().x()) * double(extruder_volume.bbox.size().y()))) < sqr(SCALED_EPSILON))
+                {
+                    extruder_volume.type = Type::Rectangle;
+                    extruder_volume.circle.center = 0.5 * (extruder_volume.bbox.min.cast<double>() + extruder_volume.bbox.max.cast<double>());
+                    extruder_volume.circle.radius = 0.5 * extruder_volume.bbox.size().cast<double>().norm();
+                }
+                else if (extruder_shape.size() > 3) {
+                    extruder_volume.circle = Geometry::circle_ransac(extruder_shape);
+                    bool is_circle = true;
+
+                    Vec2d prev = extruder_shape.back();
+                    for (const Vec2d &p : extruder_shape) {
+                        if (// Polygon vertices must lie very close the circle.
+                            std::abs((p - extruder_volume.circle.center).norm() - extruder_volume.circle.radius) > 0.005 ||
+                            // Midpoints of polygon edges must not undercat more than 3mm. This corresponds to 72 edges per circle generated by BedShapePanel::update_shape().
+                            extruder_volume.circle.radius - (0.5 * (prev + p) -extruder_volume.circle.center).norm() > 3.) {
+                            is_circle = false;
+                            break;
+                        }
+                        prev = p;
+                    }
+                    if (is_circle) {
+                        extruder_volume.type = Type::Circle;
+                        extruder_volume.circle.center = scaled<double>(extruder_volume.circle.center);
+                        extruder_volume.circle.radius = scaled<double>(extruder_volume.circle.radius);
+                    }
+                }
+
+                if (m_type == Type::Invalid) {
+                    //not supported currently, use the same as bed
+                    extruder_volume.same_with_bed = true;
+                    extruder_volume.type = m_type;
+                    extruder_volume.bbox = m_bbox;
+                    extruder_volume.bboxf = m_bboxf;
+                    extruder_volume.circle = m_circle;
+                }
+                //always ignore z
+                extruder_volume.bboxf.min.z() = -std::numeric_limits<double>::max();
+            }
+            m_extruder_volumes.push_back(std::move(extruder_volume));
+
+            if (m_shared_volume.data[0] < extruder_volume.bboxf.min.x())
+                m_shared_volume.data[0] = extruder_volume.bboxf.min.x();
+            if (m_shared_volume.data[1] < extruder_volume.bboxf.min.y())
+                m_shared_volume.data[1] = extruder_volume.bboxf.min.y();
+            if (m_shared_volume.data[2] > extruder_volume.bboxf.max.x())
+                m_shared_volume.data[2] = extruder_volume.bboxf.max.x();
+            if (m_shared_volume.data[3] > extruder_volume.bboxf.max.y())
+                m_shared_volume.data[3] = extruder_volume.bboxf.max.y();
+            if (m_shared_volume.zs[1] > extruder_volume.bboxf.max.z())
+                m_shared_volume.zs[1] = extruder_volume.bboxf.max.z();
+        }
+
+        m_shared_volume.type = static_cast<int>(m_type);
+        m_shared_volume.zs[0] = 0.f;
+        //m_shared_volume.zs[1] = printable_height;
+    }
+
+    BOOST_LOG_TRIVIAL(debug) << "BuildVolume printable_area clasified as: " << this->type_name();
 }
 
 #if 0
@@ -212,7 +292,7 @@ BuildVolume::ObjectState object_state_templ(const indexed_triangle_set &its, con
     bool   outside    = false;
     static constexpr const auto world_min_z = float(-BuildVolume::SceneEpsilon);
 
-    if (may_be_below_bed) 
+    if (may_be_below_bed)
     {
         // Slower test, needs to clip the object edges with the print bed plane.
         // 1) Allocate transformed vertices with their position with respect to print bed surface.
@@ -255,7 +335,7 @@ BuildVolume::ObjectState object_state_templ(const indexed_triangle_set &its, con
                             const stl_vertex p2 = trafo * its.vertices[tri(iedge)];
                             assert(sign(p1) == s[iprev]);
                             assert(sign(p2) == s[iedge]);
-                            assert((p1.z() - world_min_z) * (p2.z() - world_min_z) < 0);
+                            assert(p1.z() * p2.z() < 0);
                             // Edge crosses the z plane. Calculate intersection point with the plane.
                             const float t = (world_min_z - p1.z()) / (p2.z() - p1.z());
                             (is_inside(Vec3f(p1.x() + (p2.x() - p1.x()) * t, p1.y() + (p2.y() - p1.y()) * t, world_min_z)) ? inside : outside) = true;
@@ -268,7 +348,7 @@ BuildVolume::ObjectState object_state_templ(const indexed_triangle_set &its, con
             }
         }
     }
-    else 
+    else
     {
         // Much simpler and faster code, not clipping the object with the print bed.
         assert(! may_be_below_bed);
@@ -286,25 +366,8 @@ BuildVolume::ObjectState object_state_templ(const indexed_triangle_set &its, con
     return inside ? (outside ? BuildVolume::ObjectState::Colliding : BuildVolume::ObjectState::Inside) : BuildVolume::ObjectState::Outside;
 }
 
-BuildVolume::ObjectState BuildVolume::object_state(const indexed_triangle_set& its, const Transform3f& trafo_orig, bool may_be_below_bed, bool ignore_bottom, int* bed_idx) const
+BuildVolume::ObjectState BuildVolume::object_state(const indexed_triangle_set& its, const Transform3f& trafo, bool may_be_below_bed, bool ignore_bottom) const
 {
-    ObjectState out = ObjectState::Outside;
-    if (bed_idx)
-        *bed_idx = -1;
-
-    // When loading an old project with more than the maximum number of beds,
-    // we still want to move the objects to the respective positions.
-    // Max beds number is momentarily increased when doing the rearrange, so use it.
-    const int max_bed = s_multiple_beds.get_loading_project_flag()
-                        ? s_multiple_beds.get_number_of_beds() - 1
-                        : std::min(s_multiple_beds.get_number_of_beds(), s_multiple_beds.get_max_beds() - 1);
-
-    for (int bed_id = 0; bed_id <= max_bed; ++bed_id) {
-
-
-    Transform3f trafo = trafo_orig;
-    trafo.pretranslate(-s_multiple_beds.get_bed_translation(bed_id).cast<float>());
-
     switch (m_type) {
     case Type::Rectangle:
     {
@@ -317,44 +380,28 @@ BuildVolume::ObjectState BuildVolume::object_state(const indexed_triangle_set& i
         // The following test correctly interprets intersection of a non-convex object with a rectangular build volume.
         //return rectangle_test(its, trafo, to_2d(build_volume.min), to_2d(build_volume.max), build_volume.max.z());
         //FIXME This test does NOT correctly interprets intersection of a non-convex object with a rectangular build volume.
-        out = object_state_templ(its, trafo, may_be_below_bed, [build_volumef](const Vec3f& pt) { return build_volumef.contains(pt); });
-        break;
+        return object_state_templ(its, trafo, may_be_below_bed, [build_volumef](const Vec3f &pt) { return build_volumef.contains(pt); });
     }
     case Type::Circle:
     {
         Geometry::Circlef circle { unscaled<float>(m_circle.center), unscaled<float>(m_circle.radius + SceneEpsilon) };
-        out = m_max_print_height == 0.0 ?
-            object_state_templ(its, trafo, may_be_below_bed, [circle](const Vec3f& pt) { return circle.contains(to_2d(pt)); }) :
-            object_state_templ(its, trafo, may_be_below_bed, [circle, z = m_max_print_height + SceneEpsilon](const Vec3f& pt) { return pt.z() < z && circle.contains(to_2d(pt)); });
-        break;
+        return m_max_print_height == 0.0 ?
+            object_state_templ(its, trafo, may_be_below_bed, [circle](const Vec3f &pt) { return circle.contains(to_2d(pt)); }) :
+            object_state_templ(its, trafo, may_be_below_bed, [circle, z = m_max_print_height + SceneEpsilon](const Vec3f &pt) { return pt.z() < z && circle.contains(to_2d(pt)); });
     }
     case Type::Convex:
     //FIXME doing test on convex hull until we learn to do test on non-convex polygons efficiently.
     case Type::Custom:
-        out = m_max_print_height == 0.0 ?
-            object_state_templ(its, trafo, may_be_below_bed, [this](const Vec3f& pt) { return Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_scene, to_2d(pt).cast<double>()); }) :
-            object_state_templ(its, trafo, may_be_below_bed, [this, z = m_max_print_height + SceneEpsilon](const Vec3f& pt) { return pt.z() < z && Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_scene, to_2d(pt).cast<double>()); });
-        break;
+        return m_max_print_height == 0.0 ?
+            object_state_templ(its, trafo, may_be_below_bed, [this](const Vec3f &pt) { return Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_scene, to_2d(pt).cast<double>()); }) :
+            object_state_templ(its, trafo, may_be_below_bed, [this, z = m_max_print_height + SceneEpsilon](const Vec3f &pt) { return pt.z() < z && Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_scene, to_2d(pt).cast<double>()); });
     case Type::Invalid:
     default:
-        out = ObjectState::Inside;
-        break;
+        return ObjectState::Inside;
     }
-
-    if (out != ObjectState::Outside) {
-        if (bed_idx)
-            *bed_idx = bed_id;
-        break;
-    }    
-
-
-
-    }
-
-    return out;
 }
 
-BuildVolume::ObjectState BuildVolume::volume_state_bbox(const BoundingBoxf3 volume_bbox_orig, bool ignore_bottom, int* bed_idx) const
+BuildVolume::ObjectState BuildVolume::volume_state_bbox(const BoundingBoxf3& volume_bbox, bool ignore_bottom) const
 {
     assert(m_type == Type::Rectangle);
     BoundingBox3Base<Vec3d> build_volume = this->bounding_volume().inflated(SceneEpsilon);
@@ -362,31 +409,105 @@ BuildVolume::ObjectState BuildVolume::volume_state_bbox(const BoundingBoxf3 volu
         build_volume.max.z() = std::numeric_limits<double>::max();
     if (ignore_bottom)
         build_volume.min.z() = -std::numeric_limits<double>::max();
+    return build_volume.max.z() <= - SceneEpsilon ? ObjectState::Below :
+           build_volume.contains(volume_bbox) ? ObjectState::Inside :
+           build_volume.intersects(volume_bbox) ? ObjectState::Colliding : ObjectState::Outside;
+}
 
-    ObjectState state = ObjectState::Outside;
-    int obj_bed_id = -1;
-    for (int bed_id = 0; bed_id <= std::min(s_multiple_beds.get_number_of_beds(), s_multiple_beds.get_max_beds() - 1); ++bed_id) {
-        BoundingBoxf3 volume_bbox = volume_bbox_orig;
-        volume_bbox.translate(-s_multiple_beds.get_bed_translation(bed_id));
+const BuildVolume::BuildExtruderVolume&  BuildVolume::get_extruder_area_volume(int index) const
+{
+    assert(index >= 0 && index < m_extruder_volumes.size());
+    return m_extruder_volumes[index];
+}
 
-        state = build_volume.max.z() <= -SceneEpsilon ? ObjectState::Below :
-            build_volume.contains(volume_bbox) ? ObjectState::Inside :
-            build_volume.intersects(volume_bbox) ? ObjectState::Colliding : ObjectState::Outside;
-        if (state != ObjectState::Outside) {
-            obj_bed_id = bed_id;
-            break;
+BuildVolume::ObjectState  BuildVolume::check_object_state_with_extruder_area(const indexed_triangle_set &its, const Transform3f &trafo, int index) const
+{
+    const BuildExtruderVolume& extruder_volume = get_extruder_area_volume(index);
+    ObjectState return_state = ObjectState::Inside;
+
+    if (!extruder_volume.same_with_bed) {
+         switch (extruder_volume.type) {
+            case Type::Rectangle:
+            {
+                BoundingBox3Base<Vec3d> build_volume = extruder_volume.bboxf.inflated(SceneEpsilon);
+                if (m_max_print_height == 0.0)
+                    build_volume.max.z() = std::numeric_limits<double>::max();
+                BoundingBox3Base<Vec3f> build_volumef(build_volume.min.cast<float>(), build_volume.max.cast<float>());
+
+                return_state = object_state_templ(its, trafo, false, [build_volumef](const Vec3f &pt) { return build_volumef.contains(pt); });
+                break;
+            }
+            case Type::Circle:
+            {
+                Geometry::Circlef circle { unscaled<float>(extruder_volume.circle.center), unscaled<float>(extruder_volume.circle.radius + SceneEpsilon) };
+                return_state = (m_max_print_height == 0.0) ?
+                        object_state_templ(its, trafo, false, [circle](const Vec3f &pt) { return circle.contains(to_2d(pt)); }) :
+                        object_state_templ(its, trafo, false, [circle, z = m_max_print_height + SceneEpsilon](const Vec3f &pt) { return pt.z() < z && circle.contains(to_2d(pt)); });
+                break;
+            }
+            case Type::Invalid:
+            default:
+                break;
         }
     }
 
-    if (bed_idx)
-        *bed_idx = obj_bed_id;
-    return state;
+    if (return_state != ObjectState::Inside)
+        return_state = ObjectState::Limited;
+
+    return return_state;
 }
+
+BuildVolume::ObjectState  BuildVolume::check_object_state_with_extruder_areas(const indexed_triangle_set &its, const Transform3f &trafo, std::vector<bool>& inside_extruders) const
+{
+    ObjectState result = ObjectState::Inside;
+    int extruder_area_count = get_extruder_area_count();
+    inside_extruders.resize(extruder_area_count, true);
+    for (int index = 0; index < extruder_area_count; index++)
+    {
+        ObjectState state = check_object_state_with_extruder_area(its, trafo, index);
+
+        if (state == ObjectState::Limited) {
+            inside_extruders[index] = false;
+            result = ObjectState::Limited;
+        }
+    }
+
+    return result;
+}
+
+BuildVolume::ObjectState  BuildVolume::check_volume_bbox_state_with_extruder_area(const BoundingBoxf3& volume_bbox, int index) const
+{
+    const BuildExtruderVolume& extruder_volume = get_extruder_area_volume(index);
+    BoundingBox3Base<Vec3d> extruder_bbox = extruder_volume.bboxf.inflated(SceneEpsilon);
+    if (extruder_volume.same_with_bed || extruder_bbox.contains(volume_bbox))
+        return ObjectState::Inside;
+    else
+        return ObjectState::Limited;
+}
+
+BuildVolume::ObjectState  BuildVolume::check_volume_bbox_state_with_extruder_areas(const BoundingBoxf3& volume_bbox, std::vector<bool>& inside_extruders) const
+{
+    ObjectState result = ObjectState::Inside;
+    int extruder_area_count = get_extruder_area_count();
+    inside_extruders.resize(extruder_area_count, true);
+    for (int index = 0; index < extruder_area_count; index++)
+    {
+        ObjectState state = check_volume_bbox_state_with_extruder_area(volume_bbox, index);
+
+        if (state == ObjectState::Limited) {
+            inside_extruders[index] = false;
+            result = ObjectState::Limited;
+        }
+    }
+
+    return result;
+}
+
 
 bool BuildVolume::all_paths_inside(const GCodeProcessorResult& paths, const BoundingBoxf3& paths_bbox, bool ignore_bottom) const
 {
     auto move_valid = [](const GCodeProcessorResult::MoveVertex &move) {
-        return move.type == EMoveType::Extrude && move.extrusion_role != GCodeExtrusionRole::Custom && move.width != 0.f && move.height != 0.f;
+        return move.type == EMoveType::Extrude && move.extrusion_role != erCustom && move.width != 0.f && move.height != 0.f;
     };
     static constexpr const double epsilon = BedEpsilon;
 
@@ -415,7 +536,7 @@ bool BuildVolume::all_paths_inside(const GCodeProcessorResult& paths, const Boun
     //FIXME doing test on convex hull until we learn to do test on non-convex polygons efficiently.
     case Type::Custom:
         return m_max_print_height == 0.0 ?
-            std::all_of(paths.moves.begin(), paths.moves.end(), [move_valid, this](const GCodeProcessorResult::MoveVertex &move) 
+            std::all_of(paths.moves.begin(), paths.moves.end(), [move_valid, this](const GCodeProcessorResult::MoveVertex &move)
                 { return ! move_valid(move) || Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_bed, to_2d(move.position).cast<double>()); }) :
             std::all_of(paths.moves.begin(), paths.moves.end(), [move_valid, this, z = m_max_print_height + epsilon](const GCodeProcessorResult::MoveVertex &move)
                 { return ! move_valid(move) || (Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_bed, to_2d(move.position).cast<double>()) && move.position.z() <= z); });
@@ -436,6 +557,40 @@ inline bool all_inside_vertices_normals_interleaved(const std::vector<float> &pa
     return true;
 }
 
+bool BuildVolume::all_paths_inside_vertices_and_normals_interleaved(const std::vector<float>& paths, const Eigen::AlignedBox<float, 3>& paths_bbox, bool ignore_bottom) const
+{
+    assert(paths.size() % 6 == 0);
+    static constexpr const double epsilon = BedEpsilon;
+    switch (m_type) {
+    case Type::Rectangle:
+    {
+        BoundingBox3Base<Vec3d> build_volume = this->bounding_volume().inflated(epsilon);
+        if (m_max_print_height == 0.0)
+            build_volume.max.z() = std::numeric_limits<double>::max();
+        if (ignore_bottom)
+            build_volume.min.z() = -std::numeric_limits<double>::max();
+        return build_volume.contains(paths_bbox.min().cast<double>()) && build_volume.contains(paths_bbox.max().cast<double>());
+    }
+    case Type::Circle:
+    {
+        const Vec2f c = unscaled<float>(m_circle.center);
+        const float r = unscaled<double>(m_circle.radius) + float(epsilon);
+        const float r2 = sqr(r);
+        return m_max_print_height == 0.0 ?
+            all_inside_vertices_normals_interleaved(paths, [c, r2](Vec3f p) { return (to_2d(p) - c).squaredNorm() <= r2; }) :
+            all_inside_vertices_normals_interleaved(paths, [c, r2, z = m_max_print_height + epsilon](Vec3f p) { return (to_2d(p) - c).squaredNorm() <= r2 && p.z() <= z; });
+    }
+    case Type::Convex:
+        //FIXME doing test on convex hull until we learn to do test on non-convex polygons efficiently.
+    case Type::Custom:
+        return m_max_print_height == 0.0 ?
+            all_inside_vertices_normals_interleaved(paths, [this](Vec3f p) { return Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_bed, to_2d(p).cast<double>()); }) :
+            all_inside_vertices_normals_interleaved(paths, [this, z = m_max_print_height + epsilon](Vec3f p) { return Geometry::inside_convex_polygon(m_top_bottom_convex_hull_decomposition_bed, to_2d(p).cast<double>()) && p.z() <= z; });
+    default:
+        return true;
+    }
+}
+
 std::string_view BuildVolume::type_name(Type type)
 {
     using namespace std::literals;
@@ -449,6 +604,17 @@ std::string_view BuildVolume::type_name(Type type)
     // make visual studio happy
     assert(false);
     return {};
+}
+
+indexed_triangle_set BuildVolume::bounding_mesh(bool scale) const
+{
+    auto max_pt3 = m_bboxf.max;
+    if (scale) {
+        return its_make_cube(scale_(max_pt3.x()), scale_(max_pt3.y()), scale_(max_pt3.z()));
+    }
+    else {
+        return its_make_cube(max_pt3.x(), max_pt3.y(), max_pt3.z());
+    }
 }
 
 } // namespace Slic3r

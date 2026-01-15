@@ -1,14 +1,11 @@
-///|/ Copyright (c) Prusa Research 2018 - 2019 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "Time.hpp"
 
+#include <iomanip>
 #include <sstream>
 #include <chrono>
 #include <cassert>
 #include <ctime>
-#include <locale>
+#include <cstdio>
 
 #ifdef _MSC_VER
 #include <map>
@@ -179,6 +176,15 @@ time_t get_current_time_utc()
 {
     using clk = std::chrono::system_clock;
     return clk::to_time_t(clk::now());
+}
+
+time_t get_current_milliseconds_time_utc()
+{
+    using clk = std::chrono::system_clock;
+    auto now = clk::now();
+    auto duration = now.time_since_epoch();
+    auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+    return static_cast<time_t>(milliseconds);
 }
 
 static std::string tm2str(const std::tm *tms, const char *fmt)

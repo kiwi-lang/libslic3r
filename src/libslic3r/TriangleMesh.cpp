@@ -1,41 +1,4 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Oleksandra Iushchenko @YuSanka, Enrico Turri @enricoturri1966, Lukáš Matěna @lukasmatena, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Filip Sykala @Jony01, Lukáš Hejl @hejllukas, Vojtěch Král @vojtechkral
-///|/ Copyright (c) 2019 Jason Tibbitts @jasontibbitts
-///|/ Copyright (c) 2019 Sijmen Schoon
-///|/ Copyright (c) 2016 Joseph Lenox @lordofhyphens
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2015 Maksim Derbasov @ntfshard
-///|/ Copyright (c) 2014 Miro Hrončok @hroncok
-///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
-///|/
-///|/ ported from lib/Slic3r/TriangleMesh.pm:
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 - 2013 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <libqhullcpp/Qhull.h>
-#include <libqhullcpp/QhullFacetList.h>
-#include <libqhullcpp/QhullVertexSet.h>
-#include <boost/log/trivial.hpp>
-#include <boost/nowide/cstdio.hpp>
-#include <boost/predef/other/endian.h>
-#include <libqhull_r/user_r.h>
-#include <libqhullcpp/QhullFacet.h>
-#include <libqhullcpp/QhullPoint.h>
-#include <libqhullcpp/QhullVertex.h>
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/concurrent_vector.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <cmath>
-#include <vector>
-#include <utility>
-#include <algorithm>
-#include <iterator>
-#include <map>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
+#include "Exception.hpp"
 #include "TriangleMesh.hpp"
 #include "TriangleMeshSlicer.hpp"
 #include "MeshSplitImpl.hpp"
@@ -45,11 +8,29 @@
 #include "Point.hpp"
 #include "Execution/ExecutionTBB.hpp"
 #include "Execution/ExecutionSeq.hpp"
+#include "CutUtils.hpp"
 #include "Utils.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include "Format/STL.hpp"
+#include <libqhullcpp/Qhull.h>
+#include <libqhullcpp/QhullFacetList.h>
+#include <libqhullcpp/QhullVertexSet.h>
+
+#include <cmath>
+#include <deque>
+#include <queue>
+#include <vector>
+#include <utility>
+#include <algorithm>
+#include <type_traits>
+
+#include <boost/log/trivial.hpp>
+#include <boost/nowide/cstdio.hpp>
+#include <boost/predef/other/endian.h>
+
+#include <Eigen/Core>
+#include <Eigen/Dense>
+
+#include <assert.h>
 
 namespace Slic3r {
 
@@ -58,7 +39,7 @@ static void update_bounding_box(const indexed_triangle_set &its, TriangleMeshSta
     BoundingBoxf3 bbox      = Slic3r::bounding_box(its);
     out.min                 = bbox.min.cast<float>();
     out.max                 = bbox.max.cast<float>();
-    out.size                = out.max - out.min;    
+    out.size                = out.max - out.min;
 }
 
 static void fill_initial_stats(const indexed_triangle_set &its, TriangleMeshStats &out)
@@ -113,7 +94,7 @@ static void trianglemesh_repair_on_import(stl_file &stl)
     stl.stats.facets_w_1_bad_edge = (stl.stats.connected_facets_2_edge - stl.stats.connected_facets_3_edge);
     stl.stats.facets_w_2_bad_edge = (stl.stats.connected_facets_1_edge - stl.stats.connected_facets_2_edge);
     stl.stats.facets_w_3_bad_edge = (stl.stats.number_of_facets - stl.stats.connected_facets_1_edge);
-    
+
     // checking nearby
     //int last_edges_fixed = 0;
     float tolerance = (float)stl.stats.shortest_edge;
@@ -138,7 +119,7 @@ static void trianglemesh_repair_on_import(stl_file &stl)
         }
     }
     assert(stl_validate(&stl));
-    
+
     // remove_unconnected
     if (stl.stats.connected_facets_3_edge < (int)stl.stats.number_of_facets) {
 #ifdef SLIC3R_TRACE_REPAIR
@@ -147,7 +128,7 @@ static void trianglemesh_repair_on_import(stl_file &stl)
         stl_remove_unconnected_facets(&stl);
         assert(stl_validate(&stl));
     }
-    
+
     // fill_holes
 #if 0
     // Don't fill holes, the current algorithm does more harm than good on complex holes.
@@ -174,7 +155,7 @@ static void trianglemesh_repair_on_import(stl_file &stl)
 #endif /* SLIC3R_TRACE_REPAIR */
     stl_fix_normal_values(&stl);
     assert(stl_validate(&stl));
-    
+
     // always calculate the volume and reverse all normals if volume is negative
 #ifdef SLIC3R_TRACE_REPAIR
     BOOST_LOG_TRIVIAL(trace) << "\tstl_calculate_volume";
@@ -182,7 +163,7 @@ static void trianglemesh_repair_on_import(stl_file &stl)
     // If the volume is negative, all the facets are flipped and added to stats.facets_reversed.
     stl_calculate_volume(&stl);
     assert(stl_validate(&stl));
-    
+
     // neighbors
 #ifdef SLIC3R_TRACE_REPAIR
     BOOST_LOG_TRIVIAL(trace) << "\tstl_verify_neighbors";
@@ -197,42 +178,22 @@ static void trianglemesh_repair_on_import(stl_file &stl)
     BOOST_LOG_TRIVIAL(debug) << "TriangleMesh::repair() finished";
 }
 
-void TriangleMesh::from_facets(std::vector<stl_facet> &&facets, bool repair)
+bool TriangleMesh::from_stl(stl_file& stl, bool repair)
 {
-    stl_file stl;
-    stl.stats.type                = inmemory;
-    stl.stats.number_of_facets    = uint32_t(facets.size());
-    stl.stats.original_num_facets = int(stl.stats.number_of_facets);
-
-    stl_allocate(&stl);
-    stl.facet_start               = std::move(facets);
-
-    if (repair) {
-        trianglemesh_repair_on_import(stl);
-    }
-
-    stl_generate_shared_vertices(&stl, this->its);
-    fill_initial_stats(this->its, this->m_stats);
-}
-
-bool TriangleMesh::ReadSTLFile(const char* input_file, bool repair)
-{ 
-    stl_file stl;
-    if (! stl_open(&stl, input_file))
-        return false;
     if (repair)
         trianglemesh_repair_on_import(stl);
 
-    m_stats.number_of_facets        = stl.stats.number_of_facets;
-    m_stats.min                     = stl.stats.min;
-    m_stats.max                     = stl.stats.max;
-    m_stats.size                    = stl.stats.size;
-    m_stats.volume                  = stl.stats.volume;
+#if 0
+    m_stats.number_of_facets = stl.stats.number_of_facets;
+    m_stats.min = stl.stats.min;
+    m_stats.max = stl.stats.max;
+    m_stats.size = stl.stats.size;
+    m_stats.volume = stl.stats.volume;
 
     auto facets_w_1_bad_edge = stl.stats.connected_facets_2_edge - stl.stats.connected_facets_3_edge;
     auto facets_w_2_bad_edge = stl.stats.connected_facets_1_edge - stl.stats.connected_facets_2_edge;
     auto facets_w_3_bad_edge = stl.stats.number_of_facets - stl.stats.connected_facets_1_edge;
-    m_stats.open_edges              = stl.stats.backwards_edges + facets_w_1_bad_edge + facets_w_2_bad_edge * 2 + facets_w_3_bad_edge * 3;
+    m_stats.open_edges = stl.stats.backwards_edges + facets_w_1_bad_edge + facets_w_2_bad_edge * 2 + facets_w_3_bad_edge * 3;
 
     m_stats.repaired_errors = { stl.stats.edges_fixed,
                                 stl.stats.degenerate_facets,
@@ -240,19 +201,32 @@ bool TriangleMesh::ReadSTLFile(const char* input_file, bool repair)
                                 stl.stats.facets_reversed,
                                 stl.stats.backwards_edges };
 
-    m_stats.number_of_parts         = stl.stats.number_of_parts;
+    m_stats.number_of_parts = stl.stats.number_of_parts;
+#endif
 
     stl_generate_shared_vertices(&stl, this->its);
+    fill_initial_stats(this->its, this->m_stats);
+    if (m_stats.volume < 0) {
+        flip_triangles();
+    }
     return true;
 }
 
+bool TriangleMesh::ReadSTLFile(const char *input_file, bool repair, ImportstlProgressFn stlFn, int custom_header_length)
+{
+    stl_file stl;
+    if (!stl_open(&stl, input_file, stlFn, custom_header_length))
+        return false;
+    return from_stl(stl, repair);
+}
+
 bool TriangleMesh::write_ascii(const char* output_file)
-{ 
+{
     return its_write_stl_ascii(output_file, "", this->its);
 }
 
 bool TriangleMesh::write_binary(const char* output_file)
-{ 
+{
     return its_write_stl_binary(output_file, "", this->its);
 }
 
@@ -322,7 +296,7 @@ void TriangleMesh::rotate(float angle, const Axis &axis)
         case Z:  its_rotate_z(this->its, angle); break;
         default: assert(false);                  return;
         }
-        update_bounding_box(this->its, m_stats);
+        update_bounding_box(this->its, this->m_stats);
     }
 }
 
@@ -333,7 +307,7 @@ void TriangleMesh::rotate(float angle, const Vec3d& axis)
         Transform3d m = Transform3d::Identity();
         m.rotate(Eigen::AngleAxisd(angle, axis_norm));
         its_transform(its, m);
-        update_bounding_box(this->its, m_stats);
+        update_bounding_box(this->its, this->m_stats);
     }
 }
 
@@ -372,7 +346,7 @@ void TriangleMesh::transform(const Transform3d& t, bool fix_left_handed)
         det = -det;
     }
     m_stats.volume *= det;
-    update_bounding_box(this->its, m_stats);
+    update_bounding_box(this->its, this->m_stats);
 }
 
 void TriangleMesh::transform(const Matrix3d& m, bool fix_left_handed)
@@ -384,7 +358,7 @@ void TriangleMesh::transform(const Matrix3d& m, bool fix_left_handed)
         det = -det;
     }
     m_stats.volume *= det;
-    update_bounding_box(this->its, m_stats);
+    update_bounding_box(this->its, this->m_stats);
 }
 
 void TriangleMesh::flip_triangles()
@@ -415,27 +389,46 @@ bool TriangleMesh::is_splittable() const
 {
     return its_is_splittable(this->its);
 }
-
-bool TriangleMesh::has_zero_volume() const
-{
-    const Vec3d sz = size();
-    const double volume_val = sz.x() * sz.y() * sz.z();
-
-    return is_approx(volume_val, 0., 0.1);
-}
-
-std::vector<TriangleMesh> TriangleMesh::split() const
+const float  MIN_MESH_VOLUME = 1e-2f;
+std::vector<TriangleMesh> TriangleMesh::split(float scale_det) const
 {
     std::vector<indexed_triangle_set> itss = its_split(this->its);
     std::vector<TriangleMesh> out;
     out.reserve(itss.size());
     for (indexed_triangle_set &m : itss) {
         // The TriangleMesh constructor shall fill in the mesh statistics including volume.
-        out.emplace_back(std::move(m));
-        if (TriangleMesh &triangle_mesh = out.back(); triangle_mesh.volume() < 0)
-            // Some source mesh parts may be incorrectly oriented. Correct them.
-            triangle_mesh.flip_triangles();
+        TriangleMesh temp_triangle_mesh(std::move(m));
+        if (abs(temp_triangle_mesh.volume() * scale_det) < MIN_MESH_VOLUME) {
+            continue;
+        }
+        if (temp_triangle_mesh.volume() < 0) {// Some source mesh parts may be incorrectly oriented. Correct them.
+            temp_triangle_mesh.flip_triangles();
+        }
+        out.emplace_back(temp_triangle_mesh);
+    }
+    return out;
+}
 
+std::vector<TriangleMesh> TriangleMesh::split_and_save_relationship(std::vector<std::unordered_map<int, int>> &result, float scale_det) const
+{
+    auto   itss_and_ships = its_split_and_save_relationship<>(this->its);
+    std::vector<TriangleMesh>         out;
+    out.reserve(itss_and_ships.itses.size());
+    result.reserve(itss_and_ships.itses.size());
+    unsigned int index = 0;
+    for (indexed_triangle_set &m : itss_and_ships.itses) {
+        // The TriangleMesh constructor shall fill in the mesh statistics including volume.
+        TriangleMesh temp_triangle_mesh(std::move(m));
+        if (abs(temp_triangle_mesh.volume() * scale_det) < MIN_MESH_VOLUME) {
+            index++;
+            continue;
+        }
+        if (temp_triangle_mesh.volume() < 0) { // Some source mesh parts may be incorrectly oriented. Correct them.
+            temp_triangle_mesh.flip_triangles();
+        }
+        out.emplace_back(temp_triangle_mesh);
+        result.emplace_back(itss_and_ships.ships[index]);
+        index++;
     }
     return out;
 }
@@ -454,7 +447,7 @@ ExPolygons TriangleMesh::horizontal_projection() const
 }
 
 // 2D convex hull of a 3D mesh projected into the Z=0 plane.
-Polygon TriangleMesh::convex_hull()
+Polygon TriangleMesh::convex_hull() const
 {
     Points pp;
     pp.reserve(this->its.vertices.size());
@@ -550,7 +543,7 @@ std::vector<ExPolygons> TriangleMesh::slice(const std::vector<double> &z) const
 
 size_t TriangleMesh::memsize() const
 {
-    size_t memsize = 8 + this->its.memsize() + sizeof(m_stats);
+    size_t memsize = 8 + this->its.memsize() + sizeof(this->m_stats);
     return memsize;
 }
 
@@ -568,10 +561,9 @@ struct EdgeToFace {
     bool operator<(const EdgeToFace &other) const { return vertex_low < other.vertex_low || (vertex_low == other.vertex_low && vertex_high < other.vertex_high); }
 };
 
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None, typename FaceFilter, typename ThrowOnCancelCallback>
-static std::vector<EdgeToFace> create_edge_map(const typename IndexedTriangleSetType<mesh_info>::type &its,
-                                               FaceFilter                                              face_filter,
-                                               ThrowOnCancelCallback                                   throw_on_cancel)
+template<typename FaceFilter, typename ThrowOnCancelCallback>
+static std::vector<EdgeToFace> create_edge_map(
+    const indexed_triangle_set &its, FaceFilter face_filter, ThrowOnCancelCallback throw_on_cancel)
 {
     std::vector<EdgeToFace> edges_map;
     edges_map.reserve(its.indices.size() * 3);
@@ -600,14 +592,12 @@ static std::vector<EdgeToFace> create_edge_map(const typename IndexedTriangleSet
 
 // Map from a face edge to a unique edge identifier or -1 if no neighbor exists.
 // Two neighbor faces share a unique edge identifier even if they are flipped.
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None, typename FaceFilter, typename ThrowOnCancelCallback>
-static inline std::vector<Vec3i> its_face_edge_ids_impl(const typename IndexedTriangleSetType<mesh_info>::type &its,
-                                                        FaceFilter                                              face_filter,
-                                                        ThrowOnCancelCallback                                   throw_on_cancel)
+template<typename FaceFilter, typename ThrowOnCancelCallback>
+static inline std::vector<Vec3i> its_face_edge_ids_impl(const indexed_triangle_set &its, FaceFilter face_filter, ThrowOnCancelCallback throw_on_cancel)
 {
     std::vector<Vec3i> out(its.indices.size(), Vec3i(-1, -1, -1));
 
-    std::vector<EdgeToFace> edges_map = create_edge_map<mesh_info>(its, face_filter, throw_on_cancel);
+    std::vector<EdgeToFace> edges_map = create_edge_map(its, face_filter, throw_on_cancel);
 
     // Assign a unique common edge id to touching triangle edges.
     int num_edges = 0;
@@ -653,16 +643,9 @@ static inline std::vector<Vec3i> its_face_edge_ids_impl(const typename IndexedTr
     return out;
 }
 
-// Explicit template instantiation.
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::None>(const IndexedTriangleSetType<AdditionalMeshInfo::None>::type &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::Color>(const IndexedTriangleSetType<AdditionalMeshInfo::Color>::type &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::None>(const IndexedTriangleSetType<AdditionalMeshInfo::None>::type &, const std::vector<char> &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::Color>(const IndexedTriangleSetType<AdditionalMeshInfo::Color>::type &, const std::vector<char> &);
-
-template<AdditionalMeshInfo mesh_info>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its)
+std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its)
 {
-    return its_face_edge_ids_impl<mesh_info>(its, [](const uint32_t){ return true; }, [](){});
+    return its_face_edge_ids_impl(its, [](const uint32_t){ return true; }, [](){});
 }
 
 std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback)
@@ -670,10 +653,9 @@ std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::funct
     return its_face_edge_ids_impl(its, [](const uint32_t){ return true; }, throw_on_cancel_callback);
 }
 
-template<AdditionalMeshInfo mesh_info>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its, const std::vector<char> &face_mask)
+std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, const std::vector<bool> &face_mask)
 {
-    return its_face_edge_ids_impl<mesh_info>(its, [&face_mask](const uint32_t idx){ return face_mask[idx]; }, [](){});
+    return its_face_edge_ids_impl(its, [&face_mask](const uint32_t idx){ return face_mask[idx]; }, [](){});
 }
 
 // Having the face neighbors available, assign unique edge IDs to face edges for chaining of polygons over slices.
@@ -787,13 +769,6 @@ void its_flip_triangles(indexed_triangle_set &its)
         std::swap(face(1), face(2));
 }
 
-int its_num_degenerate_faces(const indexed_triangle_set &its)
-{
-    return std::count_if(its.indices.begin(), its.indices.end(), [](auto &face) {
-        return face(0) == face(1) || face(0) == face(2) || face(1) == face(2);
-    });
-}
-
 int its_remove_degenerate_faces(indexed_triangle_set &its, bool shrink_to_fit)
 {
     auto it = std::remove_if(its.indices.begin(), its.indices.end(), [](auto &face) {
@@ -839,9 +814,9 @@ int its_compactify_vertices(indexed_triangle_set &its, bool shrink_to_fit)
     return removed;
 }
 
-bool its_store_triangle_to_obj(const indexed_triangle_set &its,
-                               const char                 *obj_filename,
-                               size_t                      triangle_index)
+bool its_store_triangle(const indexed_triangle_set &its,
+                        const char *                obj_filename,
+                        size_t                      triangle_index)
 {
     if (its.indices.size() <= triangle_index) return false;
     Vec3i                t = its.indices[triangle_index];
@@ -852,9 +827,9 @@ bool its_store_triangle_to_obj(const indexed_triangle_set &its,
     return its_write_obj(its2, obj_filename);
 }
 
-bool its_store_triangles_to_obj(const indexed_triangle_set &its,
-                                const char                 *obj_filename,
-                                const std::vector<size_t>  &triangles)
+bool its_store_triangles(const indexed_triangle_set &its,
+                         const char *                obj_filename,
+                         const std::vector<size_t> & triangles)
 {
     indexed_triangle_set its2;
     its2.vertices.reserve(triangles.size() * 3);
@@ -920,38 +895,11 @@ void its_collect_mesh_projection_points_above(const indexed_triangle_set &its, c
 }
 
 template<typename TransformVertex>
-Polygon its_convex_hull_2d_above(const indexed_triangle_set& its, const TransformVertex& transform_fn, const float z)
+Polygon its_convex_hull_2d_above(const indexed_triangle_set &its, const TransformVertex &transform_fn, const float z)
 {
-    auto collect_mesh_projection_points_above = [&](const tbb::blocked_range<size_t>& range) {
-        Points pts;
-        pts.reserve(range.size() * 4); // there can be up to 4 vertices per triangle
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            const stl_triangle_vertex_indices& tri = its.indices[i];
-            const Vec3f tri_pts[3] = { transform_fn(its.vertices[tri(0)]), transform_fn(its.vertices[tri(1)]), transform_fn(its.vertices[tri(2)]) };
-            int iprev = 2;
-            for (int iedge = 0; iedge < 3; ++iedge) {
-                const Vec3f& p1 = tri_pts[iprev];
-                const Vec3f& p2 = tri_pts[iedge];
-                if ((p1.z() < z && p2.z() > z) || (p2.z() < z && p1.z() > z)) {
-                    // Edge crosses the z plane. Calculate intersection point with the plane.
-                    const float t = (z - p1.z()) / (p2.z() - p1.z());
-                    pts.emplace_back(scaled<coord_t>(p1.x() + (p2.x() - p1.x()) * t), scaled<coord_t>(p1.y() + (p2.y() - p1.y()) * t));
-                }
-                if (p2.z() >= z)
-                    pts.emplace_back(scaled<coord_t>(p2.x()), scaled<coord_t>(p2.y()));
-                iprev = iedge;
-            }
-        }
-        return Geometry::convex_hull(std::move(pts));
-    };
-
-    tbb::concurrent_vector<Polygon> chs;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, its.indices.size()), [&](const tbb::blocked_range<size_t>& range) {
-        chs.push_back(collect_mesh_projection_points_above(range));
-    });
-
-    const Polygons polygons(std::make_move_iterator(chs.begin()), std::make_move_iterator(chs.end()));
-    return Geometry::convex_hull(polygons);
+    Points all_pts;
+    its_collect_mesh_projection_points_above(its, transform_fn, z, all_pts);
+    return Geometry::convex_hull(std::move(all_pts));
 }
 
 Polygon its_convex_hull_2d_above(const indexed_triangle_set &its, const Matrix3f &m, const float z)
@@ -962,6 +910,20 @@ Polygon its_convex_hull_2d_above(const indexed_triangle_set &its, const Matrix3f
 Polygon its_convex_hull_2d_above(const indexed_triangle_set &its, const Transform3f &t, const float z)
 {
     return its_convex_hull_2d_above(its, [t](const Vec3f &p){ return t * p; }, z);
+}
+
+indexed_triangle_set its_make_xoy_center_rect(float width, float height, float depth)
+{
+    float x = width / 2.f, y = height /2.f, z = 0.f;
+    if (depth > 0.01f) {
+        z = depth / 2.f;
+        return {{{0, 3, 2}, {0, 2, 1}, {4, 5, 6}, {4, 6, 7}, {0, 4, 7}, {0, 7, 3}, {7, 6,2}, {7, 2,3}, {2, 6, 5}, {2, 5, 1}, {1, 5, 4}, {1, 4, 0}},
+                {{-x, -y, -z}, {x, -y, -z}, {x, y, -z}, {-x, y, -z},
+                 {-x, -y, z}, {x, -y, z}, {x, y, z}, {-x, y, z}}
+        };
+    } else {
+        return {{{0, 1, 2}, {0, 2, 3}}, {{-x, -y, z}, {x, -y, z}, {x, y, z}, {-x, y, z}}};
+    }
 }
 
 // Generate the vertex list for a cube solid of arbitrary size in X/Y/Z.
@@ -996,7 +958,7 @@ indexed_triangle_set its_make_prism(float width, float length, float height)
     };
 }
 
-// Generate the mesh for a cylinder and return it, using 
+// Generate the mesh for a cylinder and return it, using
 // the generated angle to calculate the top mesh triangles.
 // Default is 360 sides, angle fa is in radians.
 indexed_triangle_set its_make_cylinder(double r, double h, double fa)
@@ -1041,51 +1003,6 @@ indexed_triangle_set its_make_cylinder(double r, double h, double fa)
     return mesh;
 }
 
-indexed_triangle_set its_make_frustum(double r, double h, double fa)
-{
-    indexed_triangle_set mesh;
-    size_t n_steps    = (size_t)ceil(2. * PI / fa);
-    double angle_step = 2. * PI / n_steps;
-
-    auto &vertices = mesh.vertices;
-    auto &facets   = mesh.indices;
-    vertices.reserve(2 * n_steps + 2);
-    facets.reserve(4 * n_steps);
-
-    // 2 special vertices, top and bottom center, rest are relative to this
-    vertices.emplace_back(Vec3f(0.f, 0.f, 0.f));
-    vertices.emplace_back(Vec3f(0.f, 0.f, float(h)));
-
-    // for each line along the polygon approximating the top/bottom of the
-    // circle, generate four points and four facets (2 for the wall, 2 for the
-    // top and bottom.
-    // Special case: Last line shares 2 vertices with the first line.
-    Vec2f vec_top = Eigen::Rotation2Df(0.f) * Eigen::Vector2f(0, 0.5f*r);
-    Vec2f vec_botton = Eigen::Rotation2Df(0.f) * Eigen::Vector2f(0, r);
-
-    vertices.emplace_back(Vec3f(vec_botton(0), vec_botton(1), 0.f));
-    vertices.emplace_back(Vec3f(vec_top(0), vec_top(1), float(h)));
-    for (size_t i = 1; i < n_steps; ++i) {
-        vec_top = Eigen::Rotation2Df(angle_step * i) * Eigen::Vector2f(0, 0.5f*float(r));
-        vec_botton = Eigen::Rotation2Df(angle_step * i) * Eigen::Vector2f(0, float(r));
-        vertices.emplace_back(Vec3f(vec_botton(0), vec_botton(1), 0.f));
-        vertices.emplace_back(Vec3f(vec_top(0), vec_top(1), float(h)));
-        int id = (int)vertices.size() - 1;
-        facets.emplace_back( 0, id - 1, id - 3); // top
-        facets.emplace_back(id,      1, id - 2); // bottom
-        facets.emplace_back(id, id - 2, id - 3); // upper-right of side
-        facets.emplace_back(id, id - 3, id - 1); // bottom-left of side
-    }
-    // Connect the last set of vertices with the first.
-    int id = (int)vertices.size() - 1;
-    facets.emplace_back( 0, 2, id - 1);
-    facets.emplace_back( 3, 1,     id);
-    facets.emplace_back(id, 2,      3);
-    facets.emplace_back(id, id - 1, 2);
-
-    return mesh;
-}
-
 indexed_triangle_set its_make_cone(double r, double h, double fa)
 {
     indexed_triangle_set mesh;
@@ -1098,10 +1015,8 @@ indexed_triangle_set its_make_cone(double r, double h, double fa)
     vertices.emplace_back(Vec3f(0., 0., h));
 
     size_t i = 0;
-    const auto vec = Eigen::Vector2f(0, float(r));
     for (double angle=0; angle<2*PI; angle+=fa) {
-        Vec2f p = Eigen::Rotation2Df(angle) * vec;
-        vertices.emplace_back(Vec3f(p(0), p(1), 0.f));
+        vertices.emplace_back(r*std::cos(angle), r*std::sin(angle), 0.);
         if (angle > 0.) {
             facets.emplace_back(0, i+2, i+1);
             facets.emplace_back(1, i+1, i+2);
@@ -1111,146 +1026,6 @@ indexed_triangle_set its_make_cone(double r, double h, double fa)
     facets.emplace_back(0, 2, i+1); // close the shape
     facets.emplace_back(1, i+1, 2);
 
-    return mesh;
-}
-
-indexed_triangle_set its_make_pyramid(float base, float height)
-{
-    float a = base / 2.f;
-    return {
-        {
-            {0, 1, 2},
-            {0, 2, 3},
-            {0, 1, 4},
-            {1, 2, 4},
-            {2, 3, 4},
-            {3, 0, 4}
-        },
-        {
-            {-a, -a, 0}, {a, -a, 0}, {a, a, 0},
-            {-a, a, 0}, {0.f, 0.f, height}
-        }
-    };
-}
-
-// Generates mesh for a sphere centered about the origin, using the generated angle
-// to determine the granularity. 
-// Default angle is 1 degree.
-indexed_triangle_set its_make_sphere(double radius, double fa)
-{
-    // First build an icosahedron (taken from http://www.songho.ca/opengl/gl_sphere.html)
-    indexed_triangle_set mesh;
-
-    const float PI = 3.1415926f;
-    const float H_ANGLE = PI / 180 * 72;    // 72 degree = 360 / 5
-    const float V_ANGLE = atanf(1.0f / 2);  // elevation = 26.565 degree
-
-    auto& vertices = mesh.vertices;
-    auto& indices = mesh.indices;
-    vertices.resize(12);
-    indices.reserve(20);
-
-    float z, xy;
-    float hAngle1 = -PI / 2 - H_ANGLE / 2;
-
-    vertices[0] = stl_vertex(0, 0, radius); // the first top vertex at (0, 0, r)
-
-    for (int i = 1; i <= 5; ++i) {
-        z  = radius * sinf(V_ANGLE);
-        xy = radius * cosf(V_ANGLE);
-        vertices[i] = stl_vertex(xy * cosf(hAngle1), xy * sinf(hAngle1), z);
-        vertices[i+5] = stl_vertex(xy * cosf(hAngle1 + H_ANGLE / 2), xy * sinf(hAngle1 + H_ANGLE / 2), -z);
-        hAngle1 += H_ANGLE;
-
-        indices.emplace_back(stl_triangle_vertex_indices(i, i < 5 ? i+1 : 1, 0));
-        indices.emplace_back(stl_triangle_vertex_indices(i, i+5, i < 5 ? i+1 : 1));
-        indices.emplace_back(stl_triangle_vertex_indices(i+5, i+6 < 11 ? i+6 : 6, i+6 < 11 ? i+1 : 1));
-        indices.emplace_back(stl_triangle_vertex_indices(i+5, 11, i+6 < 11 ? i+6 : 6));
-    }
-    vertices[11] = stl_vertex(0, 0, -radius); // the last bottom vertex at (0, 0, -r)
-
-    
-    // We have a beautiful icosahedron. Now subdivide the triangles.
-    std::vector<Vec3i> neighbors = its_face_neighbors(mesh); // This is cheap, the mesh is small.
-
-    const double side_len_limit = radius * fa;
-    const double side_len = (vertices[1] - vertices[0]).norm();
-    const int iterations = std::ceil(std::log2(side_len / side_len_limit));
-
-    indices.reserve(indices.size() * std::pow(4, iterations));
-    vertices.reserve(vertices.size() * std::pow(2, iterations));
-
-    struct DividedEdge {
-        int neighbor = -1;
-        int middle_vertex_idx;
-        std::pair<int, int> children_idxs;
-    };
-
-    for (int iter=0; iter<iterations; ++iter) {
-        std::vector<std::array<DividedEdge, 3>> divided_triangles(indices.size());
-        std::vector<Vec3i> new_neighbors(4*indices.size());
-
-        int orig_indices_size = int(indices.size());
-        for (int i=0; i<orig_indices_size; ++i) { // iterate over all old triangles
-
-            // We are going to split this triangle. Let's foresee what will be the indices
-            // of the new internal triangles along individual edges.
-            int last_triangle_idx = indices.size()-1;
-            std::array<std::pair<int, int>, 3> edge_children = { std::make_pair(i,last_triangle_idx + 2),
-                                                                 std::make_pair(last_triangle_idx + 2,last_triangle_idx + 3),
-                                                                 std::make_pair(last_triangle_idx + 3,i) };
-
-            std::array<int, 3> middle_vertices_idxs;
-            std::array<std::pair<int, int>, 3> new_neighbors_per_edge;
-
-            for (int n=0; n<3; ++n) { // for all three edges
-                const int edge_neighbor = neighbors[i][n];
-
-                if (divided_triangles[edge_neighbor][0].neighbor == -1) {
-                    // This n-th edge is not yet divided. Divide it now.
-                    vertices.emplace_back(0.5 * (vertices[indices[i][n]] + vertices[indices[i][n == 2 ? 0 : n+1]]));
-                    vertices.back() *= radius / vertices.back().norm();
-                    middle_vertices_idxs[n] = vertices.size()-1;
-
-                    // Save information about what we did.
-                    int j = -1;
-                    while (divided_triangles[i][++j].neighbor != -1);
-                    
-                    divided_triangles[i][j] = { edge_neighbor, int(vertices.size()-1), edge_children[n] };
-                    new_neighbors_per_edge[n] = std::make_pair(-1,-1);
-                } else {
-                    // This edge is already divided. Get the index of the middle point.
-                    int j = -1;
-                    while (divided_triangles[edge_neighbor][++j].neighbor != i);
-                    middle_vertices_idxs[n] = divided_triangles[edge_neighbor][j].middle_vertex_idx;
-                    new_neighbors_per_edge[n] = divided_triangles[edge_neighbor][j].children_idxs;
-                    std::swap(new_neighbors_per_edge[n].first, new_neighbors_per_edge[n].second);
-
-                    // We have saved the middle-point. We are looking for edges leading to/from it.
-                    int idx = -1; while (indices[new_neighbors_per_edge[n].first][++idx] != middle_vertices_idxs[n]);
-                    new_neighbors[new_neighbors_per_edge[n].first][idx] = edge_children[n].first;
-                    new_neighbors[new_neighbors_per_edge[n].second][idx] = edge_children[n].second;
-                }
-            }
-
-            // Add three new triangles, reindex the old one.
-            const int last_index = indices.size() - 1;
-            indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[0], middle_vertices_idxs[1], middle_vertices_idxs[2]));
-            new_neighbors[indices.size()-1] = Vec3i(last_index+2, last_index+3, i);
-
-            indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[0], indices[i][1], middle_vertices_idxs[1]));
-            new_neighbors[indices.size()-1] = Vec3i(new_neighbors_per_edge[0].second, new_neighbors_per_edge[1].first, last_index+1);
-
-            indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[2], middle_vertices_idxs[1], indices[i][2]));
-            new_neighbors[indices.size()-1] = Vec3i(last_index+1, new_neighbors_per_edge[1].second, new_neighbors_per_edge[2].first);
-
-            indices[i][1] = middle_vertices_idxs[0];
-            indices[i][2] = middle_vertices_idxs[2];
-            new_neighbors[i] = Vec3i(new_neighbors_per_edge[0].first, last_index+1, new_neighbors_per_edge[2].second);
-
-        }
-        neighbors = std::move(new_neighbors);
-    }
     return mesh;
 }
 
@@ -1309,12 +1084,89 @@ indexed_triangle_set its_make_frustum_dowel(double radius, double h, int sectorC
     return mesh;
 }
 
+indexed_triangle_set its_make_pyramid(float base, float height)
+{
+    float a = base / 2.f;
+    return {
+        {
+            {0, 1, 2},
+            {0, 2, 3},
+            {0, 1, 4},
+            {1, 2, 4},
+            {2, 3, 4},
+            {3, 0, 4}
+        },
+        {
+            {-a, -a, 0}, {a, -a, 0}, {a, a, 0},
+            {-a, a, 0}, {0.f, 0.f, height}
+        }
+    };
+}
+
+// Generates mesh for a sphere centered about the origin, using the generated angle
+// to determine the granularity.
+// Default angle is 1 degree.
+//FIXME better to discretize an Icosahedron recursively http://www.songho.ca/opengl/gl_sphere.html
+indexed_triangle_set its_make_sphere(double radius, double fa)
+{
+    int   sectorCount = int(ceil(2. * M_PI / fa));
+    int   stackCount  = int(ceil(M_PI / fa));
+    float sectorStep  = float(2. * M_PI / sectorCount);
+    float stackStep   = float(M_PI / stackCount);
+
+    indexed_triangle_set mesh;
+    auto& vertices = mesh.vertices;
+    vertices.reserve((stackCount - 1) * sectorCount + 2);
+    for (int i = 0; i <= stackCount; ++ i) {
+        // from pi/2 to -pi/2
+        double stackAngle = 0.5 * M_PI - stackStep * i;
+        double xy = radius * cos(stackAngle);
+        double z  = radius * sin(stackAngle);
+        if (i == 0 || i == stackCount)
+            vertices.emplace_back(Vec3f(float(xy), 0.f, float(z)));
+        else
+            for (int j = 0; j < sectorCount; ++ j) {
+                // from 0 to 2pi
+                double sectorAngle = sectorStep * j;
+                vertices.emplace_back(Vec3d(xy * std::cos(sectorAngle), xy * std::sin(sectorAngle), z).cast<float>());
+            }
+    }
+
+    auto& facets = mesh.indices;
+    facets.reserve(2 * (stackCount - 1) * sectorCount);
+    for (int i = 0; i < stackCount; ++ i) {
+        // Beginning of current stack.
+        int k1 = (i == 0) ? 0 : (1 + (i - 1) * sectorCount);
+        int k1_first = k1;
+        // Beginning of next stack.
+        int k2 = (i == 0) ? 1 : (k1 + sectorCount);
+        int k2_first = k2;
+        for (int j = 0; j < sectorCount; ++ j) {
+            // 2 triangles per sector excluding first and last stacks
+            int k1_next = k1;
+            int k2_next = k2;
+            if (i != 0) {
+                k1_next = (j + 1 == sectorCount) ? k1_first : (k1 + 1);
+                facets.emplace_back(k1, k2, k1_next);
+            }
+            if (i + 1 != stackCount) {
+                k2_next = (j + 1 == sectorCount) ? k2_first : (k2 + 1);
+                facets.emplace_back(k1_next, k2, k2_next);
+            }
+            k1 = k1_next;
+            k2 = k2_next;
+        }
+    }
+
+    return mesh;
+}
+
 indexed_triangle_set its_make_snap(double r, double h, float space_proportion, float bulge_proportion)
 {
-    const float radius = (float)r;
-    const float height = (float)h;
+    const float  radius      = (float) r;
+    const float  height      = (float) h;
     const size_t sectors_cnt = 10; //(float)fa;
-    const float halfPI = 0.5f * (float)PI;
+    const float  halfPI      = 0.5f * (float) PI;
 
     const float space_len = space_proportion * radius;
 
@@ -1326,17 +1178,16 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
     const float m_height = 0.5f * height;
     const float t_height = height;
 
-    const float b_angle = acos(space_len/b_len);
-    const float t_angle = acos(space_len/t_len);
+    const float b_angle = acos(space_len / b_len);
+    const float t_angle = acos(space_len / t_len);
 
-    const float b_angle_step = b_angle / (float)sectors_cnt;
-    const float t_angle_step = t_angle / (float)sectors_cnt;
+    const float b_angle_step = b_angle / (float) sectors_cnt;
+    const float t_angle_step = t_angle / (float) sectors_cnt;
 
     const Vec2f b_vec = Eigen::Vector2f(0, b_len);
     const Vec2f t_vec = Eigen::Vector2f(0, t_len);
 
-
-    auto add_side_vertices = [b_vec, t_vec, b_height, m_height, t_height](std::vector<stl_vertex>& vertices, float b_angle, float t_angle, const Vec2f& m_vec) {
+    auto add_side_vertices = [b_vec, t_vec, b_height, m_height, t_height](std::vector<stl_vertex> &vertices, float b_angle, float t_angle, const Vec2f &m_vec) {
         Vec2f b_pt = Eigen::Rotation2Df(b_angle) * b_vec;
         Vec2f m_pt = Eigen::Rotation2Df(b_angle) * m_vec;
         Vec2f t_pt = Eigen::Rotation2Df(t_angle) * t_vec;
@@ -1346,7 +1197,7 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
         vertices.emplace_back(Vec3f(t_pt(0), t_pt(1), t_height));
     };
 
-    auto add_side_facets = [](std::vector<stl_triangle_vertex_indices>& facets, int vertices_cnt, int frst_id, int scnd_id) {
+    auto add_side_facets = [](std::vector<stl_triangle_vertex_indices> &facets, int vertices_cnt, int frst_id, int scnd_id) {
         int id = vertices_cnt - 1;
 
         facets.emplace_back(frst_id, id - 2, id - 5);
@@ -1364,22 +1215,21 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
     auto get_m_len = [b_len, f](float angle) {
         const float rad_sqr = b_len * b_len;
         const float sin_sqr = sin(angle) * sin(angle);
-        const float f_sqr = (1-f)*(1-f);
+        const float f_sqr   = (1 - f) * (1 - f);
         return sqrtf(rad_sqr / (1 + (1 / f_sqr - 1) * sin_sqr));
     };
 
-    auto add_sub_mesh = [add_side_vertices, add_side_facets, get_m_len,
-                        b_height, t_height, b_angle, t_angle, b_angle_step, t_angle_step]
-                        (indexed_triangle_set& mesh, float center_x, float angle_rotation, int frst_vertex_id) {
-        auto& vertices = mesh.vertices;
-        auto& facets     = mesh.indices;
+    auto add_sub_mesh = [add_side_vertices, add_side_facets, get_m_len, b_height, t_height, b_angle, t_angle, b_angle_step,
+                         t_angle_step](indexed_triangle_set &mesh, float center_x, float angle_rotation, int frst_vertex_id) {
+        auto &vertices = mesh.vertices;
+        auto &facets   = mesh.indices;
 
         // 2 special vertices, top and bottom center, rest are relative to this
         vertices.emplace_back(Vec3f(center_x, 0.f, b_height));
         vertices.emplace_back(Vec3f(center_x, 0.f, t_height));
 
-        float b_angle_start = angle_rotation - b_angle;
-        float t_angle_start = angle_rotation - t_angle;
+        float       b_angle_start = angle_rotation - b_angle;
+        float       t_angle_start = angle_rotation - t_angle;
         const float b_angle_stop  = angle_rotation + b_angle;
 
         const int frst_id = frst_vertex_id;
@@ -1390,7 +1240,7 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
             const Vec2f m_vec = Eigen::Vector2f(0, get_m_len(b_angle_start));
             add_side_vertices(vertices, b_angle_start, t_angle_start, m_vec);
 
-            int id = (int)vertices.size() - 1;
+            int id = (int) vertices.size() - 1;
 
             facets.emplace_back(frst_id, id - 2, id - 1);
             facets.emplace_back(frst_id, id - 1, id);
@@ -1405,12 +1255,12 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
             const Vec2f m_vec = Eigen::Vector2f(0, get_m_len(b_angle_start));
             add_side_vertices(vertices, b_angle_start, t_angle_start, m_vec);
 
-            add_side_facets(facets, (int)vertices.size(), frst_id, scnd_id);
+            add_side_facets(facets, (int) vertices.size(), frst_id, scnd_id);
         }
 
         // add last internal facets to close the mesh
         {
-            int id = (int)vertices.size() - 1;
+            int id = (int) vertices.size() - 1;
 
             facets.emplace_back(frst_id, scnd_id, id);
             facets.emplace_back(frst_id, id, id - 1);
@@ -1418,14 +1268,332 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
         }
     };
 
-
     indexed_triangle_set mesh;
 
     mesh.vertices.reserve(2 * (3 * (2 * sectors_cnt + 1) + 2));
     mesh.indices.reserve(2 * (6 * 2 * sectors_cnt + 6));
 
-    add_sub_mesh(mesh, -space_len, halfPI    , 0);
-    add_sub_mesh(mesh,  space_len, 3 * halfPI, (int)mesh.vertices.size());
+    add_sub_mesh(mesh, -space_len, halfPI, 0);
+    add_sub_mesh(mesh, space_len, 3 * halfPI, (int) mesh.vertices.size());
+
+    return mesh;
+}
+
+indexed_triangle_set its_make_groove_plane(const Groove &cur_groove, float rotate_radius, std::vector<Vec3d> &cur_groove_vertices) {
+    // values for calculation
+    const float side_width  = is_approx(cur_groove.flaps_angle, 0.f) ? cur_groove.depth : (cur_groove.depth / sin(cur_groove.flaps_angle));
+    const float flaps_width = 2.f * side_width * cos(cur_groove.flaps_angle);
+
+    const float groove_half_width_upper = 0.5f * (cur_groove.width);
+    const float groove_half_width_lower = 0.5f * (cur_groove.width + flaps_width);
+
+    const float cut_plane_radius = 1.5f * float(rotate_radius);
+    const float cut_plane_length = 1.5f * cut_plane_radius;
+
+    const float groove_half_depth = 0.5f * cur_groove.depth;
+
+    const float x       = 0.5f * cut_plane_radius;
+    const float y       = 0.5f * cut_plane_length;
+    float       z_upper = groove_half_depth;
+    float       z_lower = -groove_half_depth;
+
+    const float proj = y * tan(cur_groove.angle);
+
+    float ext_upper_x = groove_half_width_upper + proj; // upper_x extension
+    float ext_lower_x = groove_half_width_lower + proj; // lower_x extension
+
+    float nar_upper_x = groove_half_width_upper - proj; // upper_x narrowing
+    float nar_lower_x = groove_half_width_lower - proj; // lower_x narrowing
+
+    const float cut_plane_thiknes = 0.02f; // 0.02f * (float)get_grabber_mean_size(m_bounding_box);   // cut_plane_thiknes
+
+    // Vertices of the groove used to detection if groove is valid
+    // They are written as:
+    // {left_ext_lower, left_nar_lower, left_ext_upper, left_nar_upper,
+    //  right_ext_lower, right_nar_lower, right_ext_upper, right_nar_upper }
+    {
+        cur_groove_vertices.clear();
+        cur_groove_vertices.reserve(8);
+
+        cur_groove_vertices.emplace_back(Vec3f(-ext_lower_x, -y, z_lower).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(-nar_lower_x, y, z_lower).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(-ext_upper_x, -y, z_upper).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(-nar_upper_x, y, z_upper).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(ext_lower_x, -y, z_lower).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(nar_lower_x, y, z_lower).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(ext_upper_x, -y, z_upper).cast<double>());
+        cur_groove_vertices.emplace_back(Vec3f(nar_upper_x, y, z_upper).cast<double>());
+    }
+    // Different cases of groove plane:
+    // groove is open
+    if (groove_half_width_upper > proj && groove_half_width_lower > proj) {
+        indexed_triangle_set mesh;
+
+        auto get_vertices = [x, y](float z_upper, float z_lower, float nar_upper_x, float nar_lower_x, float ext_upper_x, float ext_lower_x) {
+            return std::vector<stl_vertex>({// upper left part vertices
+                                            {-x, -y, z_upper},
+                                            {-x, y, z_upper},
+                                            {-nar_upper_x, y, z_upper},
+                                            {-ext_upper_x, -y, z_upper},
+                                            // lower part vertices
+                                            {-ext_lower_x, -y, z_lower},
+                                            {-nar_lower_x, y, z_lower},
+                                            {nar_lower_x, y, z_lower},
+                                            {ext_lower_x, -y, z_lower},
+                                            // upper right part vertices
+                                            {ext_upper_x, -y, z_upper},
+                                            {nar_upper_x, y, z_upper},
+                                            {x, y, z_upper},
+                                            {x, -y, z_upper}});
+        };
+
+        mesh.vertices = get_vertices(z_upper, z_lower, nar_upper_x, nar_lower_x, ext_upper_x, ext_lower_x);
+        mesh.vertices.reserve(2 * mesh.vertices.size());
+
+        z_upper -= cut_plane_thiknes;
+        z_lower -= cut_plane_thiknes;
+
+        const float under_x_shift = cut_plane_thiknes / tan(0.5f * cur_groove.flaps_angle);
+
+        nar_upper_x += under_x_shift;
+        nar_lower_x += under_x_shift;
+        ext_upper_x += under_x_shift;
+        ext_lower_x += under_x_shift;
+
+        std::vector<stl_vertex> vertices = get_vertices(z_upper, z_lower, nar_upper_x, nar_lower_x, ext_upper_x, ext_lower_x);
+        mesh.vertices.insert(mesh.vertices.end(), vertices.begin(), vertices.end());
+
+        mesh.indices = {// above view
+                        {5, 4, 7},
+                        {5, 7, 6}, // lower part
+                        {3, 4, 5},
+                        {3, 5, 2}, // left side
+                        {9, 6, 8},
+                        {8, 6, 7}, // right side
+                        {1, 0, 2},
+                        {2, 0, 3}, // upper left part
+                        {9, 8, 10},
+                        {10, 8, 11}, // upper right part
+                                     // under view
+                        {20, 21, 22},
+                        {20, 22, 23}, // upper right part
+                        {12, 13, 14},
+                        {12, 14, 15}, // upper left part
+                        {18, 21, 20},
+                        {18, 20, 19}, // right side
+                        {16, 15, 14},
+                        {16, 14, 17}, // left side
+                        {16, 17, 18},
+                        {16, 18, 19}, // lower part
+                                      // left edge
+                        {1, 13, 0},
+                        {0, 13, 12},
+                        // front edge
+                        {0, 12, 3},
+                        {3, 12, 15},
+                        {3, 15, 4},
+                        {4, 15, 16},
+                        {4, 16, 7},
+                        {7, 16, 19},
+                        {7, 19, 20},
+                        {7, 20, 8},
+                        {8, 20, 11},
+                        {11, 20, 23},
+                        // right edge
+                        {11, 23, 10},
+                        {10, 23, 22},
+                        // back edge
+                        {1, 13, 2},
+                        {2, 13, 14},
+                        {2, 14, 17},
+                        {2, 17, 5},
+                        {5, 17, 6},
+                        {6, 17, 18},
+                        {6, 18, 9},
+                        {9, 18, 21},
+                        {9, 21, 10},
+                        {10, 21, 22}};
+        return mesh;
+    }
+
+    float cross_pt_upper_y = groove_half_width_upper / tan(cur_groove.angle);
+    // groove is closed
+
+    if (groove_half_width_upper < proj && groove_half_width_lower < proj) {
+        float cross_pt_lower_y = groove_half_width_lower / tan(cur_groove.angle);
+
+        indexed_triangle_set mesh;
+
+        auto get_vertices = [x, y](float z_upper, float z_lower, float cross_pt_upper_y, float cross_pt_lower_y, float ext_upper_x, float ext_lower_x) {
+            return std::vector<stl_vertex>({// upper part vertices
+                                            {-x, -y, z_upper},
+                                            {-x, y, z_upper},
+                                            {x, y, z_upper},
+                                            {x, -y, z_upper},
+                                            {ext_upper_x, -y, z_upper},
+                                            {0.f, cross_pt_upper_y, z_upper},
+                                            {-ext_upper_x, -y, z_upper},
+                                            // lower part vertices
+                                            {-ext_lower_x, -y, z_lower},
+                                            {0.f, cross_pt_lower_y, z_lower},
+                                            {ext_lower_x, -y, z_lower}});
+        };
+
+        mesh.vertices = get_vertices(z_upper, z_lower, cross_pt_upper_y, cross_pt_lower_y, ext_upper_x, ext_lower_x);
+        mesh.vertices.reserve(2 * mesh.vertices.size());
+
+        z_upper -= cut_plane_thiknes;
+        z_lower -= cut_plane_thiknes;
+
+        const float under_x_shift = cut_plane_thiknes / tan(0.5f * cur_groove.flaps_angle);
+
+        cross_pt_upper_y += cut_plane_thiknes;
+        cross_pt_lower_y += cut_plane_thiknes;
+        ext_upper_x += under_x_shift;
+        ext_lower_x += under_x_shift;
+
+        std::vector<stl_vertex> vertices = get_vertices(z_upper, z_lower, cross_pt_upper_y, cross_pt_lower_y, ext_upper_x, ext_lower_x);
+        mesh.vertices.insert(mesh.vertices.end(), vertices.begin(), vertices.end());
+
+        mesh.indices = {           // above view
+                        {8, 7, 9}, // lower part
+                        {5, 8, 6},
+                        {6, 8, 7}, // left side
+                        {4, 9, 8},
+                        {4, 8, 5}, // right side
+                        {1, 0, 6},
+                        {1, 6, 5},
+                        {1, 5, 2},
+                        {2, 5, 4},
+                        {2, 4, 3}, // upper part
+                                   // under view
+                        {10, 11, 16},
+                        {16, 11, 15},
+                        {15, 11, 12},
+                        {15, 12, 14},
+                        {14, 12, 13}, // upper part
+                        {18, 15, 14},
+                        {14, 18, 19}, // right side
+                        {17, 16, 15},
+                        {17, 15, 18}, // left side
+                        {17, 18, 19}, // lower part
+                                      // left edge
+                        {1, 11, 0},
+                        {0, 11, 10},
+                        // front edge
+                        {0, 10, 6},
+                        {6, 10, 16},
+                        {6, 17, 16},
+                        {6, 7, 17},
+                        {7, 17, 19},
+                        {7, 19, 9},
+                        {4, 14, 19},
+                        {4, 19, 9},
+                        {4, 14, 13},
+                        {4, 13, 3},
+                        // right edge
+                        {3, 13, 12},
+                        {3, 12, 2},
+                        // back edge
+                        {2, 12, 11},
+                        {2, 11, 1}};
+
+        return mesh;
+    }
+
+    // groove is closed from the roof
+    indexed_triangle_set mesh;
+    mesh.vertices = {// upper part vertices
+                     {-x, -y, z_upper},
+                     {-x, y, z_upper},
+                     {x, y, z_upper},
+                     {x, -y, z_upper},
+                     {ext_upper_x, -y, z_upper},
+                     {0.f, cross_pt_upper_y, z_upper},
+                     {-ext_upper_x, -y, z_upper},
+                     // lower part vertices
+                     {-ext_lower_x, -y, z_lower},
+                     {-nar_lower_x, y, z_lower},
+                     {nar_lower_x, y, z_lower},
+                     {ext_lower_x, -y, z_lower}};
+
+    mesh.vertices.reserve(2 * mesh.vertices.size() + 1);
+
+    z_upper -= cut_plane_thiknes;
+    z_lower -= cut_plane_thiknes;
+
+    const float under_x_shift = cut_plane_thiknes / tan(0.5f * cur_groove.flaps_angle);
+
+    nar_lower_x += under_x_shift;
+    ext_upper_x += under_x_shift;
+    ext_lower_x += under_x_shift;
+
+    std::vector<stl_vertex> vertices = {// upper part vertices
+                                        {-x, -y, z_upper},
+                                        {-x, y, z_upper},
+                                        {x, y, z_upper},
+                                        {x, -y, z_upper},
+                                        {ext_upper_x, -y, z_upper},
+                                        {under_x_shift, cross_pt_upper_y, z_upper},
+                                        {-under_x_shift, cross_pt_upper_y, z_upper},
+                                        {-ext_upper_x, -y, z_upper},
+                                        // lower part vertices
+                                        {-ext_lower_x, -y, z_lower},
+                                        {-nar_lower_x, y, z_lower},
+                                        {nar_lower_x, y, z_lower},
+                                        {ext_lower_x, -y, z_lower}};
+    mesh.vertices.insert(mesh.vertices.end(), vertices.begin(), vertices.end());
+    mesh.indices = {// above view
+                    {8, 7, 10},
+                    {8, 10, 9}, // lower part
+                    {5, 8, 7},
+                    {5, 7, 6}, // left side
+                    {4, 10, 9},
+                    {4, 9, 5}, // right side
+                    {1, 0, 6},
+                    {1, 6, 5},
+                    {1, 5, 2},
+                    {2, 5, 4},
+                    {2, 4, 3}, // upper part
+                               // under view
+                    {11, 12, 18},
+                    {18, 12, 17},
+                    {17, 12, 16},
+                    {16, 12, 13},
+                    {16, 13, 15},
+                    {15, 13, 14}, // upper part
+                    {21, 16, 15},
+                    {21, 15, 22}, // right side
+                    {19, 18, 17},
+                    {19, 17, 20}, // left side
+                    {19, 20, 21},
+                    {19, 21, 22}, // lower part
+                                  // left edge
+                    {1, 12, 11},
+                    {1, 11, 0},
+                    // front edge
+                    {0, 11, 18},
+                    {0, 18, 6},
+                    {7, 19, 18},
+                    {7, 18, 6},
+                    {7, 19, 22},
+                    {7, 22, 10},
+                    {10, 22, 15},
+                    {10, 15, 4},
+                    {4, 15, 14},
+                    {4, 14, 3},
+                    // right edge
+                    {3, 14, 13},
+                    {3, 14, 2},
+                    // back edge
+                    {2, 13, 12},
+                    {2, 12, 1},
+                    {5, 16, 21},
+                    {5, 21, 9},
+                    {9, 21, 20},
+                    {9, 20, 8},
+                    {5, 17, 20},
+                    {5, 20, 8}};
 
     return mesh;
 }
@@ -1520,23 +1688,6 @@ void its_reverse_all_facets(indexed_triangle_set &its)
         std::swap(face[0], face[1]);
 }
 
-void its_merge(indexed_triangle_set &its, indexed_triangle_set &&its_add)
-{
-    if (its.empty()) {
-        its = std::move(its_add);
-        return;
-    }
-    auto  &verts      = its.vertices;
-    size_t verts_size = verts.size();
-    Slic3r::append(verts, std::move(its_add.vertices));
-
-    // increase face indices
-    int offset = static_cast<int>(verts_size);
-    for (auto &face : its_add.indices)
-        for (int i = 0; i < 3; ++i) face[i] += offset;
-    Slic3r::append(its.indices, std::move(its_add.indices));
-}
-
 void its_merge(indexed_triangle_set &A, const indexed_triangle_set &B)
 {
     auto N   = int(A.vertices.size());
@@ -1586,7 +1737,6 @@ float its_volume(const indexed_triangle_set &its)
         float height = normal.dot(triangle[0] - p0);
         volume += (area * height) / 3.0f;
     }
-
     return volume;
 }
 
@@ -1598,7 +1748,7 @@ float its_average_edge_length(const indexed_triangle_set &its)
     double edge_length = 0.f;
     for (size_t i = 0; i < its.indices.size(); ++ i) {
         const its_triangle v = its_triangle_vertices(its, i);
-        edge_length += (v[1] - v[0]).cast<double>().norm() + 
+        edge_length += (v[1] - v[0]).cast<double>().norm() +
                        (v[2] - v[0]).cast<double>().norm() +
                        (v[1] - v[2]).cast<double>().norm();
     }
@@ -1633,26 +1783,11 @@ bool its_is_splittable(const indexed_triangle_set &its, const std::vector<Vec3i>
 size_t its_num_open_edges(const std::vector<Vec3i> &face_neighbors)
 {
     size_t num_open_edges = 0;
-    for (const Vec3i& neighbors : face_neighbors)
+    for (Vec3i neighbors : face_neighbors)
         for (int n : neighbors)
             if (n < 0)
                 ++ num_open_edges;
     return num_open_edges;
-}
-
-std::vector<std::pair<int, int>> its_get_open_edges(const indexed_triangle_set& its)
-{
-    std::vector<std::pair<int, int>> ret;
-    std::vector<Vec3i> face_neighbors = its_face_neighbors(its);
-    for (size_t i = 0; i < face_neighbors.size(); ++i) {
-        for (size_t j = 0; j < 3; ++j) {
-            if (face_neighbors[i][j] < 0) {
-                const Vec2i edge_indices = its_triangle_edge(its.indices[i], j);
-                ret.emplace_back(edge_indices[0], edge_indices[1]);
-            }
-        }
-    }
-    return ret;
 }
 
 size_t its_num_open_edges(const indexed_triangle_set &its)
@@ -1695,7 +1830,7 @@ std::vector<Vec3i> its_face_neighbors_par(const indexed_triangle_set &its)
     return create_face_neighbors_index(ex_tbb, its);
 }
 
-std::vector<Vec3f> its_face_normals(const indexed_triangle_set &its) 
+std::vector<Vec3f> its_face_normals(const indexed_triangle_set &its)
 {
     std::vector<Vec3f> normals;
     normals.reserve(its.indices.size());
@@ -1778,6 +1913,5 @@ bool its_write_stl_binary(const char *file, const char *label, const std::vector
     fclose(fp);
     return true;
 }
-
 
 } // namespace Slic3r

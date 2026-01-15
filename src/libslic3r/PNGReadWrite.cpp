@@ -1,21 +1,12 @@
-///|/ Copyright (c) Prusa Research 2020 - 2021 Vojtěch Bubník @bubnikv
-///|/
-///|/ ported from src/libslic3r/PNGRead.cpp:
-///|/ Copyright (c) Prusa Research 2020 Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "PNGReadWrite.hpp"
 
+#include <memory>
+
+#include <cstdio>
 #include <png.h>
+
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
-#include <pngconf.h>
-#include <pnglibconf.h>
-#include <cstdio>
-#include <cassert>
-#include <csetjmp>
-#include <cstring>
 
 namespace Slic3r { namespace png {
 
@@ -109,11 +100,92 @@ bool decode_png(IStream &in_buf, ImageGreyscale &out_img)
     return true;
 }
 
+bool decode_colored_png(IStream &in_buf, ImageColorscale &out_img)
+{
+    static const constexpr int PNG_SIG_BYTES = 8;
+
+    std::vector<png_byte> sig(PNG_SIG_BYTES, 0);
+    in_buf.read(sig.data(), PNG_SIG_BYTES);
+    if (!png_check_sig(sig.data(), PNG_SIG_BYTES)) {
+        BOOST_LOG_TRIVIAL(error) << boost::format("decode_colored_png: png_check_sig failed");
+        return false;
+    }
+
+    PNGDescr dsc;
+    dsc.png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr,
+                                     nullptr);
+
+    if(!dsc.png) {
+        BOOST_LOG_TRIVIAL(error) << boost::format("decode_colored_png: png_create_read_struct failed");
+        return false;
+    }
+
+    dsc.info = png_create_info_struct(dsc.png);
+    if(!dsc.info) {
+        BOOST_LOG_TRIVIAL(error) << boost::format("decode_colored_png: png_create_info_struct failed");
+        png_destroy_read_struct(&dsc.png, &dsc.info, NULL);
+        return false;
+    }
+
+    png_set_read_fn(dsc.png, static_cast<void *>(&in_buf), png_read_callback);
+
+    // Tell that we have already read the first bytes to check the signature
+    png_set_sig_bytes(dsc.png, PNG_SIG_BYTES);
+
+    png_read_info(dsc.png, dsc.info);
+
+    out_img.cols = png_get_image_width(dsc.png, dsc.info);
+    out_img.rows = png_get_image_height(dsc.png, dsc.info);
+    size_t color_type = png_get_color_type(dsc.png, dsc.info);
+    size_t bit_depth  = png_get_bit_depth(dsc.png, dsc.info);
+    unsigned long rowbytes = png_get_rowbytes(dsc.png, dsc.info);
+
+    switch(color_type)
+    {
+        case PNG_COLOR_TYPE_RGB:
+            out_img.bytes_per_pixel = 3;
+            break;
+        case PNG_COLOR_TYPE_RGB_ALPHA:
+            out_img.bytes_per_pixel = 4;
+            break;
+        default: //not supported currently
+            png_destroy_read_struct(&dsc.png, &dsc.info, NULL);
+            return false;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("png's cols %1%, rows %2%, color_type %3%, bit_depth %4%, bytes_per_pixel %5%, rowbytes %6%")%out_img.cols %out_img.rows %color_type %bit_depth %out_img.bytes_per_pixel %rowbytes;
+    out_img.buf.resize(out_img.rows * rowbytes);
+
+    int filter_type = png_get_filter_type(dsc.png, dsc.info);
+    int compression_type = png_get_compression_type(dsc.png, dsc.info);
+    int interlace_type = png_get_interlace_type(dsc.png, dsc.info);
+    BOOST_LOG_TRIVIAL(info) << boost::format("filter_type %1%, compression_type %2%, interlace_type %3%, rowbytes %4%")%filter_type %compression_type %interlace_type %rowbytes;
+
+    auto readbuf = static_cast<png_bytep>(out_img.buf.data());
+    for (size_t r = out_img.rows; r > 0; r--)
+    {
+        png_read_row(dsc.png, readbuf + (r - 1) * rowbytes, nullptr);
+    }
+
+    png_read_end(dsc.png, dsc.info);
+    png_destroy_read_struct(&dsc.png, &dsc.info, NULL);
+
+    return true;
+}
+
+bool decode_colored_png(const ReadBuf &in_buf, ImageColorscale &out_img)
+{
+    struct ReadBufStream stream{in_buf};
+
+    return decode_colored_png(stream, out_img);
+}
+
+
 // Down to earth function to store a packed RGB image to file. Mostly useful for debugging purposes.
 // Based on https://www.lemoda.net/c/write-png/
 // png_color_type is PNG_COLOR_TYPE_RGB or PNG_COLOR_TYPE_GRAY
 //FIXME maybe better to use tdefl_write_image_to_png_file_in_memory() instead?
-static bool write_rgb_or_gray_to_file(const char *file_name_utf8, size_t width, size_t height, int png_color_type, const uint8_t *data)
+static bool write_rgb_or_gray_to_file(const char *file_name_utf8, size_t width, size_t height, int png_color_type, const uint8_t *data, bool flip = false)
 {
     bool         result       = false;
 
@@ -121,7 +193,7 @@ static bool write_rgb_or_gray_to_file(const char *file_name_utf8, size_t width, 
     png_structp  png_ptr      = nullptr;
     png_infop    info_ptr     = nullptr;
     png_byte   **row_pointers = nullptr;
- 
+
     FILE        *fp = boost::nowide::fopen(file_name_utf8, "wb");
     if (! fp) {
         BOOST_LOG_TRIVIAL(error) << "write_png_file: File could not be opened for writing: " << file_name_utf8;
@@ -163,10 +235,12 @@ static bool write_rgb_or_gray_to_file(const char *file_name_utf8, size_t width, 
         int line_width = width;
         if (png_color_type == PNG_COLOR_TYPE_RGB)
             line_width *= 3;
+        else if (png_color_type == PNG_COLOR_TYPE_RGBA)
+            line_width *= 4;
         for (size_t y = 0; y < height; ++ y) {
             auto row = reinterpret_cast<png_byte*>(::png_malloc(png_ptr, line_width));
             row_pointers[y] = row;
-            memcpy(row, data + line_width * y, line_width);
+            memcpy(row, data + line_width * (flip ? (height - 1 - y) : y), line_width);
         }
     }
 
@@ -190,33 +264,10 @@ fopen_failed:
     return result;
 }
 
-
-bool decode_png(const std::string& png_data, std::vector<unsigned char>& image_data, unsigned& width, unsigned& height)
+bool write_gl_rgba_to_file(const char* file_name_utf8, size_t width, size_t height, const uint8_t* data_rgb)
 {
-    png_image image;
-    memset(&image, 0, sizeof(image));
-    image.version = PNG_IMAGE_VERSION;
-
-    if (!png_image_begin_read_from_memory(&image, png_data.data(), png_data.size()))
-        return false;
-
-    image.format = PNG_FORMAT_RGBA;
-
-    // Allocate memory for the image data
-    image_data.resize(PNG_IMAGE_SIZE(image));
-    if (!png_image_finish_read(&image, nullptr, image_data.data(), 0, nullptr)) {
-        png_image_free(&image);
-        return false;
-    }
-
-    width = image.width;
-    height = image.height;
-
-    png_image_free(&image);
-    return true;
+    return write_rgb_or_gray_to_file(file_name_utf8, width, height, PNG_COLOR_TYPE_RGBA, data_rgb, true);
 }
-
-
 
 bool write_rgb_to_file(const char *file_name_utf8, size_t width, size_t height, const uint8_t *data_rgb)
 {

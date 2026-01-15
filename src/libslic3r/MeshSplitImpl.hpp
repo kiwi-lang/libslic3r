@@ -1,11 +1,8 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Oleksandra Iushchenko @YuSanka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef MESHSPLITIMPL_HPP
 #define MESHSPLITIMPL_HPP
 
 #include "TriangleMesh.hpp"
+#include "libnest2d/tools/benchmark.h"
 #include "Execution/ExecutionTBB.hpp"
 
 namespace Slic3r {
@@ -34,12 +31,12 @@ template<> struct ItsWithNeighborsIndex_<indexed_triangle_set> {
 // Discover connected patches of facets one by one.
 template<class NeighborIndex>
 struct NeighborVisitor {
-    NeighborVisitor(const indexed_triangle_set &its, const NeighborIndex &neighbor_index) : 
+    NeighborVisitor(const indexed_triangle_set &its, const NeighborIndex &neighbor_index) :
         its(its), neighbor_index(neighbor_index) {
         m_visited.assign(its.indices.size(), false);
         m_facestack.reserve(its.indices.size());
     }
-    NeighborVisitor(const indexed_triangle_set &its, NeighborIndex &&aneighbor_index) : 
+    NeighborVisitor(const indexed_triangle_set &its, NeighborIndex &&aneighbor_index) :
         its(its), neighbor_index(m_neighbor_index_data), m_neighbor_index_data(std::move(aneighbor_index)) {
         m_visited.assign(its.indices.size(), false);
         m_facestack.reserve(its.indices.size());
@@ -49,7 +46,7 @@ struct NeighborVisitor {
     void visit(Visitor visitor)
     {
         // find the next unvisited facet and push the index
-        auto facet = std::find(m_visited.begin() + m_seed, m_visited.end(), 0);
+        auto facet = std::find(m_visited.begin() + m_seed, m_visited.end(), false);
         m_seed = facet - m_visited.begin();
 
         if (facet != m_visited.end()) {
@@ -141,7 +138,7 @@ void its_split(const Its &m, OutputIt out_it)
     std::vector<VertexConv> vidx_conv(its.vertices.size());
 
     meshsplit_detail::NeighborVisitor visitor(its, meshsplit_detail::ItsWithNeighborsIndex_<Its>::get_index(m));
-    
+
     std::vector<size_t> facets;
     for (size_t part_id = 0;; ++part_id) {
         // Collect all faces of the next patch.
@@ -149,7 +146,7 @@ void its_split(const Its &m, OutputIt out_it)
         visitor.visit([&facets](size_t idx) { facets.emplace_back(idx); return true; });
         if (facets.empty())
             break;
-
+        std::sort(facets.begin(),facets.end());
         // Create a new mesh for the part that was just split off.
         indexed_triangle_set mesh;
         mesh.indices.reserve(facets.size());
@@ -187,7 +184,82 @@ std::vector<indexed_triangle_set> its_split(const Its &its)
     return ret;
 }
 
-template<class Its> 
+// Splits a mesh into multiple meshes when possible.
+template<class Its, class OutputIt, class OutputIt_ship>
+void its_split_and_keep_relationship(const Its &m, OutputIt out_it, OutputIt_ship out_ship)
+{
+    using namespace meshsplit_detail;
+
+    const indexed_triangle_set &its = ItsWithNeighborsIndex_<Its>::get_its(m);
+
+    struct VertexConv
+    {
+        size_t part_id = std::numeric_limits<size_t>::max();
+        size_t vertex_image;
+    };
+    std::vector<VertexConv> vidx_conv(its.vertices.size());
+
+    meshsplit_detail::NeighborVisitor visitor(its, meshsplit_detail::ItsWithNeighborsIndex_<Its>::get_index(m));
+
+    std::vector<size_t> facets;
+    for (size_t part_id = 0;; ++part_id) {
+        // Collect all faces of the next patch.
+        facets.clear();
+        visitor.visit([&facets](size_t idx) {
+            facets.emplace_back(idx);
+            return true;
+        });
+        if (facets.empty()) break;
+        std::sort(facets.begin(), facets.end());
+        // Create a new mesh for the part that was just split off.
+        indexed_triangle_set mesh;
+        mesh.indices.reserve(facets.size());
+        mesh.vertices.reserve(std::min(facets.size() * 3, its.vertices.size()));
+        std::unordered_map<int, int> relationship;
+        // Assign the facets to the new mesh.
+        for (size_t face_id : facets) {
+            const auto &face = its.indices[face_id];
+            Vec3i       new_face;
+            for (size_t v = 0; v < 3; ++v) {
+                auto vi = face(v);
+
+                if (vidx_conv[vi].part_id != part_id) {
+                    vidx_conv[vi] = {part_id, mesh.vertices.size()};
+                    mesh.vertices.emplace_back(its.vertices[size_t(vi)]);
+                }
+
+                new_face(v) = vidx_conv[vi].vertex_image;
+            }
+            relationship[mesh.indices.size()] = face_id;
+            mesh.indices.emplace_back(new_face);
+        }
+
+        *out_it   = std::move(mesh);
+        *out_ship = std::move(relationship);
+        ++out_it;
+    }
+}
+class MeshAndShip
+{
+public:
+    std::vector<indexed_triangle_set>         itses;
+    std::vector<std::unordered_map<int, int>> ships;
+};
+
+template<class Its>
+MeshAndShip its_split_and_save_relationship(const Its &its)
+{
+    auto ret      = reserve_vector<indexed_triangle_set>(3);
+    auto ret_ship = reserve_vector<std::unordered_map<int, int>>(3);
+
+    its_split_and_keep_relationship(its, std::back_inserter(ret), std::back_inserter(ret_ship));
+    MeshAndShip mesh_ship;
+    mesh_ship.itses = ret;
+    mesh_ship.ships = ret_ship;
+    return mesh_ship;
+}
+
+template<class Its>
 bool its_is_splittable(const Its &m)
 {
     meshsplit_detail::NeighborVisitor visitor(meshsplit_detail::ItsWithNeighborsIndex_<Its>::get_its(m), meshsplit_detail::ItsWithNeighborsIndex_<Its>::get_index(m));
@@ -231,7 +303,7 @@ std::vector<Vec3i> create_face_neighbors_index(ExPolicy &&ex, const indexed_tria
     std::vector<Vec3i> neighbors(indices.size(),
                                  Vec3i(no_value, no_value, no_value));
 
-    //for (const stl_triangle_vertex_indices& triangle_indices : indices) {
+    //for (int face_idx = 0; face_idx < indices.size(); face_idx++) {
     execution::for_each(ex, size_t(0), indices.size(),
         [&neighbors, &indices, &vertex_triangles] (size_t face_idx)
         {
@@ -240,7 +312,7 @@ std::vector<Vec3i> create_face_neighbors_index(ExPolicy &&ex, const indexed_tria
             for (int edge_index = 0; edge_index < 3; ++edge_index) {
                 // check if done
                 int& neighbor_edge = neighbor[edge_index];
-                if (neighbor_edge != no_value) 
+                if (neighbor_edge != no_value)
                     // This edge already has a neighbor assigned.
                     continue;
                 Vec2i edge_indices = its_triangle_edge(triangle_indices, edge_index);
@@ -253,6 +325,12 @@ std::vector<Vec3i> create_face_neighbors_index(ExPolicy &&ex, const indexed_tria
                     if (vertex_index < 0) continue;
                     // Has NOT oposite direction?
                     if (edge_indices[0] != face_indices[(vertex_index + 1) % 3]) continue;
+                    //BBS: if this neighbor has already marked before, skip it
+                    if (neighbors[other_face][vertex_index] != no_value)
+                        continue;
+                    //BBS: the same triangle with opposite direction, also treat it as open edges
+                    //if (its_triangle_vertex_the_same(face_indices, triangle_indices))
+                    //    continue;
                     neighbor_edge = other_face;
                     neighbors[other_face][vertex_index] = face_idx;
                     break;

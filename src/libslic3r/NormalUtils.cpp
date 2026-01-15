@@ -1,14 +1,4 @@
-///|/ Copyright (c) Prusa Research 2022 Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "NormalUtils.hpp"
-
-#include <cmath>
-#include <cstddef>
-
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Point.hpp"
 
 using namespace Slic3r;
 

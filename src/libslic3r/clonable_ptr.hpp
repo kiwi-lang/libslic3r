@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // clonable_ptr: a smart pointer with a usage similar to unique_ptr, with the exception, that
 // the copy constructor / copy assignment operator work by calling the ->clone() method.
 
@@ -17,9 +13,6 @@
  * Distributed under the MIT License (MIT) (See accompanying file LICENSE.txt
  * or copy at http://opensource.org/licenses/MIT)
  */
-
-#ifndef libslic3r_clonable_ptr_hpp_
-#define libslic3r_clonable_ptr_hpp_
 
 #include "assert.h"
 
@@ -173,5 +166,3 @@ template<class T, class U> inline bool operator>(const clonable_ptr<T>& l, const
 }
 
 } // namespace Slic3r
-
-#endif // libslic3r_clonable_ptr_hpp_

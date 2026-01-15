@@ -1,24 +1,52 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportMaterial_hpp_
 #define slic3r_SupportMaterial_hpp_
 
-#include <vector>
-
-#include "../Flow.hpp"
-#include "../PrintConfig.hpp"
-#include "../Slicing.hpp"
+#include "Flow.hpp"
+#include "PrintConfig.hpp"
+#include "Slicing.hpp"
+#include "Fill/FillBase.hpp"
 #include "SupportLayer.hpp"
 #include "SupportParameters.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
-
 namespace Slic3r {
 
 class PrintObject;
+class PrintConfig;
+class PrintObjectConfig;
+
+using LayerIndex = int;
+
+inline double layer_z(const SlicingParameters& slicing_params, const size_t layer_idx)
+{
+	return slicing_params.object_print_z_min + slicing_params.first_object_layer_height + layer_idx * slicing_params.layer_height;
+}
+
+inline SupportGeneratorLayer& layer_initialize(
+	SupportGeneratorLayer& layer_new,
+	const SupporLayerType    layer_type,
+	const SlicingParameters& slicing_params,
+	const size_t             layer_idx)
+{
+	layer_new.layer_type = layer_type;
+	layer_new.print_z = layer_z(slicing_params, layer_idx);
+	layer_new.height = layer_idx == 0 ? slicing_params.first_object_layer_height : slicing_params.layer_height;
+	layer_new.bottom_z = layer_idx == 0 ? slicing_params.object_print_z_min : layer_new.print_z - layer_new.height;
+	return layer_new;
+}
+
+// Using the std::deque as an allocator.
+inline SupportGeneratorLayer& layer_allocate(
+	std::deque<SupportGeneratorLayer>& layer_storage,
+	SupporLayerType                    layer_type,
+	const SlicingParameters& slicing_params,
+	size_t                             layer_idx)
+{
+	//FIXME take raft into account.
+	layer_storage.push_back(SupportGeneratorLayer());
+	return layer_initialize(layer_storage.back(), layer_type, slicing_params, layer_idx);
+}
+
+void export_print_z_polygons_to_svg(const char *path, SupportGeneratorLayer ** const layers, size_t n_layers);
+void export_print_z_polygons_and_extrusions_to_svg(const char *path, SupportGeneratorLayer ** const layers, size_t n_layers, SupportLayer& support_layer);
 
 // This class manages raft and supports for a single PrintObject.
 // Instantiated by Slic3r::Print::Object->_support_material()
@@ -32,11 +60,11 @@ public:
 	// Is raft enabled?
 	bool 		has_raft() 					const { return m_slicing_params.has_raft(); }
 	// Has any support?
-	bool 		has_support()				const { return m_object_config->support_material.value || m_object_config->support_material_enforce_layers; }
-	bool 		build_plate_only() 			const { return this->has_support() && m_object_config->support_material_buildplate_only.value; }
-
-	bool 		synchronize_layers()		const { return m_slicing_params.soluble_interface && m_object_config->support_material_synchronize_layers.value; }
-	bool 		has_contact_loops() 		const { return m_object_config->support_material_interface_contact_loops.value; }
+	bool 		has_support()				const { return m_object_config->enable_support.value || m_object_config->enforce_support_layers; }
+	bool 		build_plate_only() 			const { return this->has_support() && m_object_config->support_on_build_plate_only.value; }
+	// BBS
+	bool 		synchronize_layers()		const { return /*m_slicing_params.soluble_interface && */!m_print_config->independent_support_layer_height.value; }
+	bool 		has_contact_loops() 		const { return m_object_config->support_interface_loop_pattern.value; }
 
 	// Generate support material for the object.
 	// New support layers will be added to the object,
@@ -44,10 +72,6 @@ public:
 	void 		generate(PrintObject &object);
 
 private:
-	using SupportGeneratorLayersPtr    = FFFSupport::SupportGeneratorLayersPtr;
-	using SupportGeneratorLayerStorage = FFFSupport::SupportGeneratorLayerStorage;
-	using SupportParameters            = FFFSupport::SupportParameters;
-
 	std::vector<Polygons> buildplate_covered(const PrintObject &object) const;
 
 	// Generate top contact layers supporting overhangs.
@@ -70,7 +94,7 @@ private:
 	    const PrintObject   &object,
 	    const SupportGeneratorLayersPtr   &bottom_contacts,
 	    const SupportGeneratorLayersPtr   &top_contacts,
-	    SupportGeneratorLayerStorage	 	&layer_storage) const;
+	    SupportGeneratorLayerStorage	  &layer_storage) const;
 
 	// Fill in the base layers with polygons.
 	void generate_base_layers(
@@ -79,6 +103,8 @@ private:
 	    const SupportGeneratorLayersPtr   &top_contacts,
 	    SupportGeneratorLayersPtr         &intermediate_layers,
 	    const std::vector<Polygons> &layer_support_areas) const;
+
+
 
 	// Trim support layers by an object to leave a defined gap between
 	// the support volume and the object.
@@ -95,13 +121,14 @@ private:
 */
 
 	// Following objects are not owned by SupportMaterial class.
+	const PrintObject 		*m_object;
 	const PrintConfig 		*m_print_config;
 	const PrintObjectConfig *m_object_config;
 	// Pre-calculated parameters shared between the object slicer and the support generator,
 	// carrying information on a raft, 1st layer height, 1st object layer height, gap between the raft and object etc.
 	SlicingParameters	     m_slicing_params;
 	// Various precomputed support parameters to be shared with external functions.
-	SupportParameters 		 m_support_params;
+	SupportParameters   	 m_support_params;
 };
 
 } // namespace Slic3r

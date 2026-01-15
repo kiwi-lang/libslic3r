@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2023 Vojtěch Bubník @bubnikv, Roman Beránek @zavorka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifdef WIN32
 	#ifndef WIN32_LEAN_AND_MEAN
 		#define WIN32_LEAN_AND_MEAN
@@ -68,12 +64,6 @@
 #include <boost/config.hpp>
 #include <boost/config/warning_disable.hpp>
 #include <boost/container/small_vector.hpp>
-#ifdef _WIN32
-// On MSVC, std::deque degenerates to a list of pointers, which defeats its purpose of reducing allocator load and memory fragmentation.
-// https://github.com/microsoft/STL/issues/147#issuecomment-1090148740
-// Thus it is recommended to use boost::container::deque instead.
-#include <boost/container/deque.hpp>
-#endif // _WIN32
 #include <boost/date_time/local_time/local_time.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/filesystem.hpp>
@@ -91,11 +81,12 @@
 #include <boost/log/expressions.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/multi_array.hpp>
+#include <boost/nowide/cenv.hpp>
 #include <boost/nowide/convert.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/nowide/cstdlib.hpp>
 #include <boost/nowide/fstream.hpp>
-#include <boost/nowide/filesystem.hpp>
+#include <boost/nowide/integration/filesystem.hpp>
 #include <boost/nowide/iostream.hpp>
 
 // boost/property_tree/json_parser/detail/parser.hpp includes boost/bind.hpp, which is deprecated.
@@ -110,7 +101,6 @@
 #include <boost/version.hpp>
 
 #include <tbb/parallel_for.h>
-#include <tbb/scalable_allocator.h>
 #include <tbb/spin_mutex.h>
 #include <tbb/task_group.h>
 
@@ -121,20 +111,22 @@
 #include <cereal/types/base_class.hpp>
 
 #include <clipper/clipper_z.hpp>
-#include "libslic3r/clipper.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/enum_bitmask.hpp"
-#include "libslic3r/format.hpp"
-#include "libslic3r/I18N.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/SVG.hpp"
+#include "clipper.hpp"
+#include "BoundingBox.hpp"
+#include "ClipperUtils.hpp"
+#include "Config.hpp"
+#include "enum_bitmask.hpp"
+#include "format.hpp"
+#include "I18N.hpp"
+#include "MultiPoint.hpp"
+#include "Point.hpp"
+#include "Polygon.hpp"
+#include "Polyline.hpp"
+#include "SVG.hpp"
 
-#include "libslic3r/libslic3r.h"
+#include "libslic3r.h"
 #include "libslic3r_version.h"
+
+#include <Shiny/Shiny.h>
 
 #include <admesh/stl.h>

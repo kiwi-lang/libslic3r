@@ -1,35 +1,19 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2015 Maksim Derbasov @ntfshard
-///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
-///|/
-///|/ ported from lib/Slic3r/ExPolygon.pm:
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <ankerl/unordered_dense.h>
-#include <algorithm>
-#include <cassert>
-#include <cmath>
-#include <limits>
-#include <cstring>
-
 #include "BoundingBox.hpp"
 #include "ExPolygon.hpp"
+#include "Exception.hpp"
 #include "Geometry/MedialAxis.hpp"
 #include "Polygon.hpp"
 #include "Line.hpp"
 #include "ClipperUtils.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
+#include "SVG.hpp"
+#include <algorithm>
+#include <cassert>
+#include <list>
+#include <numeric>
 
 namespace Slic3r {
 
+extern bool compSecondMoment(const ExPolygons &expolys, double &smExpolysX, double &smExpolysY); // Brim.cpp
 void ExPolygon::scale(double factor)
 {
     contour.scale(factor);
@@ -96,6 +80,12 @@ bool ExPolygon::contains(const Line &line) const
 
 bool ExPolygon::contains(const Polyline &polyline) const
 {
+    BoundingBox bbox1 = get_extents(*this);
+    BoundingBox bbox2 = get_extents(polyline);
+    bbox2.inflated(1);
+    if (!bbox1.overlap(bbox2))
+        return false;
+
     return diff_pl(polyline, *this).empty();
 }
 
@@ -158,6 +148,13 @@ Point ExPolygon::point_projection(const Point &point) const
     }
 }
 
+void ExPolygon::symmetric_y(const coord_t &y_axis)
+{
+    this->contour.symmetric_y(y_axis);
+    for (Polygon &hole : holes)
+        hole.symmetric_y(y_axis);
+}
+
 bool ExPolygon::overlaps(const ExPolygon &other) const
 {
     if (this->empty() || other.empty())
@@ -186,6 +183,45 @@ bool ExPolygon::overlaps(const ExPolygon &other) const
            other.contains(this->contour.points.front());
 }
 
+bool overlaps(const ExPolygons& expolys1, const ExPolygons& expolys2)
+{
+    for (const ExPolygon& expoly1 : expolys1) {
+        for (const ExPolygon& expoly2 : expolys2) {
+            if (expoly1.overlaps(expoly2))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool overlaps(const ExPolygons& expolys, const ExPolygon& expoly)
+{
+    for (const ExPolygon& el : expolys) {
+        if (el.overlaps(expoly))
+                return true;
+    }
+    return false;
+}
+
+Point projection_onto(const ExPolygons& polygons, const Point& from)
+{
+    Point projected_pt;
+    double min_dist = std::numeric_limits<double>::max();
+
+    for (const auto& poly : polygons) {
+        for (int i = 0; i < poly.num_contours(); i++) {
+            Point p = from.projection_onto(poly.contour_or_hole(i));
+            double dist = (from - p).cast<double>().squaredNorm();
+            if (dist < min_dist) {
+                projected_pt = p;
+                min_dist = dist;
+            }
+        }
+    }
+
+    return projected_pt;
+}
+
 void ExPolygon::simplify_p(double tolerance, Polygons* polygons) const
 {
     Polygons pp = this->simplify_p(tolerance);
@@ -200,14 +236,14 @@ Polygons ExPolygon::simplify_p(double tolerance) const
     {
         Polygon p = this->contour;
         p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+        p.points = MultiPoint::_douglas_peucker(p.points, tolerance);
         p.points.pop_back();
         pp.emplace_back(std::move(p));
     }
     // holes
     for (Polygon p : this->holes) {
         p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+        p.points = MultiPoint::_douglas_peucker(p.points, tolerance);
         p.points.pop_back();
         pp.emplace_back(std::move(p));
     }
@@ -228,30 +264,30 @@ void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines* 
 {
     // init helper object
     Slic3r::Geometry::MedialAxis ma(min_width, max_width, *this);
-    
+
     // compute the Voronoi diagram and extract medial axis polylines
     ThickPolylines pp;
     ma.build(&pp);
-    
+
     /*
     SVG svg("medial_axis.svg");
     svg.draw(*this);
     svg.draw(pp);
     svg.Close();
     */
-    
-    /* Find the maximum width returned; we're going to use this for validating and 
+
+    /* Find the maximum width returned; we're going to use this for validating and
        filtering the output segments. */
     double max_w = 0;
     for (ThickPolylines::const_iterator it = pp.begin(); it != pp.end(); ++it)
         max_w = fmaxf(max_w, *std::max_element(it->width.begin(), it->width.end()));
-    
-    /* Loop through all returned polylines in order to extend their endpoints to the 
+
+    /* Loop through all returned polylines in order to extend their endpoints to the
        expolygon boundaries */
     bool removed = false;
     for (size_t i = 0; i < pp.size(); ++i) {
         ThickPolyline& polyline = pp[i];
-        
+
         // extend initial and final segments of each polyline if they're actual endpoints
         /* We assign new endpoints to temporary variables because in case of a single-line
            polyline, after we extend the start point it will be caught by the intersection()
@@ -280,7 +316,7 @@ void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines* 
         }
         polyline.points.front() = new_front;
         polyline.points.back()  = new_back;
-        
+
         /*  remove too short polylines
             (we can't do this check before endpoints extension and clipping because we don't
             know how long will the endpoints be extended since it depends on polygon thickness
@@ -293,19 +329,19 @@ void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines* 
             continue;
         }
     }
-    
+
     /*  If we removed any short polylines we now try to connect consecutive polylines
-        in order to allow loop detection. Note that this algorithm is greedier than 
-        MedialAxis::process_edge_neighbors() as it will connect random pairs of 
-        polylines even when more than two start from the same point. This has no 
-        drawbacks since we optimize later using nearest-neighbor which would do the 
+        in order to allow loop detection. Note that this algorithm is greedier than
+        MedialAxis::process_edge_neighbors() as it will connect random pairs of
+        polylines even when more than two start from the same point. This has no
+        drawbacks since we optimize later using nearest-neighbor which would do the
         same, but should we use a more sophisticated optimization algorithm we should
         not connect polylines when more than two meet.  */
     if (removed) {
         for (size_t i = 0; i < pp.size(); ++i) {
             ThickPolyline& polyline = pp[i];
             if (polyline.endpoints.first && polyline.endpoints.second) continue; // optimization
-            
+
             // find another polyline starting here
             for (size_t j = i+1; j < pp.size(); ++j) {
                 ThickPolyline& other = pp[j];
@@ -319,18 +355,18 @@ void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines* 
                 } else if (polyline.last_point() != other.first_point()) {
                     continue;
                 }
-                
+
                 polyline.points.insert(polyline.points.end(), other.points.begin() + 1, other.points.end());
                 polyline.width.insert(polyline.width.end(), other.width.begin(), other.width.end());
                 polyline.endpoints.second = other.endpoints.second;
                 assert(polyline.width.size() == polyline.points.size()*2 - 2);
-                
+
                 pp.erase(pp.begin() + j);
                 j = i;  // restart search from i+1
             }
         }
     }
-    
+
     polylines->insert(polylines->end(), pp.begin(), pp.end());
 }
 
@@ -343,6 +379,57 @@ void ExPolygon::medial_axis(double min_width, double max_width, Polylines* polyl
         polylines->emplace_back(pl.points);
 }
 
+ExPolygons ExPolygon::split_expoly_with_holes(coord_t gap_width, const ExPolygons& collision) const
+{
+    ExPolygons sub_overhangs;
+    Polygon  max_hole;
+    coordf_t max_area = 0;
+    bool is_collided = false;
+    for (const auto &hole : this->holes) {
+        if (!is_collided && Slic3r::overlaps({ExPolygon(hole)}, collision)) {
+            max_area = abs(hole.area());
+            max_hole = hole;
+            is_collided = true;
+        } else if (is_collided && Slic3r::overlaps({ExPolygon(hole)}, collision) && abs(hole.area()) > max_area) {
+            max_area = abs(hole.area());
+            max_hole = hole;
+        } else if (!is_collided && !Slic3r::overlaps({ExPolygon(hole)}, collision) && abs(hole.area()) > max_area) {
+            max_area = abs(hole.area());
+            max_hole = hole;
+        }
+    }
+    Point cent;
+    if (max_hole.size() > 0) {
+        auto overhang_bbx = get_extents(*this);
+        cent = max_hole.centroid();
+        append(sub_overhangs, intersection_ex(ExPolygon(BoundingBox(overhang_bbx.min, Point(cent.x() - gap_width, cent.y() - gap_width)).polygon()), *this));
+        append(sub_overhangs, intersection_ex(ExPolygon(BoundingBox(Point(cent.x() + gap_width, cent.y() + gap_width), overhang_bbx.max).polygon()), *this));
+        append(sub_overhangs,
+               intersection_ex(ExPolygon(BoundingBox(Point(overhang_bbx.min(0), cent.y() + gap_width), Point(cent.x() - gap_width, overhang_bbx.max(1))).polygon()), *this));
+        append(sub_overhangs,
+               intersection_ex(ExPolygon(BoundingBox(Point(cent.x() + gap_width, overhang_bbx.min(1)), Point(overhang_bbx.max(0), cent.y() - gap_width)).polygon()), *this));
+    } 
+    return sub_overhangs;
+}
+
+
+double ExPolygon::map_moment_to_expansion(double speed, double height) const
+{
+    if (height <= 0 || speed <= 0) return 0;
+    double Ixx = 0, Iyy = 0;
+    double props  = compSecondMoment({*this}, Ixx, Iyy);
+    Ixx           = Ixx * pow(SCALING_FACTOR, 4);
+    Iyy           = Iyy * pow(SCALING_FACTOR, 4);
+
+    auto bbox = get_extents(*this);
+    const double &bboxX = bbox.size()(0);
+    const double &bboxY = bbox.size()(1);
+    double        height_to_area = std::max(height / Ixx * (bboxY * SCALING_FACTOR), height / Iyy * (bboxX * SCALING_FACTOR)) * height / 1920;
+
+    double brim_width = height_to_area * speed;
+    return std::max(std::min(brim_width, 5.), 1.);
+}
+
 Lines ExPolygon::lines() const
 {
     Lines lines = this->contour.lines();
@@ -352,6 +439,41 @@ Lines ExPolygon::lines() const
     }
     return lines;
 }
+
+bool ExPolygon::remove_colinear_points() { 
+    bool removed = this->contour.remove_colinear_points();
+    if (contour.size() < 3) {
+        contour.points.clear();
+        holes.clear();
+        return true;
+    }
+    for (Polygon &hole : this->holes)
+        removed |= hole.remove_colinear_points();
+    return removed;
+}
+
+double get_expolygons_area(const ExPolygons& expolys)
+{
+    return std::accumulate(expolys.begin(), expolys.end(), (double)(0), [](double val, const ExPolygon& expoly) {
+        return val + expoly.area();
+        });
+}
+
+bool is_narrow_expolygon(const ExPolygon& expolygon, double min_width, double min_area, double remain_area_ratio_thres)
+{
+    double original_area = expolygon.area();
+    if (original_area < min_area)
+        return true;
+
+    ExPolygons offsets = offset_ex(expolygon, -min_width / 2);
+    if (offsets.empty())
+        return true;
+
+    if (get_expolygons_area(offsets) / (original_area + EPSILON) < remain_area_ratio_thres)
+        return true;
+    return false;
+}
+
 
 // Do expolygons match? If they match, they must have the same topology,
 // however their contours may be rotated.
@@ -413,7 +535,7 @@ bool has_duplicate_points(const ExPolygon &expoly)
     size_t cnt = expoly.contour.points.size();
     for (const Polygon &hole : expoly.holes)
         cnt += hole.points.size();
-    Points allpts;
+    std::vector<Point> allpts;
     allpts.reserve(cnt);
     allpts.insert(allpts.begin(), expoly.contour.points.begin(), expoly.contour.points.end());
     for (const Polygon &hole : expoly.holes)
@@ -434,36 +556,20 @@ bool has_duplicate_points(const ExPolygons &expolys)
 {
 #if 1
     // Check globally.
-#if 0
-    // Detect duplicates by sorting with quicksort. It is quite fast, but ankerl::unordered_dense is around 1/4 faster.
-    Points allpts;
-    allpts.reserve(count_points(expolys));
+    size_t cnt = 0;
+    for (const ExPolygon &expoly : expolys) {
+        cnt += expoly.contour.points.size();
+        for (const Polygon &hole : expoly.holes)
+            cnt += hole.points.size();
+    }
+    std::vector<Point> allpts;
+    allpts.reserve(cnt);
     for (const ExPolygon &expoly : expolys) {
         allpts.insert(allpts.begin(), expoly.contour.points.begin(), expoly.contour.points.end());
         for (const Polygon &hole : expoly.holes)
             allpts.insert(allpts.end(), hole.points.begin(), hole.points.end());
     }
     return has_duplicate_points(std::move(allpts));
-#else
-    // Detect duplicates by inserting into an ankerl::unordered_dense hash set, which is is around 1/4 faster than qsort.
-    struct PointHash {
-        uint64_t operator()(const Point &p) const noexcept {
-            uint64_t h;
-            static_assert(sizeof(h) == sizeof(p));
-            memcpy(&h, &p, sizeof(p));
-            return ankerl::unordered_dense::detail::wyhash::hash(h);
-        }
-    };
-    ankerl::unordered_dense::set<Point, PointHash> allpts;
-    allpts.reserve(count_points(expolys));
-    for (const ExPolygon &expoly : expolys)
-        for (size_t icontour = 0; icontour < expoly.num_contours(); ++ icontour)
-            for (const Point &pt : expoly.contour_or_hole(icontour).points)
-                if (! allpts.insert(pt).second)
-                    // Duplicate point was discovered.
-                    return true;
-    return false;
-#endif
 #else
     // Check per contour.
     for (const ExPolygon &expoly : expolys)
@@ -475,8 +581,7 @@ bool has_duplicate_points(const ExPolygons &expolys)
 
 bool remove_same_neighbor(ExPolygons &expolygons)
 {
-    if (expolygons.empty())
-        return false;
+    if (expolygons.empty()) return false;
     bool remove_from_holes   = false;
     bool remove_from_contour = false;
     for (ExPolygon &expoly : expolygons) {
@@ -485,9 +590,7 @@ bool remove_same_neighbor(ExPolygons &expolygons)
     }
     // Removing of expolygons without contour
     if (remove_from_contour)
-        expolygons.erase(std::remove_if(expolygons.begin(), expolygons.end(),
-                                        [](const ExPolygon &p) { return p.contour.points.size() <= 2; }),
-                         expolygons.end());
+        expolygons.erase(std::remove_if(expolygons.begin(), expolygons.end(), [](const ExPolygon &p) { return p.contour.points.size() <= 2; }), expolygons.end());
     return remove_from_holes || remove_from_contour;
 }
 

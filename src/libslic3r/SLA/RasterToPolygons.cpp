@@ -1,20 +1,9 @@
-///|/ Copyright (c) Prusa Research 2020 Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "RasterToPolygons.hpp"
-
-#include <algorithm>
-#include <utility>
-#include <vector>
-#include <cinttypes>
-#include <cstddef>
 
 #include "AGGRaster.hpp"
 #include "libslic3r/MarchingSquares.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include "MTUtils.hpp"
+#include "ClipperUtils.hpp"
 
 namespace marchsq {
 

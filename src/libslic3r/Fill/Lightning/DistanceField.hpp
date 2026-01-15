@@ -4,21 +4,9 @@
 #ifndef LIGHTNING_DISTANCE_FIELD_H
 #define LIGHTNING_DISTANCE_FIELD_H
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <algorithm>
-#include <functional>
-#include <limits>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstddef>
-
 #include "../../BoundingBox.hpp"
 #include "../../Point.hpp"
 #include "../../Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 //#define LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
 
@@ -212,7 +200,7 @@ protected:
     }
 
 #ifdef LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
-    friend void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::vector<DistanceField::UnsupportedCell> &unsupported_points, const Points &points);
+    friend void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::list<DistanceField::UnsupportedCell> &unsupported_points, const Points &points);
 #endif
 };
 

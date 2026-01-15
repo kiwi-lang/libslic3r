@@ -1,24 +1,14 @@
-///|/ Copyright (c) Prusa Research 2020 - 2021 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Polygon offsetting using Voronoi diagram prodiced by boost::polygon.
 
-#include <cmath>
-#include <algorithm>
-#include <array>
-#include <limits>
-#include <tuple>
-#include <utility>
-#include <cassert>
-#include <cstdlib>
-
-#include "libslic3r/Geometry.hpp"
+#include "Geometry.hpp"
 #include "VoronoiOffset.hpp"
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Geometry/Voronoi.hpp"
+#include "libslic3r.h"
+
+#include <cmath>
 
 // #define VORONOI_DEBUG_OUT
+
+#include <boost/polygon/detail/voronoi_ctypes.hpp>
 
 #ifdef VORONOI_DEBUG_OUT
 #include <libslic3r/VoronoiVisualUtils.hpp>
@@ -127,7 +117,7 @@ namespace detail {
 
     // Return maximum two points, that are at distance "d" from both the line and point.
     Intersections line_point_equal_distance_points(const Line &line, const Point &ipt, const double d)
-    {   
+    {
         assert(line.a != ipt && line.b != ipt);
         // Calculating two points of distance "d" to a ray and a point.
         // Point.
@@ -677,10 +667,12 @@ void annotate_inside_outside(VD &vd, const Lines &lines)
 
     // Set a VertexCategory, verify validity of the operation.
     auto annotate_vertex = [](const VD::vertex_type *vertex, VertexCategory new_vertex_category) {
+        if (vertex == nullptr)
+            return;
 #ifndef NDEBUG
         VertexCategory vc = vertex_category(vertex);
         assert(vc == VertexCategory::Unknown || vc == new_vertex_category);
-        assert(new_vertex_category == VertexCategory::Inside || 
+        assert(new_vertex_category == VertexCategory::Inside ||
                new_vertex_category == VertexCategory::Outside ||
                new_vertex_category == VertexCategory::OnContour);
 #endif // NDEBUG
@@ -1519,9 +1511,9 @@ Polygons offset(
 }
 
 Polygons offset(
-	const VD 		&vd, 
-	const Lines 	&lines, 
-	double 			 offset_distance, 
+	const VD 		&vd,
+	const Lines 	&lines,
+	double 			 offset_distance,
 	double 			 discretization_error)
 {
     annotate_inside_outside(const_cast<VD&>(vd), lines);
@@ -1538,7 +1530,7 @@ Polygons offset(
 // An infinite Voronoi Edge-Point (parabola) or Point-Point (line) bisector is split into
 // a center part close to the Voronoi sites (not skeleton) and the ends (skeleton),
 // though either part could be clipped by the Voronoi segment.
-// 
+//
 // Further filtering of the skeleton may be necessary.
 std::vector<Vec2d> skeleton_edges_rough(
     const VD                    &vd,
@@ -1593,7 +1585,7 @@ std::vector<Vec2d> skeleton_edges_rough(
             }
         } else {
             // An infinite Voronoi Edge-Point (parabola) or Point-Point (line) bisector, clipped to a finite Voronoi segment.
-            // The infinite bisector has a distance (skeleton radius) minimum, which is also a minimum 
+            // The infinite bisector has a distance (skeleton radius) minimum, which is also a minimum
             // of the skeleton function dr / dt.
             assert(cell->contains_point() || cell2->contains_point());
             if (cell->contains_point() != cell2->contains_point()) {
