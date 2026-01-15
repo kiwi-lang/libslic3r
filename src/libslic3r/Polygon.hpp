@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include "Line.hpp"
+#include "Point.hpp"
 #include "MultiPoint.hpp"
 #include "Polyline.hpp"
 
@@ -27,7 +28,7 @@ public:
 	Polygon(std::initializer_list<Point> points) : MultiPoint(points) {}
     Polygon(const Polygon &other) : MultiPoint(other.points) {}
     Polygon(Polygon &&other) : MultiPoint(std::move(other.points)) {}
-	static Polygon new_scale(const std::vector<Vec2d> &points) {
+	static Polygon new_scale(const std::vector<Vec2d> &points) { 
         Polygon pgn;
         pgn.points.reserve(points.size());
         for (const Vec2d &pt : points)
@@ -51,7 +52,7 @@ public:
     // Split a closed polygon into an open polyline, with the split point duplicated at both ends.
     Polyline split_at_first_point() const { return this->split_at_index(0); }
     Points   equally_spaced_points(double distance) const { return this->split_at_first_point().equally_spaced_points(distance); }
-
+    
     static double area(const Points &pts);
     double area() const;
     bool is_counter_clockwise() const;
@@ -60,10 +61,6 @@ public:
     bool make_clockwise();
     bool is_valid() const { return this->points.size() >= 3; }
     void douglas_peucker(double tolerance);
-
-    // Point &center : out, the center of circle
-    // double &diameter: out, the diameter of circle
-    bool is_approx_circle(double max_deviation, double max_variance, Point &center, double &diameter) const;
 
     // Does an unoriented polygon contain a point?
     bool contains(const Point &point) const { return Slic3r::contains(*this, point, true); }
@@ -90,7 +87,7 @@ public:
     // Projection of a point onto the polygon.
     Point point_projection(const Point &point) const;
     std::vector<float> parameter_by_length() const;
-
+    
     //BBS
     Polygon transform(const Transform3d& trafo) const;
 
@@ -117,8 +114,8 @@ inline bool has_duplicate_points(const Polygon &poly) { return has_duplicate_poi
 bool        has_duplicate_points(const Polygons &polys);
 
 // Return True when erase some otherwise False.
-bool          remove_same_neighbor(Polygon &polygon);
-bool          remove_same_neighbor(Polygons &polygons);
+bool remove_same_neighbor(Polygon &polygon);
+bool remove_same_neighbor(Polygons &polygons);
 
 inline double total_length(const Polygons &polylines) {
     double total = 0;
@@ -150,7 +147,7 @@ void remove_collinear(Polygons &polys);
 // Append a vector of polygons at the end of another vector of polygons.
 inline void polygons_append(Polygons &dst, const Polygons &src) { dst.insert(dst.end(), src.begin(), src.end()); }
 
-inline void polygons_append(Polygons &dst, Polygons &&src)
+inline void polygons_append(Polygons &dst, Polygons &&src) 
 {
     if (dst.empty()) {
         dst = std::move(src);
@@ -160,7 +157,7 @@ inline void polygons_append(Polygons &dst, Polygons &&src)
     }
 }
 
-Polygons polygons_simplify(const Polygons &polys, double tolerance);
+Polygons polygons_simplify(const Polygons &polys, double tolerance, bool strictly_simple = true);
 
 inline void polygons_rotate(Polygons &polys, double angle)
 {
@@ -187,7 +184,7 @@ inline size_t count_points(const Polygons &polys) {
     return n_points;
 }
 
-inline Points to_points(const Polygons &polys)
+inline Points to_points(const Polygons &polys) 
 {
     Points points;
     points.reserve(count_points(polys));
@@ -196,7 +193,7 @@ inline Points to_points(const Polygons &polys)
     return points;
 }
 
-inline Lines to_lines(const Polygon &poly)
+inline Lines to_lines(const Polygon &poly) 
 {
     Lines lines;
     lines.reserve(poly.points.size());
@@ -208,7 +205,7 @@ inline Lines to_lines(const Polygon &poly)
     return lines;
 }
 
-inline Lines to_lines(const Polygons &polys)
+inline Lines to_lines(const Polygons &polys) 
 {
     Lines lines;
     lines.reserve(count_points(polys));
@@ -259,12 +256,13 @@ inline Polygons to_polygons(const Polylines &polylines)
     Polygons out;
     out.reserve(polylines.size());
     for (const Polyline &polyline : polylines) {
-        if (polyline.size()) out.emplace_back(polyline.points);
+        if (polyline.size())
+        out.emplace_back(polyline.points);
     }
     return out;
 }
 
-inline Polygons to_polygons(const std::vector<Points> &paths)
+inline Polygons to_polygons(const VecOfPoints &paths)
 {
     Polygons out;
     out.reserve(paths.size());
@@ -273,7 +271,7 @@ inline Polygons to_polygons(const std::vector<Points> &paths)
     return out;
 }
 
-inline Polygons to_polygons(std::vector<Points> &&paths)
+inline Polygons to_polygons(VecOfPoints &&paths)
 {
     Polygons out;
     out.reserve(paths.size());
@@ -356,7 +354,7 @@ namespace boost { namespace polygon {
             return polygon;
         }
     };
-
+    
     template <>
     struct geometry_concept<Slic3r::Polygons> { typedef polygon_set_concept type; };
 

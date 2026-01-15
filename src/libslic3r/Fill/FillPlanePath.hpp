@@ -37,7 +37,6 @@ class FillPlanePath : public Fill
 {
 public:
     ~FillPlanePath() override = default;
-    bool is_self_crossing() override { return false; }
 
 protected:
     void _fill_surface_single(

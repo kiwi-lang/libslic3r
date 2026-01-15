@@ -7,8 +7,6 @@
 #include <string>
 #include <vector>
 
-#include <boost/log/trivial.hpp>
-
 #include "Standard_TypeDef.hxx"
 #include "STEPCAFControl_Reader.hxx"
 #include "BRepMesh_IncrementalMesh.hxx"
@@ -29,6 +27,8 @@
 #include "Font_BRepTextBuilder.hxx"
 #include "BRepPrimAPI_MakePrism.hxx"
 #include "Font_FontMgr.hxx"
+
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r {
 

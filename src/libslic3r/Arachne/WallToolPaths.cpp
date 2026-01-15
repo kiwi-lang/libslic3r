@@ -23,6 +23,42 @@
 namespace Slic3r::Arachne
 {
 
+WallToolPathsParams make_paths_params(const int layer_id, const PrintObjectConfig &print_object_config, const PrintConfig &print_config)
+{
+    WallToolPathsParams input_params;
+    {
+        const double min_nozzle_diameter = *std::min_element(print_config.nozzle_diameter.values.begin(), print_config.nozzle_diameter.values.end());
+        if (const auto &min_feature_size_opt = print_object_config.min_feature_size)
+            input_params.min_feature_size = min_feature_size_opt.value * 0.01 * min_nozzle_diameter;
+
+        if (const auto &min_wall_length_factor_opt = print_object_config.min_length_factor)
+            input_params.min_length_factor = min_wall_length_factor_opt.value;
+        else
+            input_params.min_length_factor = 0.5f;
+
+        if (layer_id == 0) {
+            if (const auto &initial_layer_min_bead_width_opt = print_object_config.initial_layer_min_bead_width)
+                input_params.min_bead_width = initial_layer_min_bead_width_opt.value * 0.01 * min_nozzle_diameter;
+        } else {
+            if (const auto &min_bead_width_opt = print_object_config.min_bead_width)
+                input_params.min_bead_width = min_bead_width_opt.value * 0.01 * min_nozzle_diameter;
+        }
+
+        if (const auto &wall_transition_filter_deviation_opt = print_object_config.wall_transition_filter_deviation)
+            input_params.wall_transition_filter_deviation = wall_transition_filter_deviation_opt.value * 0.01 * min_nozzle_diameter;
+
+        if (const auto &wall_transition_length_opt = print_object_config.wall_transition_length)
+            input_params.wall_transition_length = wall_transition_length_opt.value * 0.01 * min_nozzle_diameter;
+
+        input_params.wall_transition_angle   = print_object_config.wall_transition_angle.value;
+        input_params.wall_distribution_count = print_object_config.wall_distribution_count.value;
+
+        input_params.is_top_or_bottom_layer = false; // Set to default value
+    }
+
+    return input_params;
+}
+
 WallToolPaths::WallToolPaths(const Polygons& outline, const coord_t bead_width_0, const coord_t bead_width_x,
                              const size_t inset_count, const coord_t wall_0_inset, const coordf_t layer_height, const WallToolPathsParams &params)
     : outline(outline)
@@ -39,12 +75,6 @@ WallToolPaths::WallToolPaths(const Polygons& outline, const coord_t bead_width_0
     , toolpaths_generated(false)
     , m_params(params)
 {
-}
-
-void WallToolPaths::EnableHoleCompensation(bool enable_, const std::vector<int>& hole_indices_)
-{
-    enable_hole_compensation = enable_;
-    hole_indices = hole_indices_;
 }
 
 void simplify(Polygon &thiss, const int64_t smallest_line_segment_squared, const int64_t allowed_error_distance_squared)
@@ -231,7 +261,7 @@ void fixSelfIntersections(const coord_t epsilon, Polygons &thiss)
 
     // Points too close to line segments should be moved a little away from those line segments, but less than epsilon,
     //   so at least half-epsilon distance between points can still be guaranteed.
-    constexpr coord_t grid_size  = scaled<coord_t>(2.);
+    const coord_t grid_size  = scaled<coord_t>(2.);
     auto              query_grid = createLocToLineGrid(thiss, grid_size);
 
     const auto    move_dist         = std::max<int64_t>(2L, half_epsilon - 2);
@@ -443,52 +473,34 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
     if (this->inset_count < 1)
         return toolpaths;
 
-    size_t original_outline_size = outline.size();
-    bool outline_size_change = false;
-    // Lambda for checking size changes
-    auto update_outline_size_change = [original_outline_size, &outline_size_change](const Polygons& polys) {
-        outline_size_change |= (original_outline_size != polys.size());
-        };
-
-    const coord_t smallest_segment = Slic3r::Arachne::meshfix_maximum_resolution;
-    const coord_t allowed_distance = Slic3r::Arachne::meshfix_maximum_deviation;
+    const coord_t smallest_segment = Slic3r::Arachne::meshfix_maximum_resolution();
+    const coord_t allowed_distance = Slic3r::Arachne::meshfix_maximum_deviation();
     const coord_t epsilon_offset = (allowed_distance / 2) - 1;
     const double  transitioning_angle = Geometry::deg2rad(m_params.wall_transition_angle);
-    constexpr coord_t discretization_step_size = scaled<coord_t>(0.8);
+    const coord_t discretization_step_size = scaled<coord_t>(0.8);
 
     // Simplify outline for boost::voronoi consumption. Absolutely no self intersections or near-self intersections allowed:
     // TODO: Open question: Does this indeed fix all (or all-but-one-in-a-million) cases for manifold but otherwise possibly complex polygons?
     Polygons prepared_outline = offset(offset(offset(outline, -epsilon_offset), epsilon_offset * 2), -epsilon_offset);
-    update_outline_size_change(prepared_outline);
-
-    // Helper function for applying a sequence of operations with size change tracking
-    auto process_with_size_check = [&](auto&& operation) {
-        operation();
-        update_outline_size_change(prepared_outline);
-        };
-
-    process_with_size_check([&] { simplify(prepared_outline, smallest_segment, allowed_distance);});
-    process_with_size_check([&] { fixSelfIntersections(epsilon_offset, prepared_outline); });
-    process_with_size_check([&] { removeDegenerateVerts(prepared_outline); });
-    process_with_size_check([&] { removeColinearEdges(prepared_outline, 0.005); });
+    simplify(prepared_outline, smallest_segment, allowed_distance);
+    fixSelfIntersections(epsilon_offset, prepared_outline);
+    removeDegenerateVerts(prepared_outline);
+    removeColinearEdges(prepared_outline, 0.005);
     // Removing collinear edges may introduce self intersections, so we need to fix them again
-    process_with_size_check([&] { fixSelfIntersections(epsilon_offset, prepared_outline); });
-    process_with_size_check([&] { removeDegenerateVerts(prepared_outline); });
-    process_with_size_check([&] { removeSmallAreas(prepared_outline, small_area_length * small_area_length, false); });
+    fixSelfIntersections(epsilon_offset, prepared_outline);
+    removeDegenerateVerts(prepared_outline);
+    removeSmallAreas(prepared_outline, small_area_length * small_area_length, false);
 
     // The functions above could produce intersecting polygons that could cause a crash inside Arachne.
     // Applying Clipper union should be enough to get rid of this issue.
     // Clipper union also fixed an issue in Arachne that in post-processing Voronoi diagram, some edges
     // didn't have twin edges. (a non-planar Voronoi diagram probably caused this).
     prepared_outline = union_(prepared_outline);
-    update_outline_size_change(prepared_outline);
 
     if (area(prepared_outline) <= 0) {
         assert(toolpaths.empty());
         return toolpaths;
     }
-
-    bool apply_hole_compensation = this->enable_hole_compensation && !outline_size_change;
 
     const float external_perimeter_extrusion_width = Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_0), float(this->layer_height));
     const float perimeter_extrusion_width          = Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_x), float(this->layer_height));
@@ -525,9 +537,7 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
         discretization_step_size,
         transition_filter_dist,
         allowed_filter_deviation,
-        wall_transition_length,
-        apply_hole_compensation,
-        hole_indices
+        wall_transition_length
     );
     wall_maker.generateToolpaths(toolpaths);
 
@@ -668,7 +678,8 @@ void WallToolPaths::removeSmallLines(std::vector<VariableWidthLines> &toolpaths)
             coord_t        min_width = std::numeric_limits<coord_t>::max();
             for (const ExtrusionJunction &j : line)
                 min_width = std::min(min_width, j.w);
-            if (line.is_odd && !line.is_closed && shorterThan(line, min_width / 2)) { // remove line
+            // Only use min_length_factor for non-topmost, to prevent top gaps. Otherwise use default value.
+            if (line.is_odd && !line.is_closed && shorterThan(line, m_params.is_top_or_bottom_layer ? (min_width / 2) : (min_width * m_params.min_length_factor))) { // remove line
                 line = std::move(inset.back());
                 inset.erase(--inset.end());
                 line_idx--; // reconsider the current position
@@ -681,9 +692,9 @@ void WallToolPaths::simplifyToolPaths(std::vector<VariableWidthLines> &toolpaths
 {
     for (size_t toolpaths_idx = 0; toolpaths_idx < toolpaths.size(); ++toolpaths_idx)
     {
-        const int64_t maximum_resolution = Slic3r::Arachne::meshfix_maximum_resolution;
-        const int64_t maximum_deviation = Slic3r::Arachne::meshfix_maximum_deviation;
-        const int64_t maximum_extrusion_area_deviation = Slic3r::Arachne::meshfix_maximum_extrusion_area_deviation; // unit: μm²
+        const int64_t maximum_resolution = Slic3r::Arachne::meshfix_maximum_resolution();
+        const int64_t maximum_deviation = Slic3r::Arachne::meshfix_maximum_deviation();
+        const int64_t maximum_extrusion_area_deviation = Slic3r::Arachne::meshfix_maximum_extrusion_area_deviation(); // unit: μm²
         for (auto& line : toolpaths[toolpaths_idx])
         {
             line.simplify(maximum_resolution * maximum_resolution, maximum_deviation * maximum_deviation, maximum_extrusion_area_deviation);
@@ -700,37 +711,27 @@ const std::vector<VariableWidthLines> &WallToolPaths::getToolPaths()
 
 void WallToolPaths::separateOutInnerContour()
 {
-    enum PathType{
-        ActualPath,
-        WallContour,
-        FirstWallContour
-    };
-
     //We'll remove all 0-width paths from the original toolpaths and store them separately as polygons.
     std::vector<VariableWidthLines> actual_toolpaths;
     actual_toolpaths.reserve(toolpaths.size()); //A bit too much, but the correct order of magnitude.
-    std::vector<VariableWidthLines> wall_contour_paths;
-    wall_contour_paths.reserve(toolpaths.size() / inset_count);
-    std::vector<VariableWidthLines> first_wall_contour_paths;
+    std::vector<VariableWidthLines> contour_paths;
+    contour_paths.reserve(toolpaths.size() / inset_count);
     inner_contour.clear();
-    first_wall_contour.clear();
     for (const VariableWidthLines &inset : toolpaths) {
         if (inset.empty())
             continue;
-        PathType type;
+        bool is_contour = false;
         for (const ExtrusionLine &line : inset) {
             for (const ExtrusionJunction &j : line) {
-                if (j.w == Arachne::WallContourMarkedWidth)
-                    type = WallContour;
-                else if(j.w == Arachne::FirstWallContourMarkedWidth)
-                    type = FirstWallContour;
+                if (j.w == 0)
+                    is_contour = true;
                 else
-                    type = ActualPath;
+                    is_contour = false;
                 break;
             }
         }
 
-        if (type==WallContour) {
+        if (is_contour) {
 #ifdef DEBUG
             for (const ExtrusionLine &line : inset)
                 for (const ExtrusionJunction &j : line)
@@ -742,16 +743,7 @@ void WallToolPaths::separateOutInnerContour()
                 else if (line.is_closed) // sometimes an very small even polygonal wall is not stitched into a polygon
                     inner_contour.emplace_back(line.toPolygon());
             }
-        }
-        else if (type == FirstWallContour){
-            for (const ExtrusionLine &line : inset) {
-                if (line.is_odd)
-                    continue;
-                else if (line.is_closed)
-                    first_wall_contour.emplace_back(line.toPolygon());
-            }
-        }
-        else {
+        } else {
             actual_toolpaths.emplace_back(inset);
         }
     }
@@ -766,7 +758,6 @@ void WallToolPaths::separateOutInnerContour()
     //This can be done by applying the even-odd rule to the shape. This rule is not sensitive to the winding order of the polygon.
     //The even-odd rule would be incorrect if the polygon self-intersects, but that should never be generated by the skeletal trapezoidation.
     inner_contour = union_(inner_contour, ClipperLib::PolyFillType::pftEvenOdd);
-    first_wall_contour = union_(first_wall_contour, ClipperLib::PolyFillType::pftEvenOdd);
 }
 
 const Polygons& WallToolPaths::getInnerContour()
@@ -781,20 +772,6 @@ const Polygons& WallToolPaths::getInnerContour()
     }
     return inner_contour;
 }
-Polygons        EmptyPolygons;
-const Polygons& WallToolPaths::getFirstWallContour()
-{
-    if (!toolpaths_generated && inset_count > 0)
-    {
-        generate();
-    }
-    else if(inset_count == 0)
-    {
-        return EmptyPolygons;
-    }
-    return first_wall_contour;
-}
-
 
 bool WallToolPaths::removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpaths)
 {
@@ -813,10 +790,9 @@ bool WallToolPaths::removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpa
      *
      * \param outer_to_inner Whether the wall polygons with a lower inset_idx should go before those with a higher one.
  */
-std::unordered_set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>> WallToolPaths::getRegionOrder(const std::vector<ExtrusionLine *> &input, const bool outer_to_inner)
+WallToolPaths::ExtrusionLineSet WallToolPaths::getRegionOrder(const std::vector<ExtrusionLine *> &input, const bool outer_to_inner)
 {
-    std::unordered_set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>> order_requirements;
-
+    ExtrusionLineSet order_requirements;
     // We build a grid where we map toolpath vertex locations to toolpaths,
     // so that we can easily find which two toolpaths are next to each other,
     // which is the requirement for there to be an order constraint.

@@ -23,7 +23,7 @@
 
 // Experimentaly suggested ration of font ascent by multiple fonts
 // to get approx center of normal text line
-const double ASCENT_CENTER = 1/2.5; // 0.5 is above small letter
+const double ASCENT_CENTER = 1/3.; // 0.5 is above small letter
 
 // every glyph's shape point is divided by SHAPE_SCALE - increase precission of fixed point value
 // stored in fonts (to be able represents curve by sequence of lines)
@@ -81,7 +81,7 @@ fontinfo_opt load_font_info(const unsigned char *data, unsigned int index = 0);
 std::optional<Glyph> get_glyph(const stbtt_fontinfo &font_info, int unicode_letter, float flatness);
 
 // take glyph from cache
-const Glyph* get_glyph(int unicode, const FontFile &font, const FontProp &font_prop,
+const Glyph* get_glyph(int unicode, const FontFile &font, const FontProp &font_prop, 
         Glyphs &cache, fontinfo_opt &font_info_opt);
 
 // scale and convert float to int coordinate
@@ -106,14 +106,14 @@ struct SpikeDesc
     double cos_angle; // speed up to skip acos
 
     // Half of Wanted bevel size
-    double half_bevel;
+    double half_bevel; 
 
     /// <summary>
     /// Calculate spike description
     /// </summary>
     /// <param name="bevel_size">Size of spike width after cut of the tip, has to be grater than 2.5</param>
     /// <param name="pixel_spike_length">When spike has same or more pixels with width less than 1 pixel</param>
-    SpikeDesc(double bevel_size, double pixel_spike_length = 6):
+    SpikeDesc(double bevel_size, double pixel_spike_length = 6):         
         // create min angle given by spike_length
         // Use it as minimal height of 1 pixel base spike
         cos_angle(std::fabs(std::cos(
@@ -131,7 +131,7 @@ bool remove_when_spike(Polygon &polygon, size_t index, const SpikeDesc &spike_de
 void remove_spikes_in_duplicates(ExPolygons &expolygons, const Points &duplicates);
 
 #ifdef REMOVE_SPIKES
-// Remove long sharp corners aka spikes
+// Remove long sharp corners aka spikes 
 // by adding points to bevel tip of spikes - Not printable parts
 // Try to not modify long sides of spike and add points on it's side
 void remove_spikes(Polygon &polygon, const SpikeDesc &spike_desc);
@@ -225,7 +225,7 @@ bool remove_when_spike(Slic3r::Polygon &polygon, size_t index, const SpikeDesc &
     return false;
 }
 
-void remove_spikes_in_duplicates(ExPolygons &expolygons, const Points &duplicates) {
+void remove_spikes_in_duplicates(ExPolygons &expolygons, const Points &duplicates) { 
     if (duplicates.empty())
         return;
     auto check = [](Slic3r::Polygon &polygon, const Point &d) -> bool {
@@ -272,7 +272,7 @@ fontinfo_opt load_font_info(
     if (font_offset < 0) {
         assert(false);
         // "Font index(" << index << ") doesn't exist.";
-        return {};
+        return {};        
     }
     stbtt_fontinfo font_info;
     if (stbtt_InitFont(&font_info, data, font_offset) == 0) {
@@ -285,14 +285,14 @@ fontinfo_opt load_font_info(
 
 void remove_bad(Polygons &polygons) {
     polygons.erase(
-        std::remove_if(polygons.begin(), polygons.end(),
-            [](const Polygon &p) { return p.size() < 3; }),
+        std::remove_if(polygons.begin(), polygons.end(), 
+            [](const Polygon &p) { return p.size() < 3; }), 
         polygons.end());
 }
 
 void remove_bad(ExPolygons &expolygons) {
     expolygons.erase(
-        std::remove_if(expolygons.begin(), expolygons.end(),
+        std::remove_if(expolygons.begin(), expolygons.end(), 
             [](const ExPolygon &p) { return p.contour.size() < 3; }),
         expolygons.end());
 
@@ -323,7 +323,7 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
             for (size_t index : close_lines) {
                 // skip point neighbour lines indices
                 if (index == point_index) continue;
-                if (&p != &pts.front()) {
+                if (&p != &pts.front()) { 
                     if (index == point_index - 1) continue;
                 } else if (index == (pts.size()-1)) continue;
 
@@ -343,9 +343,9 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
             ++point_index;
         }
     };
-    for (const ExPolygon &expoly : expolygons) {
+    for (const ExPolygon &expoly : expolygons) { 
         check_points(expoly.contour.points);
-        for (const Polygon &hole : expoly.holes)
+        for (const Polygon &hole : expoly.holes) 
             check_points(hole.points);
     }
 
@@ -354,9 +354,9 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
 
     // sort from biggest index to zero
     // to be able add points and not interupt indices
-    std::sort(divs.begin(), divs.end(),
+    std::sort(divs.begin(), divs.end(), 
         [](const Div &d1, const Div &d2) { return d1.second > d2.second; });
-
+    
     auto it = divs.begin();
     // divide close line
     while (it != divs.end()) {
@@ -368,7 +368,7 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
         ExPolygonsIndex id = ids.cvt(index);
         ExPolygon &expoly = expolygons[id.expolygons_index];
         Polygon &poly = id.is_contour() ? expoly.contour : expoly.holes[id.hole_index()];
-        Points &pts = poly.points;
+        Points &pts = poly.points;        
         size_t count = it2 - it;
 
         // add points into polygon to divide in place of near point
@@ -379,8 +379,8 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
             // collect points to add into polygon
             Points points;
             points.reserve(count);
-            for (; it < it2; ++it)
-                points.push_back(it->first);
+            for (; it < it2; ++it) 
+                points.push_back(it->first);            
 
             // need sort by line direction
             const Linef &line = lines[index];
@@ -407,7 +407,7 @@ bool Emboss::divide_segments_for_close_point(ExPolygons &expolygons, double dist
 HealedExPolygons Emboss::heal_polygons(const Polygons &shape, bool is_non_zero, unsigned int max_iteration)
 {
     const double clean_distance = 1.415; // little grater than sqrt(2)
-    ClipperLib::PolyFillType fill_type = is_non_zero ?
+    ClipperLib::PolyFillType fill_type = is_non_zero ? 
         ClipperLib::pftNonZero : ClipperLib::pftEvenOdd;
 
     // When edit this code check that font 'ALIENATE.TTF' and glyph 'i' still work
@@ -416,9 +416,9 @@ HealedExPolygons Emboss::heal_polygons(const Polygons &shape, bool is_non_zero, 
     ClipperLib::Paths paths = ClipperLib::SimplifyPolygons(ClipperUtils::PolygonsProvider(shape), fill_type);
     ClipperLib::CleanPolygons(paths, clean_distance);
     Polygons polygons = to_polygons(paths);
-    polygons.erase(std::remove_if(polygons.begin(), polygons.end(),
+    polygons.erase(std::remove_if(polygons.begin(), polygons.end(), 
         [](const Polygon &p) { return p.size() < 3; }), polygons.end());
-
+    
     if (polygons.empty())
         return {{}, false};
 
@@ -456,8 +456,8 @@ Points get_unique_intersections(const Slic3r::IntersectionsLines &intersections)
     result.reserve(intersections.size());
     std::transform(intersections.begin(), intersections.end(), std::back_inserter(result),
         [](const Slic3r::IntersectionLines &i) { return Point(
-            std::floor(i.intersection.x()),
-            std::floor(i.intersection.y()));
+            std::floor(i.intersection.x()), 
+            std::floor(i.intersection.y())); 
         });
     // intersections should be unique poits
     std::sort(result.begin(), result.end());
@@ -518,7 +518,7 @@ Duplicates collect_duplicit_indices(const ExPolygons &expoly)
     // initialize original index locations
     std::vector<uint32_t> idx(pts.size());
     std::iota(idx.begin(), idx.end(), 0);
-    std::sort(idx.begin(), idx.end(),
+    std::sort(idx.begin(), idx.end(), 
         [&pts](uint32_t i1, uint32_t i2) { return pts[i1] < pts[i2]; });
 
     Duplicates result;
@@ -550,23 +550,23 @@ Points get_points(const Duplicates& duplicate_indices)
 
     // convert intersections into Points
     result.reserve(duplicate_indices.size());
-    std::transform(duplicate_indices.begin(), duplicate_indices.end(), std::back_inserter(result),
+    std::transform(duplicate_indices.begin(), duplicate_indices.end(), std::back_inserter(result), 
         [](const Duplicate &d) { return d.point; });
     return result;
 }
 
 bool heal_dupl_inter(ExPolygons &shape, unsigned max_iteration)
-{
+{    
     if (shape.empty()) return true;
     remove_same_neighbor(shape);
 
     // create loop permanent memory
     Polygons holes;
-    while (--max_iteration) {
+    while (--max_iteration) {        
         Duplicates duplicate_indices = collect_duplicit_indices(shape);
         //Points duplicates = collect_duplicates(to_points(shape));
         IntersectionsLines intersections = get_intersections(shape);
-
+                
         // Check whether shape is already healed
         if (intersections.empty() && duplicate_indices.empty())
             return true;
@@ -575,9 +575,9 @@ bool heal_dupl_inter(ExPolygons &shape, unsigned max_iteration)
         Points intersection_points = get_unique_intersections(intersections);
 
         if (fill_trouble_holes(holes, duplicate_points, intersection_points, shape)) {
-            holes.clear();
+            holes.clear(); 
             continue;
-        }
+        } 
 
         holes.clear();
         holes.reserve(intersections.size() + duplicate_points.size());
@@ -609,7 +609,7 @@ bool heal_dupl_inter(ExPolygons &shape, unsigned max_iteration)
         // healed in the last loop
         return true;
     }
-
+    
     #ifdef VISUALIZE_HEAL
     visualize_heal(visualize_heal_svg_filepath, shape);
     #endif // VISUALIZE_HEAL
@@ -668,14 +668,14 @@ void remove_small_islands(ExPolygons &expolygons, double minimal_area) {
         return;
 
     // remove small expolygons contours
-    auto expoly_it = std::remove_if(expolygons.begin(), expolygons.end(),
+    auto expoly_it = std::remove_if(expolygons.begin(), expolygons.end(), 
         [&minimal_area](const ExPolygon &p) { return p.contour.area() < minimal_area; });
     expolygons.erase(expoly_it, expolygons.end());
 
     // remove small holes in expolygons
     for (ExPolygon &expoly : expolygons) {
         Polygons& holes = expoly.holes;
-        auto it = std::remove_if(holes.begin(), holes.end(),
+        auto it = std::remove_if(holes.begin(), holes.end(), 
             [&minimal_area](const Polygon &p) { return -p.area() < minimal_area; });
         holes.erase(it, holes.end());
     }
@@ -686,7 +686,7 @@ std::optional<Glyph> get_glyph(const stbtt_fontinfo &font_info, int unicode_lett
 {
     int glyph_index = stbtt_FindGlyphIndex(&font_info, unicode_letter);
     if (glyph_index == 0) {
-        //wchar_t wchar = static_cast<wchar_t>(unicode_letter);
+        //wchar_t wchar = static_cast<wchar_t>(unicode_letter); 
         //<< "Character unicode letter ("
         //<< "decimal value = " << std::dec << unicode_letter << ", "
         //<< "hexadecimal value = U+" << std::hex << unicode_letter << std::dec << ", "
@@ -709,8 +709,8 @@ std::optional<Glyph> get_glyph(const stbtt_fontinfo &font_info, int unicode_lett
         flatness, &contour_lengths, &num_countour_int, font_info.userdata);
     if (!points) return glyph; // no valid flattening
     ScopeGuard sg2([&contour_lengths, &points]() {
-        free(contour_lengths);
-        free(points);
+        free(contour_lengths); 
+        free(points); 
     });
 
     size_t   num_contour = static_cast<size_t>(num_countour_int);
@@ -729,9 +729,9 @@ std::optional<Glyph> get_glyph(const stbtt_fontinfo &font_info, int unicode_lett
         --length;
         Points pts;
         pts.reserve(length);
-        for (int i = 0; i < length; ++i)
+        for (int i = 0; i < length; ++i) 
             pts.emplace_back(to_point(points[pi++]));
-
+        
         // last point is first point --> closed contour
         assert(pts.front() == to_point(points[pi]));
         ++pi;
@@ -753,7 +753,7 @@ std::optional<Glyph> get_glyph(const stbtt_fontinfo &font_info, int unicode_lett
 
 const Glyph* get_glyph(
     int              unicode,
-    const FontFile & font_file,
+    const FontFile & font,
     const FontProp & font_prop,
     Glyphs &         cache,
     fontinfo_opt &font_info_opt)
@@ -761,21 +761,19 @@ const Glyph* get_glyph(
     // TODO: Use resolution by printer configuration, or add it into FontProp
     const float RESOLUTION = 0.0125f; // [in mm]
     auto glyph_item = cache.find(unicode);
-    if (glyph_item != cache.end()) {
-        return &glyph_item->second;
-    }
+    if (glyph_item != cache.end()) return &glyph_item->second;
 
     unsigned int font_index = font_prop.collection_number.value_or(0);
-    if (!is_valid(font_file, font_index)) return nullptr;
+    if (!is_valid(font, font_index)) return nullptr;
 
     if (!font_info_opt.has_value()) {
-
-        font_info_opt = load_font_info(font_file.data->data(), font_index);
+        
+        font_info_opt  = load_font_info(font.data->data(), font_index);
         // can load font info?
         if (!font_info_opt.has_value()) return nullptr;
     }
 
-    float flatness = font_file.infos[font_index].ascent * RESOLUTION / font_prop.size_in_mm;
+    float flatness = font.infos[font_index].ascent * RESOLUTION / font_prop.size_in_mm;
 
     // Fix for very small flatness because it create huge amount of points from curve
     if (flatness < RESOLUTION) flatness = RESOLUTION;
@@ -784,16 +782,16 @@ const Glyph* get_glyph(
 
     // IMPROVE: multiple loadig glyph without data
     // has definition inside of font?
-    if (!glyph_opt.has_value())
-        return nullptr;
+    if (!glyph_opt.has_value()) return nullptr;
 
     Glyph &glyph = *glyph_opt;
-    if (font_prop.char_gap.has_value())
+    if (font_prop.char_gap.has_value()) 
         glyph.advance_width += *font_prop.char_gap;
 
     // scale glyph size
     glyph.advance_width = static_cast<int>(glyph.advance_width / SHAPE_SCALE);
     glyph.left_side_bearing = static_cast<int>(glyph.left_side_bearing / SHAPE_SCALE);
+
     if (!glyph.shape.empty()) {
         if (font_prop.boldness.has_value()) {
             float delta = static_cast<float>(*font_prop.boldness / SHAPE_SCALE / font_prop.size_in_mm);
@@ -847,7 +845,7 @@ std::optional<std::wstring> Emboss::get_font_path(const std::wstring &font_face_
 
     // Open Windows font registry key
     result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, fontRegistryPath, 0, KEY_READ, &hKey);
-    if (result != ERROR_SUCCESS) return {};
+    if (result != ERROR_SUCCESS) return {};    
 
     DWORD maxValueNameSize, maxValueDataSize;
     result = RegQueryInfoKey(hKey, 0, 0, 0, 0, 0, 0, 0, &maxValueNameSize, &maxValueDataSize, 0, 0);
@@ -888,7 +886,7 @@ std::optional<std::wstring> Emboss::get_font_path(const std::wstring &font_face_
     RegCloseKey(hKey);
 
     if (wsFontFile.empty()) return {};
-
+    
     // Build full font file path
     WCHAR winDir[MAX_PATH];
     GetWindowsDirectory(winDir, MAX_PATH);
@@ -918,9 +916,9 @@ EmbossStyles Emboss::get_font_list_by_register() {
     result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, fontRegistryPath, 0, KEY_READ, &hKey);
     if (result != ERROR_SUCCESS) {
         assert(false);
-        //std::wcerr << L"Can not Open register key (" << fontRegistryPath << ")"
+        //std::wcerr << L"Can not Open register key (" << fontRegistryPath << ")" 
         //    << L", function 'RegOpenKeyEx' return code: " << result <<  std::endl;
-        return {};
+        return {}; 
     }
 
     DWORD maxValueNameSize, maxValueDataSize;
@@ -929,7 +927,7 @@ EmbossStyles Emboss::get_font_list_by_register() {
     if (result != ERROR_SUCCESS) {
         assert(false);
         // Can not earn query key, function 'RegQueryInfoKey' return code: result
-        return {};
+        return {}; 
     }
 
     // Build full font file path
@@ -986,7 +984,7 @@ bool CALLBACK EnumFamCallBack(LPLOGFONT       lplf,
     UNREFERENCED_PARAMETER(lpntm);
 }
 
-EmbossStyles Emboss::get_font_list_by_enumeration() {
+EmbossStyles Emboss::get_font_list_by_enumeration() {   
 
     HDC                       hDC = GetDC(NULL);
     std::vector<std::wstring> font_names;
@@ -996,7 +994,7 @@ EmbossStyles Emboss::get_font_list_by_enumeration() {
     EmbossStyles font_list;
     for (const std::wstring &font_name : font_names) {
         font_list.emplace_back(create_style(font_name, L""));
-    }
+    }    
     return font_list;
 }
 
@@ -1025,9 +1023,9 @@ EmbossStyles Emboss::get_font_list_by_folder() {
 }
 
 #else
-EmbossStyles Emboss::get_font_list() {
+EmbossStyles Emboss::get_font_list() { 
     // not implemented
-    return {};
+    return {}; 
 }
 
 std::optional<std::wstring> Emboss::get_font_path(const std::wstring &font_face_name){
@@ -1088,7 +1086,7 @@ std::unique_ptr<FontFile> Emboss::create_font_file(const char *file_path)
     if (size == 0) {
         assert(false);
         BOOST_LOG_TRIVIAL(error) << "Size of font file is zero. Can't read.";
-        return nullptr;
+        return nullptr;    
     }
     rewind(file);
     auto buffer = std::make_unique<std::vector<unsigned char>>(size);
@@ -1105,12 +1103,12 @@ std::unique_ptr<FontFile> Emboss::create_font_file(const char *file_path)
 #ifdef _WIN32
 static bool load_hfont(void* hfont, DWORD &dwTable, DWORD &dwOffset, size_t& size, HDC hdc = nullptr){
     bool del_hdc = false;
-    if (hdc == nullptr) {
+    if (hdc == nullptr) { 
         del_hdc = true;
         hdc = ::CreateCompatibleDC(NULL);
         if (hdc == NULL) return false;
     }
-
+    
     // To retrieve the data from the beginning of the file for TrueType
     // Collection files specify 'ttcf' (0x66637474).
     dwTable  = 0x66637474;
@@ -1160,7 +1158,7 @@ std::unique_ptr<FontFile> Emboss::create_font_file(void *hfont)
     if (size != loaded_size) {
         assert(false);
         BOOST_LOG_TRIVIAL(error) << "Different loaded(from HFONT) data size.";
-        return nullptr;
+        return nullptr;    
     }
     return create_font_file(std::move(buffer));
 }
@@ -1192,7 +1190,8 @@ int Emboss::get_line_height(const FontFile &font, const FontProp &prop) {
 }
 
 namespace {
-ExPolygons letter2shapes(wchar_t letter, Point &cursor, FontFileWithCache &font_with_cache, const FontProp &font_prop, fontinfo_opt &font_info_cache)
+ExPolygons letter2shapes(
+    wchar_t letter, Point &cursor, FontFileWithCache &font_with_cache, const FontProp &font_prop, fontinfo_opt& font_info_cache)
 {
     assert(font_with_cache.has_value());
     if (!font_with_cache.has_value())
@@ -1226,6 +1225,7 @@ ExPolygons letter2shapes(wchar_t letter, Point &cursor, FontFileWithCache &font_
     const Glyph *glyph_ptr = (it != cache.end()) ? &it->second : get_glyph(unicode, font, font_prop, cache, font_info_cache);
     if (glyph_ptr == nullptr)
         return {};
+
     // move glyph to cursor position
     ExPolygons expolygons = glyph_ptr->shape; // copy
     for (ExPolygon &expolygon : expolygons)
@@ -1233,89 +1233,6 @@ ExPolygons letter2shapes(wchar_t letter, Point &cursor, FontFileWithCache &font_
 
     cursor.x() += glyph_ptr->advance_width;
     return expolygons;
-}
-
-void letter2shapes(ExPolygons &       result,
-                   float              cur_scale,
-                   FontFileWithCache &real_use_font,
-                   float &            real_scale,
-                   wchar_t            letter,
-                   Point &            cursor,
-                   FontFileWithCache &font_with_cache,
-                   const FontProp &   font_prop,
-                   fontinfo_opt &     font_info_cache,
-                   BackFontCacheFn    bfc_fn = nullptr)
-{
-    if (!font_with_cache.has_value())
-        return;
-
-    Glyphs &        cache = *font_with_cache.cache;
-    const FontFile &font  = *font_with_cache.font_file;
-
-    if (letter == '\n') {
-        cursor.x() = 0;
-        // 2d shape has opposit direction of y
-        cursor.y() -= get_line_height(font, font_prop);
-        return;
-    }
-    if (letter == '\t') {
-        // '\t' = 4*space => same as imgui
-        const int    count_spaces = 4;
-        const Glyph *space        = get_glyph(int(' '), font, font_prop, cache, font_info_cache);
-        if (space == nullptr)
-            return ;
-        cursor.x() += count_spaces * space->advance_width;
-        return;
-    }
-    if (letter == '\r')
-        return;
-
-    int  unicode = static_cast<int>(letter);
-    auto it      = cache.find(unicode);
-
-    // Create glyph from font file and cache it
-    const Glyph *glyph_ptr = (it != cache.end()) ? &it->second : get_glyph(unicode, font, font_prop, cache, font_info_cache);
-    if (glyph_ptr == nullptr || glyph_ptr->shape.size() == 0) {
-        bool can_gen_from_back_font = false;
-        if (bfc_fn) {
-            auto         fn_result = bfc_fn();
-            for (auto temp_font : fn_result) {
-                if (!temp_font.has_value()) { continue; }
-                Glyphs &        cur_cache = *temp_font.cache;
-                cur_cache.clear();
-                const FontFile &cur_font  = *temp_font.font_file;
-                //update boldness
-                auto                  temp_font_prop = font_prop;
-                const FontFile::Info &font_info      = get_font_info(cur_font, temp_font_prop);
-                temp_font_prop.boldness = font_prop.boldness > 0 ? font_info.ascent / 4.f : 0; // from GLGizmoText::set_default_boldness(std::optional<float> &boldness)
-
-                auto new_scale = get_text_shape_scale(font_prop, cur_font);
-                // Create glyph from font file and cache it
-                fontinfo_opt cur_font_info_cache;
-                glyph_ptr = get_glyph(unicode, cur_font, temp_font_prop, cur_cache, cur_font_info_cache);
-                if (glyph_ptr) {
-                    real_use_font          = temp_font;
-                    real_scale             = new_scale;
-                    can_gen_from_back_font = true;
-                    break;
-                }
-            }
-        }
-        if (!can_gen_from_back_font) {
-            return;
-        }
-    }
-
-    // move glyph to cursor position
-    ExPolygons expolygons = glyph_ptr->shape; // copy
-    for (ExPolygon &expolygon : expolygons) expolygon.translate(cursor);
-    if (real_scale > 0) {
-        auto new_advance_width = glyph_ptr->advance_width * real_scale / cur_scale;
-        cursor.x() += new_advance_width;
-    } else {
-        cursor.x() += glyph_ptr->advance_width;
-    }
-    result = expolygons;
 }
 
 // Check cancel every X letters in text
@@ -1341,7 +1258,7 @@ HealedExPolygons union_with_delta(const ExPolygonsWithIds &shapes, float delta, 
 }
 } // namespace
 
-ExPolygons Slic3r::union_with_delta(EmbossShape &shape, float delta, unsigned max_heal_iteration)
+ExPolygons Slic3r::union_with_delta(EmbossShape &shape, float delta, unsigned max_heal_iteration) 
 {
     if (!shape.final_shape.expolygons.empty())
         return shape.final_shape;
@@ -1353,16 +1270,6 @@ ExPolygons Slic3r::union_with_delta(EmbossShape &shape, float delta, unsigned ma
     return shape.final_shape.expolygons;
 }
 
-HealedExPolygons Emboss::union_with_delta(ExPolygons expoly, float delta, unsigned max_heal_iteration)
-{
-    ExPolygons expolygons;
-    expolygons_append(expolygons, offset_ex(expoly, delta));
-    ExPolygons result = union_ex(expolygons);
-    result            = offset_ex(result, -delta);
-    bool is_healed    = heal_expolygons(result, max_heal_iteration);
-    return {result, is_healed};
-}
-
 void Slic3r::translate(ExPolygonsWithIds &expolygons_with_ids, const Point &p)
 {
     for (ExPolygonsWithId &expolygons_with_id : expolygons_with_ids)
@@ -1372,7 +1279,7 @@ void Slic3r::translate(ExPolygonsWithIds &expolygons_with_ids, const Point &p)
 BoundingBox Slic3r::get_extents(const ExPolygonsWithIds &expolygons_with_ids)
 {
     BoundingBox bb;
-    for (const ExPolygonsWithId &expolygons_with_id : expolygons_with_ids)
+    for (const ExPolygonsWithId &expolygons_with_id : expolygons_with_ids)        
         bb.merge(get_extents(expolygons_with_id.expoly));
     return bb;
 }
@@ -1381,6 +1288,15 @@ void Slic3r::center(ExPolygonsWithIds &e)
 {
     BoundingBox bb = get_extents(e);
     translate(e, -bb.center());
+}
+
+HealedExPolygons Emboss::text2shapes(FontFileWithCache &font_with_cache, const char *text, const FontProp &font_prop, const std::function<bool()>& was_canceled)
+{
+    std::wstring text_w = boost::nowide::widen(text);
+    ExPolygonsWithIds vshapes = text2vshapes(font_with_cache, text_w, font_prop, was_canceled);
+
+    float delta = static_cast<float>(1. / SHAPE_SCALE);
+    return ::union_with_delta(vshapes, delta, MAX_HEAL_ITERATION_OF_TEXT);
 }
 
 namespace {
@@ -1393,118 +1309,33 @@ namespace {
 /// <param name="prop">Containe Horizontal and vertical alignment</param>
 /// <param name="font">Needed for scale and font size</param>
 void align_shape(ExPolygonsWithIds &shapes, const std::wstring &text, const FontProp &prop, const FontFile &font);
-void align_shape(ExPolygonsWithIds &shapes, std::vector<FontFileWithCache> real_fonts, const std::wstring &text, const FontProp &prop, const FontFile &font);
 }
 
-HealedExPolygons Slic3r::Emboss::text2shapes(EmbossShape &                emboss_shape,
-                                             FontFileWithCache &          font_with_cache,
-                                             const char *                 text,
-                                             const FontProp &             font_prop,
-                                             double                       standard_scale,
-                                             const std::function<bool()> &was_canceled,
-                                             BackFontCacheFn              bfc_fn)
-{//for CreateFontImageJob
-    std::wstring      text_w  = boost::nowide::widen(text);
-    text2vshapes(emboss_shape, font_with_cache, text_w, font_prop, standard_scale, was_canceled, bfc_fn); // ExPolygonsWithIds vshapes =
-    auto &vshapes = emboss_shape.shapes_with_ids;
-    float delta   = static_cast<float>(1. / SHAPE_SCALE);
-    if (bfc_fn && standard_scale > 0) {
-        int32_t char_space = 0, char_width = 0, offset = 0;
-        for (int i = 0; i < vshapes.size(); i++) {
-            if (!vshapes[i].expoly.empty()) {
-                auto box = get_extents(vshapes[i].expoly);
-                if (box.size()[0] > 0) {
-                    char_width = box.size()[0];
-                    break;
-                }
-            }
-        }
-        for (int i = 0; i < vshapes.size(); i++) {
-            if (emboss_shape.text_scales[i] > 0) {
-                double temp_scale = emboss_shape.text_scales[i] / standard_scale;
-                for (int j = 0; j < vshapes[i].expoly.size(); j++) { vshapes[i].expoly[j].scale(temp_scale); }
-            }
-            BoundingBox temp_box;
-            if (!vshapes[i].expoly.empty()) {
-                temp_box = get_extents(vshapes[i].expoly);
-                if (char_space == 0) { char_space = temp_box.size().x() / 5; }
-                for (int j = 0; j < vshapes[i].expoly.size(); j++) { // son
-                    vshapes[i].expoly[j].translate(-temp_box.min + Point(offset, 0));
-                }
-                offset += (get_extents(vshapes[i].expoly).size()[0] + char_space);
-            } else {
-                offset += (char_width);
-            }
-        }
-    }
-    return ::union_with_delta(vshapes, delta, MAX_HEAL_ITERATION_OF_TEXT);
-}
-
-void Slic3r::Emboss::text2vshapes(EmbossShape &                emboss_shape,
-                                  FontFileWithCache &          font_with_cache,
-                                  const std::wstring &         text,
-                                  const FontProp &             font_prop,
-                                  double                       standard_scale,
-                                  const std::function<bool()> &was_canceled,
-                                  BackFontCacheFn              bfc_fn)
-{
+ExPolygonsWithIds Emboss::text2vshapes(FontFileWithCache &font_with_cache, const std::wstring& text, const FontProp &font_prop, const std::function<bool()>& was_canceled){
     assert(font_with_cache.has_value());
-    const FontFile &font       = *font_with_cache.font_file;
-    unsigned int    font_index = font_prop.collection_number.value_or(0);
+    const FontFile &font = *font_with_cache.font_file;
+    unsigned int font_index = font_prop.collection_number.value_or(0);
     if (!is_valid(font, font_index))
-        return;
+        return {};
 
     unsigned counter = 0;
-    Point    cursor(0, 0);
-    std::vector<float> text_cursors;
-    float              last_x = 0.f,cur_x =0.f;
-    fontinfo_opt      font_info_cache;
+    Point cursor(0, 0);
+
+    fontinfo_opt font_info_cache;  
     ExPolygonsWithIds result;
     result.reserve(text.size());
-    std::vector<float> text_scales;
-    text_scales.reserve(text.size());
-    std::vector<FontFileWithCache> text_map_font;
-    text_map_font.reserve(text.size());
-
     for (wchar_t letter : text) {
         if (++counter == CANCEL_CHECK) {
             counter = 0;
             if (was_canceled())
-                return;
-        }
-        if (letter == wchar_t(' ')) {
-            letter = 'i';
+                return {};
         }
         unsigned id = static_cast<unsigned>(letter);
-        float    real_scale = -1.f;
-        if (bfc_fn) { // support_backup_fonts
-            ExPolygons        exps;
-            FontFileWithCache real_use_font;
-            letter2shapes(exps, standard_scale, real_use_font, real_scale, letter, cursor, font_with_cache, font_prop, font_info_cache, bfc_fn);
-            result.push_back({id, exps});
-            text_scales.emplace_back(real_scale);
-            text_map_font.emplace_back(real_use_font);
-        } else {
-            result.push_back({id, letter2shapes(letter, cursor, font_with_cache, font_prop, font_info_cache)});
-            text_scales.emplace_back(real_scale);
-        }
-        cur_x = cursor.x() * standard_scale;
-        text_cursors.emplace_back(cur_x - last_x);
-        last_x = cur_x;
+        result.push_back({id, letter2shapes(letter, cursor, font_with_cache, font_prop, font_info_cache)});
     }
-    if (bfc_fn) {// support_backup_fonts
-        align_shape(result, text_map_font, text, font_prop, font);
-    } else {
-        align_shape(result, text, font_prop, font);
-    }
-    emboss_shape.text_scales = text_scales;
-    emboss_shape.text_cursors    = text_cursors;
-    for (int i = 0; i < result.size(); i++) {
-        if (text[i] == wchar_t(' ')) {
-            result[i].expoly.clear();
-        }
-    }
-    emboss_shape.shapes_with_ids = result;
+
+    align_shape(result, text, font_prop, font);
+    return result;
 }
 
 #include <boost/range/adaptor/reversed.hpp>
@@ -1578,7 +1409,7 @@ bool Emboss::is_italic(const FontFile &font, unsigned int font_index)
     const char* value = stbtt_GetFontNameString(info, &length,
                                                STBTT_PLATFORM_ID_MICROSOFT,
                                                STBTT_MS_EID_UNICODE_BMP,
-                                               STBTT_MS_LANG_ENGLISH,
+                                               STBTT_MS_LANG_ENGLISH,                            
                                                name_id);
 
     // value is big endian utf-16 i need extract only normal chars
@@ -1592,80 +1423,39 @@ bool Emboss::is_italic(const FontFile &font, unsigned int font_index)
                    [](unsigned char c) { return std::tolower(c); });
 
     const std::vector<std::string> italics({"italic", "oblique"});
-    for (const std::string &it : italics) {
-        if (value_str.find(it) != std::string::npos) {
-            return true;
+    for (const std::string &it : italics) { 
+        if (value_str.find(it) != std::string::npos) { 
+            return true; 
         }
     }
-    return false;
+    return false; 
 }
 
-std::wstring remove_duplicates(const std::wstring &input)
-{
-    std::set<wchar_t> seen;
-    std::wstring      result;
-    for (wchar_t c : input) {
-        if (seen.find(c) == seen.end()) {
-            seen.insert(c);
-            result += c;
-        }
-    }
-    return result;
-}
-
-std::string Slic3r::Emboss::create_range_text(std::string &text, std::vector<std::shared_ptr<const FontFile>> fonts, unsigned int font_index, bool *exist_unknown)
-{
-    if (fonts.empty()) { return ""; }
-    *exist_unknown                              = false;
-    bool                     temp_exist_unknown = false;
-    std::wstring             not_dup_text       = remove_duplicates(boost::nowide::widen(text));
-    std::sort(not_dup_text.begin(), not_dup_text.end());
-    std::vector<std::string> results;
-    results.reserve(fonts.size());
-    for (int i = 0; i < fonts.size(); i++) {
-        auto temp_text = create_range_text(text, *fonts[i], font_index, &temp_exist_unknown);
-        results.emplace_back(temp_text);
-        auto valid_text = boost::nowide::widen(temp_text);
-        if (valid_text.size() == not_dup_text.size()) {
-            if (i > 0) {
-                *exist_unknown = true;
-            }
-            return results.back();
-        }
-    }
-    *exist_unknown = true;
-    for (int i = 0; i < results.size(); i++) {
-        if (boost::nowide::widen(results[i]).size() == not_dup_text.size()) {
-            return results[i];
-        }
-    }
-    return results[0];
-}
-
-std::string Emboss::create_range_text(const std::string &text, const FontFile &font, unsigned int font_index,bool *exist_unknown)
+std::string Emboss::create_range_text(const std::string &text,
+                                      const FontFile    &font,
+                                      unsigned int       font_index,
+                                      bool              *exist_unknown)
 {
     if (!is_valid(font, font_index)) return {};
-
+            
     std::wstring ws = boost::nowide::widen(text);
 
     // need remove symbols not contained in font
     std::sort(ws.begin(), ws.end());
 
     auto font_info_opt = load_font_info(font.data->data(), 0);
-    if (!font_info_opt.has_value())
-        return {};
+    if (!font_info_opt.has_value()) return {};
     const stbtt_fontinfo *font_info = &(*font_info_opt);
 
-    if (exist_unknown != nullptr)
-        *exist_unknown = false;
+    if (exist_unknown != nullptr) *exist_unknown = false;
     int prev_unicode = -1;
     ws.erase(std::remove_if(ws.begin(), ws.end(),
         [&prev_unicode, font_info, exist_unknown](wchar_t wc) -> bool {
             int unicode = static_cast<int>(wc);
 
             // skip white spaces
-            if (unicode == '\n' ||
-                unicode == '\r' ||
+            if (unicode == '\n' || 
+                unicode == '\r' || 
                 unicode == '\t') return true;
 
             // is duplicit?
@@ -1700,8 +1490,8 @@ void add_quad(uint32_t              i1,
     // bottom indices
     uint32_t i1_ = i1 + count_point;
     uint32_t i2_ = i2 + count_point;
-    result.add_indice(i2, i2_, i1,true);
-    result.add_indice(i1_, i1, i2_, true);
+    result.indices.emplace_back(i2, i2_, i1);
+    result.indices.emplace_back(i1_, i1, i2_);
 };
 
 indexed_triangle_set polygons2model_unique(
@@ -1723,8 +1513,8 @@ indexed_triangle_set polygons2model_unique(
         auto p2 = projection.create_front_back(p);
         front_points.push_back(p2.first.cast<float>());
         back_points.push_back(p2.second.cast<float>());
-    }
-
+    }    
+    
     // insert back points, front are already in
     result.vertices.insert(result.vertices.end(),
                            std::make_move_iterator(back_points.begin()),
@@ -1732,11 +1522,12 @@ indexed_triangle_set polygons2model_unique(
     result.indices.reserve(shape_triangles.size() * 2 + points.size() * 2);
     // top triangles - change to CCW
     for (const Vec3i32 &t : shape_triangles)
-        result.add_indice(t.x(), t.z(), t.y(), true);
+        result.indices.emplace_back(t.x(), t.z(), t.y());
     // bottom triangles - use CW
     for (const Vec3i32 &t : shape_triangles)
-        result.add_indice(t.x() + count_point,
-                                    t.y() + count_point, t.z() + count_point, true);
+        result.indices.emplace_back(t.x() + count_point, 
+                                    t.y() + count_point,
+                                    t.z() + count_point);
 
     // quads around - zig zag by triangles
     size_t polygon_offset = 0;
@@ -1745,7 +1536,7 @@ indexed_triangle_set polygons2model_unique(
         uint32_t polygon_points = polygon.points.size();
         // previous index
         uint32_t prev = polygon_offset + polygon_points - 1;
-        for (uint32_t p = 0; p < polygon_points; ++p) {
+        for (uint32_t p = 0; p < polygon_points; ++p) { 
             uint32_t index = polygon_offset + p;
             add_quad(prev, index, result, count_point);
             prev = index;
@@ -1756,7 +1547,7 @@ indexed_triangle_set polygons2model_unique(
     for (const ExPolygon &expolygon : shape2d) {
         add_quads(expolygon.contour);
         for (const Polygon &hole : expolygon.holes) add_quads(hole);
-    }
+    }   
 
     return result;
 }
@@ -1779,7 +1570,7 @@ indexed_triangle_set polygons2model_duplicit(
     back_points.reserve(count_point);
 
     uint32_t max_index = std::numeric_limits<uint32_t>::max();
-    for (uint32_t i = 0; i < changes.size(); ++i) {
+    for (uint32_t i = 0; i < changes.size(); ++i) { 
         uint32_t index = changes[i];
         if (max_index != std::numeric_limits<uint32_t>::max() &&
             index <= max_index) continue; // duplicit point
@@ -1792,8 +1583,8 @@ indexed_triangle_set polygons2model_duplicit(
         front_points.push_back(p2.first.cast<float>());
         back_points.push_back(p2.second.cast<float>());
     }
-    assert(max_index+1 == count_point);
-
+    assert(max_index+1 == count_point);    
+    
     // insert back points, front are already in
     result.vertices.insert(result.vertices.end(),
                            std::make_move_iterator(back_points.begin()),
@@ -1802,10 +1593,11 @@ indexed_triangle_set polygons2model_duplicit(
     result.indices.reserve(shape_triangles.size() * 2 + points.size() * 2);
     // top triangles - change to CCW
     for (const Vec3i32 &t : shape_triangles)
-        result.add_indice(t.x(), t.z(), t.y(),true);
+        result.indices.emplace_back(t.x(), t.z(), t.y());
     // bottom triangles - use CW
     for (const Vec3i32 &t : shape_triangles)
-        result.add_indice(t.x() + count_point, t.y() + count_point, t.z() + count_point, true);
+        result.indices.emplace_back(t.x() + count_point, t.y() + count_point,
+                                    t.z() + count_point);
 
     // quads around - zig zag by triangles
     size_t polygon_offset = 0;
@@ -1834,7 +1626,7 @@ indexed_triangle_set polygons2model_duplicit(
 indexed_triangle_set Emboss::polygons2model(const ExPolygons &shape2d,
                                             const IProjection &projection)
 {
-    Points points = to_points(shape2d);
+    Points points = to_points(shape2d);    
     Points duplicits = collect_duplicates(points);
     return (duplicits.empty()) ?
         polygons2model_unique(shape2d, projection, points) :
@@ -1847,7 +1639,7 @@ std::pair<Vec3d, Vec3d> Emboss::ProjectZ::create_front_back(const Point &p) cons
     return std::make_pair(front, project(front));
 }
 
-Vec3d Emboss::ProjectZ::project(const Vec3d &point) const
+Vec3d Emboss::ProjectZ::project(const Vec3d &point) const 
 {
     Vec3d res = point; // copy
     res.z() = m_depth;
@@ -1859,13 +1651,13 @@ std::optional<Vec2d> Emboss::ProjectZ::unproject(const Vec3d &p, double *depth) 
 }
 
 
-Vec3d Emboss::suggest_up(const Vec3d normal, double up_limit)
+Vec3d Emboss::suggest_up(const Vec3d normal, double up_limit) 
 {
     // Normal must be 1
     assert(is_approx(normal.squaredNorm(), 1.));
 
     // wanted up direction of result
-    Vec3d wanted_up_side =
+    Vec3d wanted_up_side = 
         (std::fabs(normal.z()) > up_limit)?
         Vec3d::UnitY() : Vec3d::UnitZ();
 
@@ -1889,7 +1681,7 @@ std::optional<float> Emboss::calc_up(const Transform3d &tr, double up_limit)
     assert(is_approx(suggested.squaredNorm(), 1.));
 
     Vec3d up = tr_linear.col(1); // tr * UnitY()
-    up.normalize();
+    up.normalize();    
     Matrix3d m;
     m.row(0) = up;
     m.row(1) = suggested;
@@ -2104,7 +1896,7 @@ PolygonPoints Emboss::sample_slice(const TextLine &slice, const BoundingBoxes &b
             continue;
         else if (bb.min.x() < 0)
             ++first_right_index;
-        else
+        else 
             break;
 
     PolygonPoints samples(bbs.size());
@@ -2140,7 +1932,7 @@ PolygonPoints Emboss::sample_slice(const TextLine &slice, const BoundingBoxes &b
     }else{
         // only left side exists
         shapes_x_cursor = 0;
-        cursor = slice.start; // copy
+        cursor = slice.start; // copy    
     }
     is_reverse = false;
     for (size_t index_plus_one = first_right_index; index_plus_one > 0; --index_plus_one) {
@@ -2163,8 +1955,8 @@ float get_align_y_offset(FontProp::VerticalAlign align, unsigned count_lines, co
     switch (align) {
     case FontProp::VerticalAlign::bottom: return line_height * (count_lines - 1);
     case FontProp::VerticalAlign::top: return -ascent;
-    case FontProp::VerticalAlign::center:
-    default:
+    case FontProp::VerticalAlign::center: 
+    default: 
         return -line_center + line_height * (count_lines - 1) / 2.;
     }
 }
@@ -2210,7 +2002,7 @@ void align_shape(ExPolygonsWithIds &shapes, const std::wstring &text, const Font
 
     // Align x line by line
     Point offset(
-        get_align_x_offset(prop.align.first, shape_bb, get_line_bb(0)),
+        get_align_x_offset(prop.align.first, shape_bb, get_line_bb(0)), 
         y_offset);
     for (size_t i = 0; i < shapes.size(); ++i) {
         wchar_t letter = text[i];
@@ -2221,62 +2013,6 @@ void align_shape(ExPolygonsWithIds &shapes, const std::wstring &text, const Font
         ExPolygons &shape = shapes[i].expoly;
         for (ExPolygon &s : shape)
             s.translate(offset);
-    }
-}
-
-void align_shape(ExPolygonsWithIds &shapes, std::vector<FontFileWithCache> real_fonts, const std::wstring &text, const FontProp &prop, const FontFile &font) {// Shapes have to match letters in text
-    assert(shapes.size() == text.length());
-
-    unsigned count_lines = get_count_lines(text);
-    int      main_y_offset    = get_align_y_offset(prop.align.second, count_lines, font, prop);
-
-    // Speed up for left aligned text
-    if (prop.align.first == FontProp::HorizontalAlign::left) {
-        // already horizontaly aligned
-        int index = 0;
-        for (ExPolygonsWithId &shape : shapes) {
-            int temp_y_offset = main_y_offset;
-            if (real_fonts[index].has_value()) {
-                const FontFile &temp_font = *real_fonts[index].font_file;
-                temp_y_offset             = get_align_y_offset(prop.align.second, count_lines, temp_font, prop);
-            }
-            for (ExPolygon &s : shape.expoly) {
-                s.translate(Point(0, temp_y_offset));
-            }
-            index++;
-        }
-        return;
-    }
-
-    BoundingBox shape_bb;
-    for (const ExPolygonsWithId &shape : shapes)
-        shape_bb.merge(get_extents(shape.expoly));
-
-    auto get_line_bb = [&](size_t j) {
-        BoundingBox line_bb;
-        for (; j < text.length() && text[j] != '\n'; ++j) line_bb.merge(get_extents(shapes[j].expoly));
-        return line_bb;
-    };
-
-    // Align x line by line
-    Point main_offset(get_align_x_offset(prop.align.first, shape_bb, get_line_bb(0)), main_y_offset);
-    for (size_t i = 0; i < shapes.size(); ++i) {
-        wchar_t letter = text[i];
-        if (letter == '\n') {//Enter the next line of text
-            main_offset.x() = get_align_x_offset(prop.align.first, shape_bb, get_line_bb(i + 1));
-            continue;
-        }
-        ExPolygons &shape = shapes[i].expoly;
-        auto       temp_offset = main_offset;
-        if (real_fonts[i].has_value()) {
-            const FontFile &temp_font = *real_fonts[i].font_file;
-            int temp_y_offset         = get_align_y_offset(prop.align.second, count_lines, temp_font, prop);
-            Point new_offset(get_align_x_offset(prop.align.first, shape_bb, get_line_bb(0)), temp_y_offset);
-            temp_offset = new_offset;
-        }
-        for (ExPolygon &s : shape) {
-            s.translate(temp_offset);
-        }
     }
 }
 } // namespace
@@ -2294,7 +2030,7 @@ void remove_spikes(Polygon &polygon, const SpikeDesc &spike_desc)
     enum class Type {
         add, // Move with point B on A-side and add new point on C-side
         move, // Only move with point B
-        erase // left only points A and C without move
+        erase // left only points A and C without move 
     };
     struct SpikeHeal
     {
@@ -2379,7 +2115,7 @@ void remove_spikes(Polygon &polygon, const SpikeDesc &spike_desc)
             // move point B on A-side and add point on C-side
             heal.type = Type::add;
             heal.b    = a_side();
-            heal.add  = c_side();
+            heal.add  = c_side();           
         }
         heals.push_back(heal);
     }
@@ -2419,7 +2155,7 @@ void remove_spikes(Polygon &polygon, const SpikeDesc &spike_desc)
             pts.erase(pts.begin() + h.index);
             break;
         case Type::move:
-            pts[h.index] = h.b;
+            pts[h.index] = h.b; 
             break;
         default: break;
         }
@@ -2437,7 +2173,7 @@ void remove_spikes(ExPolygons &expolygons, const SpikeDesc &spike_desc)
 {
     for (ExPolygon &expolygon : expolygons) {
         remove_spikes(expolygon.contour, spike_desc);
-        remove_spikes(expolygon.holes, spike_desc);
+        remove_spikes(expolygon.holes, spike_desc);    
     }
     remove_bad(expolygons);
 }

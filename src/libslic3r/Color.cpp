@@ -181,11 +181,6 @@ ColorRGBA::ColorRGBA(float r, float g, float b, float a)
 {
 }
 
-ColorRGBA::ColorRGBA(std::array<float, 4> color)
-    : m_data({std::clamp(color[0], 0.0f, 1.0f), std::clamp(color[1], 0.0f, 1.0f), std::clamp(color[2], 0.0f, 1.0f), std::clamp(color[3], 0.0f, 1.0f)})
-{
-
-}
 ColorRGBA::ColorRGBA(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 : m_data({ std::clamp(r * INV_255, 0.0f, 1.0f), std::clamp(g * INV_255, 0.0f, 1.0f), std::clamp(b * INV_255, 0.0f, 1.0f), std::clamp(a * INV_255, 0.0f, 1.0f) })
 {
@@ -233,27 +228,6 @@ ColorRGBA ColorRGBA::operator * (float value) const
 	}
 	ret.m_data[3] = this->m_data[3];
 	return ret;
-}
-
-void ColorRGBA::gamma_correct() {
-    auto coe = 1 / 2.2f;
-    for (int i = 0; i < 4; i++) {
-        m_data[i] = std::pow(m_data[i], coe);
-    }
-}
-
-void ColorRGBA::gamma_correct(RGBA &color)
-{
-    auto coe = 1 / 2.2f;
-    for (int i = 0; i < 4; i++) {
-        color[i] = std::pow(color[i], coe);
-    }
-}
-
-float ColorRGBA::gamma_correct(float value)
-{
-    auto coe = 1 / 2.2f;
-    return std::pow(value, coe);
 }
 
 ColorRGB operator * (float value, const ColorRGB& other) { return other * value; }
@@ -420,7 +394,7 @@ std::string encode_color(const ColorRGB& color)
 }
 
 std::string encode_color(const ColorRGBA& color) { return encode_color(to_rgb(color)); }
-
+ 
 ColorRGB to_rgb(const ColorRGBA& other_rgba) { return { other_rgba.r(), other_rgba.g(), other_rgba.b() }; }
 ColorRGBA to_rgba(const ColorRGB& other_rgb) { return { other_rgb.r(), other_rgb.g(), other_rgb.b(), 1.0f }; }
 ColorRGBA to_rgba(const ColorRGB& other_rgb, float alpha) { return { other_rgb.r(), other_rgb.g(), other_rgb.b(), alpha }; }

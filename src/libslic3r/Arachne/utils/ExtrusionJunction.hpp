@@ -19,10 +19,6 @@ namespace Slic3r::Arachne
 struct ExtrusionJunction
 {
 	/*!
-	* whether the junction is generated from a hole that needs compensation
-	*/
-	bool hole_compensation_flag;
-	/*!
 	 * The position of the centreline of the path when it reaches this junction.
 	 * This is the position that should end up in the g-code eventually.
 	 */
@@ -41,7 +37,7 @@ struct ExtrusionJunction
 	 */
     size_t perimeter_index;
 
-    ExtrusionJunction(const Point p, const coord_t w, const coord_t perimeter_index, const bool hole_compensation = false);
+    ExtrusionJunction(const Point p, const coord_t w, const coord_t perimeter_index);
 
     bool operator==(const ExtrusionJunction& other) const;
 };
@@ -58,7 +54,6 @@ inline const Point& make_point(const ExtrusionJunction& ej)
 }
 
 using LineJunctions = std::vector<ExtrusionJunction>; //<! The junctions along a line without further information. See \ref ExtrusionLine for a more extensive class.
-using ExtrusionJunctions = std::vector<ExtrusionJunction>;
 
 }
 #endif // UTILS_EXTRUSION_JUNCTION_H

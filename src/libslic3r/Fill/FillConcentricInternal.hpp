@@ -10,14 +10,10 @@ class FillConcentricInternal : public Fill
 public:
     ~FillConcentricInternal() override = default;
     void fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) override;
-    bool is_self_crossing() override { return false; }
 
 protected:
     Fill* clone() const override { return new FillConcentricInternal(*this); };
     bool no_sort() const override { return true; }
-
-    const PrintConfig       *print_config        = nullptr;
-    const PrintObjectConfig *print_object_config = nullptr;
 
     friend class Layer;
 };

@@ -1,6 +1,8 @@
 #pragma once
-
 #include <string>
+#define calib_pressure_advance_dd
+
+#include "GCode.hpp"
 #include "GCodeWriter.hpp"
 #include "PrintConfig.hpp"
 #include "BoundingBox.hpp"
@@ -15,7 +17,6 @@ enum class CalibMode : int {
     Calib_PA_Line,
     Calib_PA_Pattern,
     Calib_PA_Tower,
-    Calib_Auto_PA_Line,
     Calib_Flow_Rate,
     Calib_Temp_Tower,
     Calib_Vol_speed_Tower,
@@ -23,22 +24,13 @@ enum class CalibMode : int {
     Calib_Retraction_tower
 };
 
-enum class CalibState {
-    Start = 0,
-    Preset,
-    Calibration,
-    CoarseSave,
-    FineCalibration,
-    Save,
-    Finish
-};
+enum class CalibState { Start = 0, Preset, Calibration, CoarseSave, FineCalibration, Save, Finish };
 
 struct Calib_Params
 {
-    Calib_Params() : mode(CalibMode::Calib_None){}
-    int extruder_id = 0;
-    double start, end, step;
-    bool print_numbers = false;
+    Calib_Params() : mode(CalibMode::Calib_None){};
+    double    start, end, step;
+    bool      print_numbers;
     CalibMode mode;
 };
 
@@ -52,13 +44,8 @@ class X1CCalibInfos
 public:
     struct X1CCalibInfo
     {
-        int         extruder_id = 0;
         int         tray_id;
-        int         ams_id = 0;
-        int         slot_id = 0;
         int         bed_temp;
-        ExtruderType        extruder_type{ExtruderType::etDirectDrive};
-        NozzleVolumeType    nozzle_volume_type = NozzleVolumeType::nvtStandard;
         int         nozzle_temp;
         float       nozzle_diameter;
         std::string filament_id;
@@ -68,19 +55,13 @@ public:
     };
 
     std::vector<X1CCalibInfo> calib_datas;
-    CalibMode                 cali_mode{ CalibMode::Calib_None };
 };
 
 class CaliPresetInfo
 {
 public:
     int         tray_id;
-    int         extruder_id;
-    NozzleVolumeType nozzle_volume_type;
-    BedType     bed_type;
     float       nozzle_diameter;
-    int         nozzle_pos_id{-1};
-    std::string nozzle_sn;
     std::string filament_id;
     std::string setting_id;
     std::string name;
@@ -88,11 +69,7 @@ public:
     CaliPresetInfo &operator=(const CaliPresetInfo &other)
     {
         this->tray_id         = other.tray_id;
-        this->extruder_id     = other.extruder_id;
-        this->nozzle_volume_type = other.nozzle_volume_type;
         this->nozzle_diameter = other.nozzle_diameter;
-        this->nozzle_pos_id   = other.nozzle_pos_id;
-        this->nozzle_sn       = other.nozzle_sn;
         this->filament_id     = other.filament_id;
         this->setting_id      = other.setting_id;
         this->name            = other.name;
@@ -117,54 +94,23 @@ public:
         CALI_RESULT_PROBLEM = 1,
         CALI_RESULT_FAILED  = 2,
     };
-    int         extruder_id = 0;
-    NozzleVolumeType nozzle_volume_type;
-    int         tray_id = 0;
-    int         ams_id = 0;
-    int         slot_id = 0;
+    int         tray_id;
     int         cali_idx = -1;
-    int         nozzle_pos_id = -1; //-1 means no nozzle pos
     float       nozzle_diameter;
-    std::string nozzle_sn;
     std::string filament_id;
     std::string setting_id;
     std::string name;
-    float       k_value = 0.0;
-    float       n_coef = 0.0;
+    float       k_value    = 0.0;
+    float       n_coef     = 0.0;
     int         confidence = -1; // 0: success  1: uncertain  2: failed
 };
 
 struct PACalibIndexInfo
 {
-    int         extruder_id = 0;
-    NozzleVolumeType nozzle_volume_type;
-    int         tray_id = 0;
-    int         ams_id = 0;
-    int         slot_id = 0;
-    int         cali_idx = -1; // -1 means default
-    int         nozzle_pos_id = -1; //-1 means no nozzle pos
+    int         tray_id;
+    int         cali_idx;
     float       nozzle_diameter;
-    std::string nozzle_sn;
     std::string filament_id;
-};
-
-struct PACalibExtruderInfo
-{
-    int              extruder_id = 0;
-    NozzleVolumeType nozzle_volume_type;
-    int              nozzle_pos_id = -1; //-1 means no nozzle pos
-    float            nozzle_diameter;
-    std::string      nozzle_sn;
-    std::string      filament_id = "";
-    bool             use_extruder_id{true};
-    bool             use_nozzle_volume_type{true};
-};
-
-struct PACalibTabInfo
-{
-    float pa_calib_tab_nozzle_dia;
-    int   extruder_id;
-    NozzleVolumeType nozzle_volume_type;
 };
 
 class FlowRatioCalibResult
@@ -180,7 +126,8 @@ public:
 
 struct DrawBoxOptArgs
 {
-    DrawBoxOptArgs(int num_perimeters, double height, double line_width, double speed) : num_perimeters{num_perimeters}, height{height}, line_width{line_width}, speed{speed} {};
+    DrawBoxOptArgs(int num_perimeters, double height, double line_width, double speed)
+        : num_perimeters{num_perimeters}, height{height}, line_width{line_width}, speed{speed} {};
     DrawBoxOptArgs() = default;
 
     bool   is_filled{false};
@@ -192,11 +139,11 @@ struct DrawBoxOptArgs
 class CalibPressureAdvance
 {
 public:
-    static float find_optimal_PA_speed(const DynamicPrintConfig &config, double line_width, double layer_height, int extruder_id = 0, int filament_idx = 0);
+    static float find_optimal_PA_speed(const DynamicPrintConfig &config, double line_width, double layer_height, int filament_idx = 0);
 
 protected:
-    CalibPressureAdvance() = default;
-    CalibPressureAdvance(const DynamicPrintConfig &config) : m_config(config){};
+    CalibPressureAdvance()  = default;
+    CalibPressureAdvance(const DynamicPrintConfig& config) : m_config(config){};
     CalibPressureAdvance(const FullPrintConfig &config) { m_config.apply(config); };
     ~CalibPressureAdvance() = default;
 
@@ -205,25 +152,38 @@ protected:
     void delta_scale_bed_ext(BoundingBoxf &bed_ext) const { bed_ext.scale(1.0f / 1.41421f); }
 
     std::string move_to(Vec2d pt, GCodeWriter &writer, std::string comment = std::string());
-    double      e_per_mm(double line_width, double layer_height, float nozzle_diameter, float filament_diameter, float print_flow_ratio) const;
-    double      speed_adjust(int speed) const { return speed * 60; };
+    double e_per_mm(double line_width, double layer_height, float nozzle_diameter, float filament_diameter, float print_flow_ratio) const;
+    double speed_adjust(int speed) const { return speed * 60; };
 
     std::string convert_number_to_string(double num) const;
     double      number_spacing() const { return m_digit_segment_len + m_digit_gap_len; };
-    std::string draw_digit(double startx, double starty, char c, CalibPressureAdvance::DrawDigitMode mode, double line_width, double e_per_mm, GCodeWriter &writer);
-    std::string draw_number(
-        double startx, double starty, double value, CalibPressureAdvance::DrawDigitMode mode, double line_width, double e_per_mm, double speed, GCodeWriter &writer);
+    std::string draw_digit(double                              startx,
+                           double                              starty,
+                           char                                c,
+                           CalibPressureAdvance::DrawDigitMode mode,
+                           double                              line_width,
+                           double                              e_per_mm,
+                           GCodeWriter                        &writer);
+    std::string draw_number(double                              startx,
+                            double                              starty,
+                            double                              value,
+                            CalibPressureAdvance::DrawDigitMode mode,
+                            double                              line_width,
+                            double                              e_per_mm,
+                            double                              speed,
+                            GCodeWriter                        &writer);
 
-    std::string draw_line(GCodeWriter &writer, Vec2d to_pt, double line_width, double layer_height, double speed, const std::string &comment = std::string());
+    std::string draw_line(
+        GCodeWriter &writer, Vec2d to_pt, double line_width, double layer_height, double speed, const std::string &comment = std::string());
     std::string draw_box(GCodeWriter &writer, double min_x, double min_y, double size_x, double size_y, DrawBoxOptArgs opt_args);
 
     double to_radians(double degrees) const { return degrees * M_PI / 180; };
     double get_distance(Vec2d from, Vec2d to) const;
 
-    Vec3d              m_last_pos;
+    Vec3d m_last_pos;
     DynamicPrintConfig m_config;
 
-    const double                 m_encroachment{1. / 3.};
+    const double m_encroachment{1. / 3.};
     DrawDigitMode                m_draw_digit_mode{DrawDigitMode::Left_To_Right};
     const double                 m_digit_segment_len{2};
     const double                 m_digit_gap_len{1};
@@ -233,7 +193,7 @@ protected:
 class CalibPressureAdvanceLine : public CalibPressureAdvance
 {
 public:
-    CalibPressureAdvanceLine(GCode *gcodegen);
+    CalibPressureAdvanceLine(GCode* gcodegen);
     ~CalibPressureAdvanceLine(){};
 
     std::string generate_test(double start_pa = 0, double step_pa = 0.002, int count = 50);
@@ -247,7 +207,7 @@ public:
     const double &line_width() { return m_line_width; };
     const double &height_layer() { return m_height_layer; };
     bool          is_delta() const;
-    bool &        draw_numbers() { return m_draw_numbers; }
+    bool         &draw_numbers() { return m_draw_numbers; }
 
 private:
     std::string print_pa_lines(double start_x, double start_y, double start_pa, double step_pa, int num);
@@ -259,10 +219,10 @@ private:
     double m_nozzle_diameter;
     double m_slow_speed, m_fast_speed;
 
-    double       m_height_layer{0.2};
-    double       m_line_width{0.6};
-    double       m_thin_line_width{0.44};
-    double       m_number_line_width{0.48};
+    double m_height_layer{0.2};
+    double m_line_width{0.6};
+    double m_thin_line_width{0.44};
+    double m_number_line_width{0.48};
     const double m_space_y{3.5};
 
     double m_length_short{20.0}, m_length_long{40.0};
@@ -271,9 +231,9 @@ private:
 
 struct SuggestedConfigCalibPAPattern
 {
-    const std::vector<std::pair<std::string, double>> float_pairs{{"initial_layer_print_height", 0.25}, {"layer_height", 0.2}};
-
-    const std::vector<std::pair<std::string, std::vector<double>>> floats_pairs{{"initial_layer_speed", {30}}};
+    const std::vector<std::pair<std::string, double>> float_pairs{{"initial_layer_print_height", 0.25},
+                                                                  {"layer_height", 0.2},
+                                                                  {"initial_layer_speed", 30}};
 
     const std::vector<std::pair<std::string, double>> nozzle_ratio_pairs{{"line_width", 112.5}, {"initial_layer_line_width", 140}};
 
@@ -287,7 +247,8 @@ class CalibPressureAdvancePattern : public CalibPressureAdvance
     friend struct DrawBoxOptArgs;
 
 public:
-    CalibPressureAdvancePattern(const Calib_Params &params, const DynamicPrintConfig &config, bool is_bbl_machine, Model &model, const Vec3d &origin);
+    CalibPressureAdvancePattern(
+        const Calib_Params &params, const DynamicPrintConfig &config, bool is_bbl_machine, Model &model, const Vec3d &origin);
 
     double handle_xy_size() const { return m_handle_xy_size; };
     double handle_spacing() const { return m_handle_spacing; };
@@ -301,8 +262,8 @@ public:
     Vec3d get_start_offset();
 
 protected:
-    double speed_first_layer() const { return m_config.option<ConfigOptionFloatsNullable>("initial_layer_speed")->get_at(m_params.extruder_id); };
-    double speed_perimeter() const { return m_config.option<ConfigOptionFloatsNullable>("outer_wall_speed")->get_at(m_params.extruder_id); };
+    double speed_first_layer() const { return m_config.option<ConfigOptionFloat>("initial_layer_speed")->value; };
+    double speed_perimeter() const { return m_config.option<ConfigOptionFloat>("outer_wall_speed")->value; };
     double line_width_first_layer() const { return m_config.get_abs_value("initial_layer_line_width"); };
     double line_width() const { return m_config.get_abs_value("line_width"); };
     int    wall_count() const { return m_config.option<ConfigOptionInt>("wall_loops")->value; };
@@ -313,6 +274,7 @@ private:
     void _refresh_writer(bool is_bbl_machine, const Model &model, const Vec3d &origin);
 
     double    height_first_layer() const { return m_config.option<ConfigOptionFloat>("initial_layer_print_height")->value; };
+    double    height_z_offset() const { return m_config.option<ConfigOptionFloat>("z_offset")->value; };
     double    height_layer() const { return m_config.option<ConfigOptionFloat>("layer_height")->value; };
     const int get_num_patterns() const { return std::ceil((m_params.end - m_params.start) / m_params.step + 1); }
 
@@ -339,9 +301,9 @@ private:
 
     const Calib_Params &m_params;
 
-    GCodeWriter m_writer;
-    Vec3d       m_starting_point;
-    bool        m_is_start_point_fixed = false;
+    GCodeWriter        m_writer;
+    Vec3d              m_starting_point;
+    bool               m_is_start_point_fixed = false;
 
     const double m_handle_xy_size{5};
     const double m_handle_spacing{2};
@@ -354,5 +316,4 @@ private:
     const double m_glyph_padding_horizontal{1};
     const double m_glyph_padding_vertical{1};
 };
-
 } // namespace Slic3r

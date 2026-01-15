@@ -385,16 +385,6 @@ static bool        mtl_parseline(const char *line, MtlData &data)
     char c1 = *line++;
     switch (c1) {
         case '#': {// Comment, ignore the rest of the line.
-            if (*(line++) == 'F' && *(line++) == 'i' && *(line++) == 'r' && *(line++) == 's' && *(line++) == 't') {         // First
-                if (*(line++) == 'T' && *(line++) == 'i' && *(line++) == 'm' && *(line++) == 'e' ) { // Time
-                    if (*(line++) == 'U' && *(line++) == 's' && *(line++) == 'i' && *(line++) == 'n' && *(line++) == 'g') { // Using
-                        if (*(line++) == 'M' && *(line++) == 'a' && *(line++) == 'k' && *(line++) == 'e' && *(line++) == 'r' && *(line++) == 'L' && *(line++) == 'a' &&
-                            *(line++) == 'b') { // MakerLab
-                            data.first_time_using_makerlab = true;
-                        }
-                    }
-                }
-			}
             break;
         }
 		case 'n': {
@@ -404,7 +394,6 @@ static bool        mtl_parseline(const char *line, MtlData &data)
 			ObjNewMtl new_mtl;
             cur_mtl_name = line;
             data.new_mtl_unmap[cur_mtl_name] = std::make_shared<ObjNewMtl>();
-            data.mtl_orders.emplace_back(cur_mtl_name);
 			break;
 		}
         case 'm': {
@@ -588,8 +577,6 @@ bool objparse(const char *path, ObjData &data)
 		char buf[65536 * 2];
 		size_t len = 0;
 		size_t lenPrev = 0;
-		size_t lineCount = 0;
-
 		while ((len = ::fread(buf + lenPrev, 1, 65536, pFile)) != 0) {
 			len += lenPrev;
 			size_t lastLine = 0;
@@ -602,13 +589,6 @@ bool objparse(const char *path, ObjData &data)
 					//FIXME check the return value and exit on error?
 					// Will it break parsing of some obj files?
 					obj_parseline(c, data);
-
-					/*for ml*/
-					if (lineCount == 0) { data.ml_region = parsemlinfo(c, "region:");}
-                    if (lineCount == 1) { data.ml_name = parsemlinfo(c, "ml_name:"); }
-					if (lineCount == 2) { data.ml_id = parsemlinfo(c, "ml_file_id:");}
-
-					++lineCount;
 					lastLine = i + 1;
 				}
 			lenPrev = len - lastLine;
@@ -626,28 +606,6 @@ bool objparse(const char *path, ObjData &data)
 	::fclose(pFile);
 	return true;
 }
-
-std::string parsemlinfo(const char* input, const char* condition) {
-    const char* regionPtr = std::strstr(input, condition);
-
-	std::string regionContent = "";
-
-    if (regionPtr != nullptr) {
-        regionPtr += std::strlen(condition);
-
-        while (*regionPtr == ' ' || *regionPtr == '\t') {
-            ++regionPtr;
-        }
-
-        const char* endPtr = std::strchr(regionPtr, '\n');
-        size_t length = (endPtr != nullptr) ? (endPtr - regionPtr) : std::strlen(regionPtr);
-
-		regionContent = std::string(regionPtr, length);
-    }
-
-	return regionContent;
-}
-
 
 bool mtlparse(const char *path, MtlData &data)
 {
@@ -706,14 +664,6 @@ bool objparse(std::istream &stream, ObjData &data)
                     while (*c == ' ' || *c == '\t')
                         ++ c;
                     obj_parseline(c, data);
-
-                    /*for ml*/
-                    if (lastLine < 3) {
-                        data.ml_region = parsemlinfo(c, "region");
-                        data.ml_name = parsemlinfo(c, "ml_name");
-                        data.ml_id = parsemlinfo(c, "ml_file_id");
-                    }
-
                     lastLine = i + 1;
                 }
             lenPrev = len - lastLine;
@@ -724,11 +674,11 @@ bool objparse(std::istream &stream, ObjData &data)
     	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
     	return false;
     }
-
+    
     return true;
 }
 
-template<typename T>
+template<typename T> 
 bool savevector(FILE *pFile, const std::vector<T> &v)
 {
 	size_t cnt = v.size();
@@ -765,7 +715,7 @@ bool savevectornameidx(FILE *pFile, const std::vector<T> &v)
 	return true;
 }
 
-template<typename T>
+template<typename T> 
 bool loadvector(FILE *pFile, std::vector<T> &v)
 {
 	v.clear();
@@ -849,20 +799,15 @@ bool objbinsave(const char *path, const ObjData &data)
 bool objbinload(const char *path, ObjData &data)
 {
 	FILE *pFile = boost::nowide::fopen(path, "rb");
-    if (pFile == 0) {
-        ::fclose(pFile);
-        return false;
-    }
+	if (pFile == 0)
+		return false;
 
 	data.version = 0;
-    if (::fread(&data.version, sizeof(data.version), 1, pFile) != 1) {
-        ::fclose(pFile);
-        return false;
-    }
-    if (data.version != 1) {
-        ::fclose(pFile);
-        return false;
-    }
+	if (::fread(&data.version, sizeof(data.version), 1, pFile) != 1)
+		return false;
+	if (data.version != 1)
+		return false;
+
 	bool result =
 		loadvector(pFile, data.coordinates)			&&
 		loadvector(pFile, data.textureCoordinates)	&&
@@ -905,7 +850,7 @@ extern bool objequal(const ObjData &data1, const ObjData &data2)
 	//FIXME ignore version number
 	// version;
 
-	return
+	return 
 		vectorequal(data1.coordinates,			data2.coordinates)			&&
 		vectorequal(data1.textureCoordinates,	data2.textureCoordinates)	&&
 		vectorequal(data1.normals,				data2.normals)				&&

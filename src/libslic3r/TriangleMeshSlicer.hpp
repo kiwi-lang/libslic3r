@@ -107,7 +107,6 @@ void slice_mesh_slabs(
     const Transform3d                &trafo,
     std::vector<Polygons>            *out_top,
     std::vector<Polygons>            *out_bottom,
-    std::vector<std::pair<Vec3f, Vec3f>>   *vertical_points,
     std::function<void()>             throw_on_cancel);
 
 // Project mesh upwards pointing surfaces / downwards pointing surfaces into 2D polygons.
@@ -131,14 +130,6 @@ void cut_mesh(
     indexed_triangle_set            *lower,
     bool                             triangulate_caps = true);
 
-// BBS
-void cut_mesh(
-    const indexed_triangle_set      &mesh,
-    std::array<Vec3d, 4>            plane_points,
-    indexed_triangle_set            *upper,
-    indexed_triangle_set            *lower,
-    bool                             triangulate_caps = true);
-
-}
+} // namespace Slic3r
 
 #endif // slic3r_TriangleMeshSlicer_hpp_

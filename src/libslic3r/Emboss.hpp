@@ -19,7 +19,7 @@ namespace Slic3r {
 /// text OR polygons onto model surface
 /// </summary>
 namespace Emboss
-{
+{    
     static const float UNION_DELTA = 50.0f; // [approx in nano meters depends on volume scale]
     static const unsigned UNION_MAX_ITERATIN = 10; // [count]
 
@@ -41,6 +41,84 @@ namespace Emboss
     /// <returns>File path to font when found</returns>
     std::optional<std::wstring> get_font_path(const std::wstring &font_face_name);
 
+    // description of one letter
+    struct Glyph
+    {
+        // NOTE: shape is scaled by SHAPE_SCALE 
+        // to be able store points without floating points
+        ExPolygons shape;
+
+        // values are in font points
+        int advance_width=0, left_side_bearing=0;
+    };
+    // cache for glyph by unicode
+    using Glyphs = std::map<int, Glyph>;
+        
+    /// <summary>
+    /// keep information from file about font 
+    /// (store file data itself)
+    /// + cache data readed from buffer
+    /// </summary>
+    struct FontFile
+    {
+        // loaded data from font file
+        // must store data size for imgui rasterization
+        // To not store data on heap and To prevent unneccesary copy
+        // data are stored inside unique_ptr
+        std::unique_ptr<std::vector<unsigned char>> data;
+
+        struct Info
+        {
+            // vertical position is "scale*(ascent - descent + lineGap)"
+            int ascent, descent, linegap;
+
+            // for convert font units to pixel
+            int unit_per_em;
+        };
+        // info for each font in data
+        std::vector<Info> infos;
+
+        FontFile(std::unique_ptr<std::vector<unsigned char>> data,
+                 std::vector<Info>                         &&infos)
+            : data(std::move(data)), infos(std::move(infos))
+        {
+            assert(this->data != nullptr);
+            assert(!this->data->empty());
+        }
+
+        bool operator==(const FontFile &other) const {
+            if (data->size() != other.data->size())
+                return false;
+            //if(*data != *other.data) return false;
+            for (size_t i = 0; i < infos.size(); i++) 
+                if (infos[i].ascent != other.infos[i].ascent ||
+                    infos[i].descent == other.infos[i].descent ||
+                    infos[i].linegap == other.infos[i].linegap)
+                    return false;
+            return true;
+        }
+    };
+
+    /// <summary>
+    /// Add caching for shape of glyphs
+    /// </summary>
+    struct FontFileWithCache
+    {
+        // Pointer on data of the font file
+        std::shared_ptr<const FontFile> font_file;
+
+        // Cache for glyph shape
+        // IMPORTANT: accessible only in plater job thread !!!
+        // main thread only clear cache by set to another shared_ptr
+        std::shared_ptr<Emboss::Glyphs> cache;
+
+        FontFileWithCache() : font_file(nullptr), cache(nullptr) {}
+        explicit FontFileWithCache(std::unique_ptr<FontFile> font_file)
+            : font_file(std::move(font_file))
+            , cache(std::make_shared<Emboss::Glyphs>())
+        {}
+        bool has_value() const { return font_file != nullptr && cache != nullptr; }
+    };
 
     /// <summary>
     /// Load font file into buffer
@@ -74,24 +152,8 @@ namespace Emboss
     /// <param name="font_prop">User defined property of the font</param>
     /// <param name="was_canceled">Way to interupt processing</param>
     /// <returns>Inner polygon cw(outer ccw)</returns>
-    typedef std::function<std::vector<FontFileWithCache>()> BackFontCacheFn;
-    HealedExPolygons text2shapes(
-        EmbossShape &                emboss_shape,
-        FontFileWithCache &  font_with_cache,
-        const char *text,
-        const FontProp &font_prop,
-        double                       standard_scale,
-        const std::function<bool()> &was_canceled = []() { return false; },
-        BackFontCacheFn              bfc_fn                    = nullptr);
-    void text2vshapes(
-        EmbossShape &                emboss_shape,
-        FontFileWithCache &          font_with_cache,
-        const std::wstring &         text,
-        const FontProp &             font_prop,
-        double                       standard_scale,
-        const std::function<bool()> &was_canceled = []() { return false; },
-        BackFontCacheFn              bfc_fn       = nullptr);
-    HealedExPolygons union_with_delta(ExPolygons expoly, float delta, unsigned max_heal_iteration);
+    HealedExPolygons  text2shapes (FontFileWithCache &font, const char *text,         const FontProp &font_prop, const std::function<bool()> &was_canceled = []() {return false;});
+    ExPolygonsWithIds text2vshapes(FontFileWithCache &font, const std::wstring& text, const FontProp &font_prop, const std::function<bool()>& was_canceled = []() {return false;});
 
     const unsigned ENTER_UNICODE = static_cast<unsigned>('\n');
     /// Sum of character '\n'
@@ -110,7 +172,7 @@ namespace Emboss
 
     /// <summary>
     /// NOTE: call Slic3r::union_ex before this call
-    ///
+    /// 
     /// Heal (read: Fix) issues in expolygons:
     ///  - self intersections
     ///  - duplicit points
@@ -158,8 +220,7 @@ namespace Emboss
     /// <param name="font_index">Define font in collection</param>
     /// <param name="exist_unknown">True when text contain glyph unknown in font</param>
     /// <returns>Unique set of character from text contained in font</returns>
-    std::string create_range_text(std::string &text, std::vector<std::shared_ptr<const FontFile>> fonts, unsigned int font_index, bool *exist_unknown = nullptr);
-    std::string create_range_text(const std::string &text, const FontFile &font, unsigned int font_index, bool* exist_unknown = nullptr);
+    std::string create_range_text(const std::string &text, const FontFile &font, unsigned int font_index, bool* exist_unknown = nullptr);    
 
     /// <summary>
     /// Calculate scale for glyph shape convert from shape points to mm
@@ -245,7 +306,7 @@ namespace Emboss
     /// <param name="projection">Define transformation from 2d to 3d(orientation, position, scale, ...)</param>
     /// <returns>Projected shape into space</returns>
     indexed_triangle_set polygons2model(const ExPolygons &shape2d, const IProjection& projection);
-
+    
     /// <summary>
     /// Suggest wanted up vector of embossed text by emboss direction
     /// </summary>
@@ -253,7 +314,7 @@ namespace Emboss
     /// <param name="up_limit">Is compared with normal.z to suggest up direction</param>
     /// <returns>Wanted up vector</returns>
     Vec3d suggest_up(const Vec3d normal, double up_limit = 0.9);
-
+        
     /// <summary>
     /// By transformation calculate angle between suggested and actual up vector
     /// </summary>
@@ -359,7 +420,7 @@ namespace Emboss
         // Inherited via IProject
         std::pair<Vec3d, Vec3d> create_front_back(const Point &p) const override;
         Vec3d project(const Vec3d &point) const override;
-        std::optional<Vec2d> unproject(const Vec3d &p, double * depth = nullptr) const override;
+        std::optional<Vec2d> unproject(const Vec3d &p, double * depth = nullptr) const override;     
     };
 
     /// <summary>

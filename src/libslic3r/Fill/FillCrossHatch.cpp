@@ -148,7 +148,7 @@ static Polylines generate_infill_layers(coordf_t z_height, double repeat_ratio, 
     Polylines result;
     coordf_t  trans_layer_size  = grid_size * 0.4;          // upper.
     coordf_t  repeat_layer_size = grid_size * repeat_ratio; // lower.
-    z_height                    += repeat_layer_size / 2 ;   // offset to improve first few layer strength and reduce the risk of warpping.
+    z_height                    += repeat_layer_size / 2 + trans_layer_size;   // offset to improve first few layer strength and reduce the risk of warpping.
     coordf_t  period            = trans_layer_size + repeat_layer_size;
     coordf_t  remains           = z_height - std::floor(z_height / period) * period;
     coordf_t  trans_z           = remains - repeat_layer_size; // put repeat layer first.
@@ -186,8 +186,7 @@ void FillCrossHatch ::_fill_surface_single(
     BoundingBox bb = expolygon.contour.bounding_box();
 
     // linespace modifier
-    double density_adjusted = params.density / params.multiline;
-    coord_t line_spacing = coord_t(scale_(this->spacing) / density_adjusted);
+    coord_t line_spacing = coord_t(scale_(this->spacing) / params.density);
 
     // reduce density
     if (params.density < 0.999) line_spacing *= 1.08;
@@ -205,9 +204,6 @@ void FillCrossHatch ::_fill_surface_single(
     // shift the pattern to the actual space
     for (Polyline &pl : polylines) { pl.translate(bb.min); }
 
-    // Apply multiline offset if needed
-    multiline_fill(polylines, params, spacing);
-    
     polylines = intersection_pl(polylines, to_polygons(expolygon));
 
     // --- remove small remains from gyroid infill

@@ -45,6 +45,8 @@ using SupportGeneratorLayersPtr     = std::vector<SupportGeneratorLayer*>;
 namespace TreeSupport3D
 {
 
+// The number of vertices in each circle.
+static constexpr const size_t SUPPORT_TREE_CIRCLE_RESOLUTION = 25;
 
 struct AreaIncreaseSettings
 {
@@ -318,9 +320,8 @@ void organic_draw_branches(
     // Output:
     SupportGeneratorLayersPtr& intermediate_layers,
     SupportGeneratorLayerStorage& layer_storage,
-    std::vector<ExPolygons>& cooldown_areas,
 
-    std::function<void()> throw_on_cancel);
+    std::function<void()>            throw_on_cancel);
 
 } // namespace TreeSupport3D
 

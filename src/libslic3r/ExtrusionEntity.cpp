@@ -12,9 +12,8 @@
 #define L(s) (s)
 
 namespace Slic3r {
-static const double slope_path_ratio = 0.3;
+    
 static const double slope_inner_outer_wall_gap = 0.4;
-static const int    overhang_threshold = 1;
 
 void ExtrusionPath::intersect_expolygons(const ExPolygons &collection, ExtrusionEntityCollection* retval) const
 {
@@ -62,21 +61,10 @@ void ExtrusionPath::polygons_covered_by_spacing(Polygons &out, const float scale
     // Instantiating the Flow class to get the line spacing.
     // Don't know the nozzle diameter, setting to zero. It shall not matter it shall be optimized out by the compiler.
     bool bridge = is_bridge(this->role());
-    assert(! bridge || this->width == this->height);
+    // SoftFever: TODO Mac trigger assersion errors
+//    assert(! bridge || this->width == this->height);
     auto flow = bridge ? Flow::bridging_flow(this->width, 0.f) : Flow(this->width, this->height, 0.f);
     polygons_append(out, offset(this->polyline, 0.5f * float(flow.scaled_spacing()) + scaled_epsilon));
-}
-
-bool ExtrusionPath::can_merge(const ExtrusionPath& other)
-{
-    return  curve_degree==other.curve_degree &&
-            mm3_per_mm == other.mm3_per_mm &&
-            width == other.width &&
-            height == other.height &&
-            m_can_reverse == other.m_can_reverse &&
-            m_role == other.m_role &&
-            m_no_extrusion == other.m_no_extrusion &&
-            smooth_speed == other.smooth_speed;
 }
 
 void ExtrusionMultiPath::reverse()
@@ -322,89 +310,6 @@ void ExtrusionLoop::clip_end(double distance, ExtrusionPaths* paths) const
     }
 }
 
-// BBS: clipe slope a bit
-void ExtrusionLoopSloped::clip_slope(double distance, bool inter_perimeter)
-{
-
-    this->clip_end(distance);
-    this->clip_front(distance*2);
-}
-
-// BBS
-void ExtrusionLoopSloped::clip_end(const double distance)
-{
-    double clip_dist = distance;
-    std::vector<ExtrusionPathSloped> &ends_slope = this->ends;
-    while (clip_dist > 0 && !ends_slope.empty()) {
-        ExtrusionPathSloped &last_path = ends_slope.back();
-        double len = last_path.length();
-        if (len <= clip_dist) {
-            ends_slope.pop_back();
-            clip_dist -= len;
-        } else {
-            last_path.polyline.clip_end(clip_dist);
-            break;
-        }
-    }
-}
-
-// BBS
-void ExtrusionLoopSloped::clip_front(const double distance)
-{
-    double clip_dist = distance;
-    if (this->role() == erPerimeter)
-        clip_dist = scale_(this->slope_path_length()) * slope_inner_outer_wall_gap;
-
-    std::vector<ExtrusionPathSloped> &start_slope = this->starts;
-
-    Polyline front_inward;
-    while (distance > 0 && !start_slope.empty()) {
-        ExtrusionPathSloped &first_path = start_slope.front();
-        double len = first_path.length();
-        if (len <= clip_dist) {
-            start_slope.erase(start_slope.begin());
-            clip_dist -= len;
-        } else {
-            first_path.polyline.reverse();
-            first_path.polyline.clip_end(clip_dist);
-            first_path.polyline.reverse();
-            break;
-        }
-    }
-}
-
-double ExtrusionLoopSloped::slope_path_length() {
-    double total_length = 0.0;
-    for (ExtrusionPathSloped start_ep : this->starts) {
-        total_length += unscale_(start_ep.length());
-    }
-    return total_length;
-}
-
-// BBS: slowdown slope path seep to get better seam
-void ExtrusionLoopSloped::slowdown_slope_speed() {
-    double speed_base   = slope_path_ratio * this->target_speed;
-    double speed_update = speed_base;
-    double count_length = 0.0;
-    double total_length = this->slope_path_length();
-
-    for (ExtrusionPathSloped &start_ep : this->starts) {
-        start_ep.slope_begin.speed_record = speed_update;
-        count_length += unscale_(start_ep.length());
-        // mapping speed for each path
-        start_ep.slope_end.speed_record = speed_base + (this->target_speed - speed_base) * (count_length / total_length);
-        speed_update = start_ep.slope_end.speed_record;
-    }
-
-    for (size_t ep_index = 0; ep_index < this->ends.size(); ++ep_index) {
-        ExtrusionPathSloped &end_ep = this->ends[ep_index];
-        ExtrusionPathSloped &start_ep = this->starts[this->starts.size() - 1 - ep_index];
-
-        end_ep.slope_begin.speed_record = start_ep.slope_end.speed_record;
-        end_ep.slope_end.speed_record = start_ep.slope_begin.speed_record;
-    }
-}
-
 bool ExtrusionLoop::has_overhang_point(const Point &point) const
 {
     for (const ExtrusionPath &path : this->paths) {
@@ -414,17 +319,6 @@ bool ExtrusionLoop::has_overhang_point(const Point &point) const
             // we consider it overhang only if it's not an endpoint
             return (is_bridge(path.role()) && pos > 0 && pos != (int)(path.polyline.points.size())-1);
         }
-    }
-    return false;
-}
-
-bool ExtrusionLoop::has_overhang_paths() const
-{
-    for (const ExtrusionPath &path : this->paths) {
-        if (is_bridge(path.role()))
-            return true;
-        if (path.overhang_degree >= overhang_threshold)
-            return true;
     }
     return false;
 }
@@ -449,9 +343,9 @@ double ExtrusionLoop::min_mm3_per_mm() const
     return min_mm3_per_mm;
 }
 
-// Orca: This function is used to check if the loop is smooth(continuous) or not.
-//BBS: only check angle of seam point while the seam has been decided.
-bool ExtrusionLoop::check_seam_point_angle(double angle_threshold, double min_arm_length) const
+// Orca: This function is used to check if the loop is smooth(continuous) or not. 
+// TODO: the main logic is largly copied from the calculate_polygon_angles_at_vertices function in SeamPlacer file. Need to refactor the code in the future.
+bool ExtrusionLoop::is_smooth(double angle_threshold, double min_arm_length) const
 {
     // go through all the points in the loop and check if the angle between two segments(AB and BC) is less than the threshold
     size_t idx_prev = 0;
@@ -461,11 +355,13 @@ bool ExtrusionLoop::check_seam_point_angle(double angle_threshold, double min_ar
     float distance_to_prev = 0;
     float distance_to_next = 0;
 
-    const auto    _polygon = polygon();
-    const Points &points   = _polygon.points;
+    const auto _polygon = polygon();
+    const Points& points = _polygon.points;
 
     std::vector<float> lengths{};
-    for (size_t point_idx = 0; point_idx < points.size() - 1; ++point_idx) { lengths.push_back((unscale(points[point_idx]) - unscale(points[point_idx + 1])).norm()); }
+    for (size_t point_idx = 0; point_idx < points.size() - 1; ++point_idx) {
+        lengths.push_back((unscale(points[point_idx]) - unscale(points[point_idx + 1])).norm());
+    }
     lengths.push_back(std::max((unscale(points[0]) - unscale(points[points.size() - 1])).norm(), 0.1));
 
     // push idx_prev far enough back as initialization
@@ -474,13 +370,6 @@ bool ExtrusionLoop::check_seam_point_angle(double angle_threshold, double min_ar
         distance_to_prev += lengths[idx_prev];
     }
 
-    // push idx_next forward as far as needed
-    while (distance_to_next < min_arm_length) {
-        distance_to_next += lengths[idx_next];
-        idx_next = Slic3r::next_idx_modulo(idx_next, points.size());
-    }
-
-    //thanks orca
     for (size_t _i = 0; _i < points.size(); ++_i) {
         // pull idx_prev to current as much as possible, while respecting the min_arm_length
         while (distance_to_prev - lengths[idx_prev] > min_arm_length) {
@@ -495,11 +384,13 @@ bool ExtrusionLoop::check_seam_point_angle(double angle_threshold, double min_ar
         }
 
         // Calculate angle between idx_prev, idx_curr, idx_next.
-        const Point &p0 = points[idx_prev];
-        const Point &p1 = points[idx_curr];
-        const Point &p2 = points[idx_next];
-        const auto   a  = angle(p0 - p1, p2 - p1);
-        if (a > 0 ? a < angle_threshold : a > -angle_threshold) { return false; }
+        const Point& p0 = points[idx_prev];
+        const Point& p1 = points[idx_curr];
+        const Point& p2 = points[idx_next];
+        const auto a = angle(p0 - p1, p2 - p1);
+        if (a > 0 ? a < angle_threshold : a > -angle_threshold) {
+            return false;
+        }
 
         // increase idx_curr by one
         float curr_distance = lengths[idx_curr];
@@ -511,12 +402,13 @@ bool ExtrusionLoop::check_seam_point_angle(double angle_threshold, double min_ar
     return true;
 }
 
-ExtrusionLoopSloped::ExtrusionLoopSloped( ExtrusionPaths &original_paths,
-                                          double seam_gap,
-                                          double slope_min_length,
-                                          double slope_max_segment_length,
-                                          double start_slope_ratio, ExtrusionLoopRole role)
- : ExtrusionLoop(role)
+ExtrusionLoopSloped::ExtrusionLoopSloped(ExtrusionPaths&   original_paths,
+                                         double            seam_gap,
+                                         double            slope_min_length,
+                                         double            slope_max_segment_length,
+                                         double            start_slope_ratio,
+                                         ExtrusionLoopRole role)
+    : ExtrusionLoop(role)
 {
     // create slopes
     const auto add_slop = [this, slope_max_segment_length, seam_gap](const ExtrusionPath &path, const Polyline &poly, double ratio_begin, double ratio_end) {
@@ -582,8 +474,7 @@ ExtrusionLoopSloped::ExtrusionLoopSloped( ExtrusionPaths &original_paths,
             paths.emplace_back(std::move(flat_path), *path);
             remaining_length = 0;
         } else {
-            // BBS: protection for accuracy issues
-            remaining_length       = remaining_length - path_len < EPSILON ? 0 : remaining_length - path_len;
+            remaining_length -= path_len;
             const double end_ratio = lerp(1.0, start_slope_ratio, remaining_length / slope_min_length);
             add_slop(*path, path->polyline, start_ratio, end_ratio);
             start_ratio = end_ratio;
@@ -596,18 +487,76 @@ ExtrusionLoopSloped::ExtrusionLoopSloped( ExtrusionPaths &original_paths,
     paths.insert(paths.end(), path, original_paths.end());
 }
 
-std::vector<const ExtrusionPath *> ExtrusionLoopSloped::get_all_paths() const
-{
-    std::vector<const ExtrusionPath *> r;
+std::vector<const ExtrusionPath*> ExtrusionLoopSloped::get_all_paths() const {
+    std::vector<const ExtrusionPath*> r;
     r.reserve(starts.size() + paths.size() + ends.size());
-    for (const auto &p : starts)
+    for (const auto& p : starts) {
         r.push_back(&p);
-    for (const auto &p : paths)
+    }
+    for (const auto& p : paths) {
         r.push_back(&p);
-    for (const auto &p : ends)
+    }
+    for (const auto& p : ends) {
         r.push_back(&p);
+    }
 
     return r;
+}
+
+void ExtrusionLoopSloped::clip_slope(double distance, bool inter_perimeter)
+{
+
+    this->clip_end(distance);
+    this->clip_front(distance*2);
+}
+
+void ExtrusionLoopSloped::clip_end(const double distance)
+{
+    double clip_dist = distance;
+    std::vector<ExtrusionPathSloped> &ends_slope = this->ends;
+    while (clip_dist > 0 && !ends_slope.empty()) {
+        ExtrusionPathSloped &last_path = ends_slope.back();
+        double len = last_path.length();
+        if (len <= clip_dist) {
+            ends_slope.pop_back();
+            clip_dist -= len;
+        } else {
+            last_path.polyline.clip_end(clip_dist);
+            break;
+        }
+    }
+}
+
+void ExtrusionLoopSloped::clip_front(const double distance)
+{
+    double clip_dist = distance;
+    if (this->role() == erPerimeter)
+        clip_dist = scale_(this->slope_path_length()) * slope_inner_outer_wall_gap;
+
+    std::vector<ExtrusionPathSloped> &start_slope = this->starts;
+
+    Polyline front_inward;
+    while (distance > 0 && !start_slope.empty()) {
+        ExtrusionPathSloped &first_path = start_slope.front();
+        double len = first_path.length();
+        if (len <= clip_dist) {
+            start_slope.erase(start_slope.begin());
+            clip_dist -= len;
+        } else {
+            first_path.polyline.reverse();
+            first_path.polyline.clip_end(clip_dist);
+            first_path.polyline.reverse();
+            break;
+        }
+    }
+}
+
+double ExtrusionLoopSloped::slope_path_length() {
+    double total_length = 0.0;
+    for (ExtrusionPathSloped start_ep : this->starts) {
+        total_length += unscale_(start_ep.length());
+    }
+    return total_length;
 }
 
 std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
@@ -618,22 +567,21 @@ std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
         case erExternalPerimeter            : return L("Outer wall");
         case erOverhangPerimeter            : return L("Overhang wall");
         case erInternalInfill               : return L("Sparse infill");
-        case erFloatingVerticalShell        : return L("Floating vertical shell");
         case erSolidInfill                  : return L("Internal solid infill");
         case erTopSolidInfill               : return L("Top surface");
         case erBottomSurface                : return L("Bottom surface");
         case erIroning                      : return L("Ironing");
         case erBridgeInfill                 : return L("Bridge");
+        case erInternalBridgeInfill         : return L("Internal Bridge");
         case erGapFill                      : return L("Gap infill");
-        case erSkirt                        : return ("Skirt");
-        case erBrim                         : return ("Brim");
+        case erSkirt                        : return L("Skirt");
+        case erBrim                         : return L("Brim");
         case erSupportMaterial              : return L("Support");
         case erSupportMaterialInterface     : return L("Support interface");
         case erSupportTransition            : return L("Support transition");
         case erWipeTower                    : return L("Prime tower");
         case erCustom                       : return L("Custom");
         case erMixed                        : return L("Multiple");
-        case erFlush                        : return L("Flush");
         default                             : assert(false);
     }
     return "";
@@ -649,8 +597,6 @@ ExtrusionRole ExtrusionEntity::string_to_role(const std::string_view role)
         return erOverhangPerimeter;
     else if (role == L("Sparse infill"))
         return erInternalInfill;
-    else if (role == L("Floating vertical shell"))
-        return erFloatingVerticalShell;
     else if (role == L("Internal solid infill"))
         return erSolidInfill;
     else if (role == L("Top surface"))
@@ -661,6 +607,8 @@ ExtrusionRole ExtrusionEntity::string_to_role(const std::string_view role)
         return erIroning;
     else if (role == L("Bridge"))
         return erBridgeInfill;
+    else if (role == L("Internal Bridge"))
+        return erInternalBridgeInfill;
     else if (role == L("Gap infill"))
         return erGapFill;
     else if (role == ("Skirt"))
@@ -679,8 +627,6 @@ ExtrusionRole ExtrusionEntity::string_to_role(const std::string_view role)
         return erCustom;
     else if (role == L("Multiple"))
         return erMixed;
-    else if (role == L("Flush"))
-        return erFlush;
     else
         return erNone;
 }

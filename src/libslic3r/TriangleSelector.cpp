@@ -134,7 +134,7 @@ bool TriangleSelector::verify_triangle_midpoints(const Triangle &tr) const
     return true;
 }
 
-bool TriangleSelector::verify_triangle_neighbors(const Triangle &tr, const Vec3i &neighbors) const
+bool TriangleSelector::verify_triangle_neighbors(const Triangle &tr, const Vec3i32 &neighbors) const
 {
     assert(neighbors(0) >= -1);
     assert(neighbors(1) >= -1);
@@ -166,24 +166,6 @@ void TriangleSelector::Triangle::set_division(int sides_to_split, int special_si
     this->special_side_idx = char(special_side_idx);
 }
 
-void TriangleSelector::Triangle::select_by_seed_fill()
-{
-    assert(!is_split());
-    m_selected_by_seed_fill = true;
-}
-
-void TriangleSelector::Triangle::unselect_by_seed_fill()
-{
-    assert(!is_split());
-    m_selected_by_seed_fill = false;
-}
-
-bool TriangleSelector::Triangle::is_selected_by_seed_fill() const
-{
-    assert(!is_split());
-    return m_selected_by_seed_fill;
-}
-
 inline bool is_point_inside_triangle(const Vec3f &pt, const Vec3f &p1, const Vec3f &p2, const Vec3f &p3)
 {
     // Real-time collision detection, Ericson, Chapter 3.4
@@ -205,7 +187,7 @@ inline bool is_point_inside_triangle(const Vec3f &pt, const Vec3f &p1, const Vec
     return std::all_of(begin(barycentric_cords), end(barycentric_cords), [](float cord) { return 0.f <= cord && cord <= 1.0; });
 }
 
-int TriangleSelector::select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i &neighbors) const
+int TriangleSelector::select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i32 &neighbors) const
 {
     assert(facet_idx < int(m_triangles.size()));
     const Triangle *tr = &m_triangles[facet_idx];
@@ -244,7 +226,7 @@ int TriangleSelector::select_unsplit_triangle(const Vec3f &hit, int facet_idx) c
     if (!m_triangles[facet_idx].valid())
         return -1;
 
-    Vec3i neighbors = m_neighbors[facet_idx];
+    Vec3i32 neighbors = m_neighbors[facet_idx];
     assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
     return this->select_unsplit_triangle(hit, facet_idx, neighbors);
 }
@@ -264,7 +246,7 @@ void TriangleSelector::select_patch(int facet_start, std::unique_ptr<Cursor> &&c
         // BBS: improve details for large cursor radius
         TriangleSelector::HeightRange* hr_cursor = dynamic_cast<TriangleSelector::HeightRange*>(m_cursor.get());
         if (hr_cursor == nullptr) {
-            set_edge_limit(std::min(std::sqrt(m_cursor->radius_sqr) / 5.f, 0.2f));
+            set_edge_limit(std::min(std::sqrt(m_cursor->radius_sqr) / 5.f, 0.05f));
             m_old_cursor_radius_sqr = m_cursor->radius_sqr;
         }
         else {
@@ -390,7 +372,7 @@ void TriangleSelector::seed_fill_select_triangles(const Vec3f &hit, int facet_st
     }
 }
 
-void TriangleSelector::precompute_all_neighbors_recursive(const int facet_idx, const Vec3i &neighbors, const Vec3i &neighbors_propagated, std::vector<Vec3i> &neighbors_out, std::vector<Vec3i> &neighbors_propagated_out) const
+void TriangleSelector::precompute_all_neighbors_recursive(const int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated, std::vector<Vec3i32> &neighbors_out, std::vector<Vec3i32> &neighbors_propagated_out) const
 {
     assert(facet_idx < int(m_triangles.size()));
 
@@ -410,7 +392,7 @@ void TriangleSelector::precompute_all_neighbors_recursive(const int facet_idx, c
                 assert(tr->children[i] < int(m_triangles.size()));
                 // Recursion, deep first search over the children of this triangle.
                 // All children of this triangle were created by splitting a single source triangle of the original mesh.
-                const Vec3i child_neighbors = this->child_neighbors(*tr, neighbors, i);
+                const Vec3i32 child_neighbors = this->child_neighbors(*tr, neighbors, i);
                 this->precompute_all_neighbors_recursive(tr->children[i], child_neighbors,
                                                          this->child_neighbors_propagated(*tr, neighbors_propagated, i, child_neighbors), neighbors_out,
                                                          neighbors_propagated_out);
@@ -419,10 +401,10 @@ void TriangleSelector::precompute_all_neighbors_recursive(const int facet_idx, c
     }
 }
 
-std::pair<std::vector<Vec3i>, std::vector<Vec3i>> TriangleSelector::precompute_all_neighbors() const
+std::pair<std::vector<Vec3i32>, std::vector<Vec3i32>> TriangleSelector::precompute_all_neighbors() const
 {
-    std::vector<Vec3i> neighbors(m_triangles.size(), Vec3i(-1, -1, -1));
-    std::vector<Vec3i> neighbors_propagated(m_triangles.size(), Vec3i(-1, -1, -1));
+    std::vector<Vec3i32> neighbors(m_triangles.size(), Vec3i32(-1, -1, -1));
+    std::vector<Vec3i32> neighbors_propagated(m_triangles.size(), Vec3i32(-1, -1, -1));
     for (int facet_idx = 0; facet_idx < this->m_orig_size_indices; ++facet_idx) {
         neighbors[facet_idx]            = m_neighbors[facet_idx];
         neighbors_propagated[facet_idx] = neighbors[facet_idx];
@@ -460,7 +442,7 @@ void TriangleSelector::append_touching_subtriangles(int itriangle, int vertexi, 
 
 // It appends all edges that are touching the edge (vertexi, vertexj) of the triangle and are not selected by seed fill
 // It doesn't append the edges that are touching the triangle only by part of the edge that means the triangles are from lower depth.
-void TriangleSelector::append_touching_edges(int itriangle, int vertexi, int vertexj, std::vector<Vec2i> &touching_edges_out) const
+void TriangleSelector::append_touching_edges(int itriangle, int vertexi, int vertexj, std::vector<Vec2i32> &touching_edges_out) const
 {
     if (itriangle == -1)
         return;
@@ -494,20 +476,6 @@ void TriangleSelector::append_touching_edges(int itriangle, int vertexi, int ver
         process_subtriangle(touching.second, Partition::Second);
 }
 
-void TriangleSelector::append_touching_its(int itriangle, indexed_triangle_set &its) const
-{
-    if (itriangle == -1)
-        return;
-    auto& idxs= m_triangles[itriangle].verts_idxs;
-    its.indices.emplace_back(stl_triangle_vertex_indices(idxs[0], idxs[1], idxs[2]));
-    if (its.vertices.empty()) {
-        its.vertices.reserve(m_vertices.size());
-        for (int i = 0; i < m_vertices.size(); i++) {
-            its.vertices.emplace_back(m_vertices[i].v);
-        }
-    }
-}
-
 // BBS: add seed_fill_angle parameter
 void TriangleSelector::bucket_fill_select_triangles(const Vec3f& hit, int facet_start, const ClippingPlane &clp, float seed_fill_angle, bool propagate, bool force_reselection)
 {
@@ -529,11 +497,11 @@ void TriangleSelector::bucket_fill_select_triangles(const Vec3f& hit, int facet_
     // seed_fill_angle < 0.f to disable edge detection
     const double facet_angle_limit = (seed_fill_angle < 0.f ? -1.f : cos(Geometry::deg2rad(seed_fill_angle))) - EPSILON;
 
-    auto get_all_touching_triangles = [this](int facet_idx, const Vec3i &neighbors, const Vec3i &neighbors_propagated) -> std::vector<int> {
+    auto get_all_touching_triangles = [this](int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated) -> std::vector<int> {
         assert(facet_idx != -1 && facet_idx < int(m_triangles.size()));
         assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
         std::vector<int> touching_triangles;
-        Vec3i            vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
+        Vec3i32            vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
         append_touching_subtriangles(neighbors(0), vertices(1), vertices(0), touching_triangles);
         append_touching_subtriangles(neighbors(1), vertices(2), vertices(1), touching_triangles);
         append_touching_subtriangles(neighbors(2), vertices(0), vertices(2), touching_triangles);
@@ -589,7 +557,7 @@ bool TriangleSelector::select_triangle(int facet_idx, EnforcerBlockerType type, 
     if (! m_triangles[facet_idx].valid())
         return false;
 
-    Vec3i neighbors = m_neighbors[facet_idx];
+    Vec3i32 neighbors = m_neighbors[facet_idx];
     assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
 
     if (! select_triangle_recursive(facet_idx, neighbors, type, triangle_splitting))
@@ -773,7 +741,7 @@ int TriangleSelector::triangle_midpoint_or_allocate(int itriangle, int vertexi, 
 // Returns -1 if such a neighbor does not exist at all, or it does not exist
 // at the same depth as the ith child.
 // Using the same splitting strategy as TriangleSelector::split_triangle()
-Vec3i TriangleSelector::child_neighbors(const Triangle &tr, const Vec3i &neighbors, int child_idx) const
+Vec3i32 TriangleSelector::child_neighbors(const Triangle &tr, const Vec3i32 &neighbors, int child_idx) const
 {
     assert(this->verify_triangle_neighbors(tr, neighbors));
 
@@ -782,7 +750,7 @@ Vec3i TriangleSelector::child_neighbors(const Triangle &tr, const Vec3i &neighbo
     int   j = next_idx_modulo(i, 3);
     int   k = next_idx_modulo(j, 3);
 
-    Vec3i out;
+    Vec3i32 out;
     switch (tr.number_of_split_sides()) {
     case 1:
         switch (child_idx) {
@@ -860,13 +828,13 @@ Vec3i TriangleSelector::child_neighbors(const Triangle &tr, const Vec3i &neighbo
 
 // Return neighbors of the ith child of a triangle given neighbors of the triangle.
 // If such a neighbor doesn't exist, return the neighbor from the previous depth.
-Vec3i TriangleSelector::child_neighbors_propagated(const Triangle &tr, const Vec3i &neighbors_propagated, int child_idx, const Vec3i &child_neighbors) const
+Vec3i32 TriangleSelector::child_neighbors_propagated(const Triangle &tr, const Vec3i32 &neighbors_propagated, int child_idx, const Vec3i32 &child_neighbors) const
 {
     int i = tr.special_side();
     int j = next_idx_modulo(i, 3);
     int k = next_idx_modulo(j, 3);
 
-    Vec3i out = child_neighbors;
+    Vec3i32 out = child_neighbors;
     auto  replace_if_not_exists = [&out, &neighbors_propagated](int index_to_replace, int neighbor_idx) {
         if (out(index_to_replace) == -1)
             out(index_to_replace) = neighbors_propagated(neighbor_idx);
@@ -932,7 +900,7 @@ Vec3i TriangleSelector::child_neighbors_propagated(const Triangle &tr, const Vec
     return out;
 }
 
-bool TriangleSelector::select_triangle_recursive(int facet_idx, const Vec3i &neighbors, EnforcerBlockerType type, bool triangle_splitting)
+bool TriangleSelector::select_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType type, bool triangle_splitting)
 {
     assert(facet_idx < int(m_triangles.size()));
 
@@ -995,7 +963,7 @@ void TriangleSelector::set_facet(int facet_idx, EnforcerBlockerType state)
 
 // called by select_patch()->select_triangle()...select_triangle()
 // to decide which sides of the triangle to split and to actually split it calling set_division() and perform_split().
-void TriangleSelector::split_triangle(int facet_idx, const Vec3i &neighbors)
+void TriangleSelector::split_triangle(int facet_idx, const Vec3i32 &neighbors)
 {
     if (m_triangles[facet_idx].is_split()) {
         // The triangle is divided already.
@@ -1124,17 +1092,6 @@ bool TriangleSelector::Circle::is_edge_inside_cursor(const Triangle &tr, const s
             return true;
     }
     return false;
-}
-
-TriangleSelector::HeightRange::HeightRange(float z_world_, const Vec3f &source_, float height_, const Transform3d &trafo_, const ClippingPlane &clipping_plane_)
-    : SinglePointCursor(Vec3f(0.f, 0.f, 0.f), source_, 1.f, trafo_, clipping_plane_), m_z_world(z_world_), m_height(height_)
-{
-    uniform_scaling = false;//HeightRange must use world cs
-    // overwrite base
-    source       = trafo * source;
-    radius       = height_;
-    radius_sqr   = Slic3r::sqr(height_);
-    trafo_normal = trafo.linear().inverse().transpose();
 }
 
 // BBS
@@ -1363,7 +1320,7 @@ int TriangleSelector::push_triangle(int a, int b, int c, int source_triangle, co
 // Split a triangle based on Triangle::number_of_split_sides() and Triangle::special_side()
 // by allocating child triangles and midpoint vertices.
 // Midpoint vertices are possibly reused by traversing children of neighbor triangles.
-void TriangleSelector::perform_split(int facet_idx, const Vec3i &neighbors, EnforcerBlockerType old_state)
+void TriangleSelector::perform_split(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType old_state)
 {
     // Reserve space for the new triangles upfront, so that the reference to this triangle will not change.
     {
@@ -1424,7 +1381,7 @@ void TriangleSelector::perform_split(int facet_idx, const Vec3i &neighbors, Enfo
 #ifndef NDEBUG
     assert(this->verify_triangle_neighbors(tr, neighbors));
     for (int i = 0; i <= tr.number_of_split_sides(); ++i) {
-        Vec3i n = this->child_neighbors(tr, neighbors, i);
+        Vec3i32 n = this->child_neighbors(tr, neighbors, i);
         assert(this->verify_triangle_neighbors(m_triangles[tr.children[i]], n));
     }
 #endif // NDEBUG
@@ -1523,7 +1480,7 @@ indexed_triangle_set TriangleSelector::get_facets_strict(EnforcerBlockerType sta
 
 void TriangleSelector::get_facets_strict_recursive(
     const Triangle                              &tr,
-    const Vec3i                                 &neighbors,
+    const Vec3i32                                 &neighbors,
     EnforcerBlockerType                          state,
     std::vector<stl_triangle_vertex_indices>    &out_triangles) const
 {
@@ -1537,10 +1494,10 @@ void TriangleSelector::get_facets_strict_recursive(
         this->get_facets_split_by_tjoints({tr.verts_idxs[0], tr.verts_idxs[1], tr.verts_idxs[2]}, neighbors, out_triangles);
 }
 
-void TriangleSelector::get_facets_split_by_tjoints(const Vec3i &vertices, const Vec3i &neighbors, std::vector<stl_triangle_vertex_indices> &out_triangles) const
+void TriangleSelector::get_facets_split_by_tjoints(const Vec3i32 &vertices, const Vec3i32 &neighbors, std::vector<stl_triangle_vertex_indices> &out_triangles) const
 {
 // Export this triangle, but first collect the T-joint vertices along its edges.
-    Vec3i midpoints(
+    Vec3i32 midpoints(
         this->triangle_midpoint(neighbors(0), vertices(1), vertices(0)),
         this->triangle_midpoint(neighbors(1), vertices(2), vertices(1)),
         this->triangle_midpoint(neighbors(2), vertices(0), vertices(2)));
@@ -1601,7 +1558,7 @@ void TriangleSelector::get_facets_split_by_tjoints(const Vec3i &vertices, const 
         this->get_facets_split_by_tjoints(
             { vertices(0), midpoints(0), midpoints(2) },
             { this->neighbor_child(neighbors(0), vertices(1), vertices(0), Partition::Second),
-              -1,
+              -1, 
               this->neighbor_child(neighbors(2), vertices(0), vertices(2), Partition::First) },
               out_triangles);
         this->get_facets_split_by_tjoints(
@@ -1621,10 +1578,10 @@ void TriangleSelector::get_facets_split_by_tjoints(const Vec3i &vertices, const 
     }
 }
 
-std::vector<Vec2i> TriangleSelector::get_seed_fill_contour() const {
-    std::vector<Vec2i> edges_out;
+std::vector<Vec2i32> TriangleSelector::get_seed_fill_contour() const {
+    std::vector<Vec2i32> edges_out;
     for (int facet_idx = 0; facet_idx < this->m_orig_size_indices; ++facet_idx) {
-        const Vec3i neighbors = m_neighbors[facet_idx];
+        const Vec3i32 neighbors = m_neighbors[facet_idx];
         assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
         this->get_seed_fill_contour_recursive(facet_idx, neighbors, neighbors, edges_out);
     }
@@ -1632,20 +1589,7 @@ std::vector<Vec2i> TriangleSelector::get_seed_fill_contour() const {
     return edges_out;
 }
 
-indexed_triangle_set TriangleSelector::get_seed_fill_mesh(int &state) const
-{
-    indexed_triangle_set its;
-    std::set<int>        face_idx_set;
-    for (int facet_idx = 0; facet_idx < this->m_orig_size_indices; ++facet_idx) {
-        const Vec3i neighbors = m_neighbors[facet_idx];
-        this->get_seed_fill_its_recursive(facet_idx, neighbors, neighbors, face_idx_set, its, state);
-    }
-    return its;
-}
-
-void TriangleSelector::get_seed_fill_its_recursive(
-    int facet_idx, const Vec3i &neighbors, const Vec3i &neighbors_propagated, std::set<int> &idx_set, indexed_triangle_set &its, int &state) const
-{
+void TriangleSelector::get_seed_fill_contour_recursive(const int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated, std::vector<Vec2i32> &edges_out) const {
     assert(facet_idx != -1 && facet_idx < int(m_triangles.size()));
     assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
     const Triangle *tr = &m_triangles[facet_idx];
@@ -1660,54 +1604,13 @@ void TriangleSelector::get_seed_fill_its_recursive(
                 assert(tr->children[i] < int(m_triangles.size()));
                 // Recursion, deep first search over the children of this triangle.
                 // All children of this triangle were created by splitting a single source triangle of the original mesh.
-                const Vec3i child_neighbors = this->child_neighbors(*tr, neighbors, i);
-                this->get_seed_fill_its_recursive(tr->children[i], child_neighbors, this->child_neighbors_propagated(*tr, neighbors_propagated, i, child_neighbors), idx_set, its,
-                                                  state);
-            }
-        }
-    } else if (tr->is_selected_by_seed_fill()) {
-        auto select_state =  m_triangles[facet_idx].get_state();
-        if (state < 0) {
-            state = (int) select_state;
-        }
-        if (idx_set.find(facet_idx) == idx_set.end()) {
-            idx_set.insert(facet_idx);
-            append_touching_its(facet_idx, its);
-            for (int i = 0; i < 3; i++) {
-                if (neighbors(i) >= 0 && neighbors(i) < m_triangles.size() && select_state == m_triangles[neighbors(i)].get_state()) {
-                    if (idx_set.find(neighbors(i)) == idx_set.end()) {
-                        idx_set.insert(neighbors(i));
-                        append_touching_its(neighbors(i), its);
-                    }
-                }
-            }
-        }
-    }
-}
-
-void TriangleSelector::get_seed_fill_contour_recursive(const int facet_idx, const Vec3i &neighbors, const Vec3i &neighbors_propagated, std::vector<Vec2i> &edges_out) const
-{
-    assert(facet_idx != -1 && facet_idx < int(m_triangles.size()));
-    assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
-    const Triangle *tr = &m_triangles[facet_idx];
-    if (!tr->valid())
-        return;
-
-    if (tr->is_split()) {
-        int num_of_children = tr->number_of_split_sides() + 1;
-        if (num_of_children != 1) {
-            for (int i = 0; i < num_of_children; ++i) {
-                assert(i < int(tr->children.size()));
-                assert(tr->children[i] < int(m_triangles.size()));
-                // Recursion, deep first search over the children of this triangle.
-                // All children of this triangle were created by splitting a single source triangle of the original mesh.
-                const Vec3i child_neighbors = this->child_neighbors(*tr, neighbors, i);
+                const Vec3i32 child_neighbors = this->child_neighbors(*tr, neighbors, i);
                 this->get_seed_fill_contour_recursive(tr->children[i], child_neighbors,
                                                       this->child_neighbors_propagated(*tr, neighbors_propagated, i, child_neighbors), edges_out);
             }
         }
     } else if (tr->is_selected_by_seed_fill()) {
-        Vec3i vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
+        Vec3i32 vertices = {m_triangles[facet_idx].verts_idxs[0], m_triangles[facet_idx].verts_idxs[1], m_triangles[facet_idx].verts_idxs[2]};
         append_touching_edges(neighbors(0), vertices(1), vertices(0), edges_out);
         append_touching_edges(neighbors(1), vertices(2), vertices(1), edges_out);
         append_touching_edges(neighbors(2), vertices(0), vertices(2), edges_out);
@@ -1764,15 +1667,14 @@ std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> TriangleSelector:
                 // In case this is leaf, we better save information about its state.
                 int n = int(tr.get_state());
                 if (n >= 3) {
-                    data.second.insert(data.second.end(), {true, true});
-                    n -= 3;
-                    while (n >= 15) {
-                        data.second.insert(data.second.end(), {true, true, true, true});
-                        n -= 15;
+                    assert(n <= 16);
+                    if (n <= 16) {
+                        // Store "11" plus 4 bits of (n-3).
+                        data.second.insert(data.second.end(), { true, true });
+                        n -= 3;
+                        for (size_t bit_idx = 0; bit_idx < 4; ++bit_idx)
+                            data.second.push_back(n & (uint64_t(0b0001) << bit_idx));
                     }
-
-                    for (size_t bit_idx = 0; bit_idx < 4; ++bit_idx)
-                        data.second.push_back(n & (uint64_t(0b0001) << bit_idx));
                 } else {
                     // Simple case, compatible with PrusaSlicer 2.3.1 and older for storing paint on supports and seams.
                     // Store 2 bits of n.
@@ -1798,11 +1700,7 @@ std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> TriangleSelector:
     return out.data;
 }
 
-void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> &data,
-                                   bool                                                                  needs_reset,
-                                   EnforcerBlockerType                                                   max_ebt,
-                                   EnforcerBlockerType                                                   to_delete_filament,
-                                   EnforcerBlockerType                                                   replace_filament)
+void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> &data, bool needs_reset, EnforcerBlockerType max_ebt)
 {
     if (needs_reset)
         reset(); // dump any current state
@@ -1822,7 +1720,7 @@ void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, in
     // Vector to store all parents that have offsprings.
     struct ProcessingInfo {
         int facet_id = 0;
-        Vec3i neighbors { -1, -1, -1 };
+        Vec3i32 neighbors { -1, -1, -1 };
         int processed_children = 0;
         int total_children = 0;
     };
@@ -1848,33 +1746,11 @@ void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, in
             int num_of_children = num_of_split_sides == 0 ? 0 : num_of_split_sides + 1;
             bool is_split = num_of_children != 0;
             // Only valid if not is_split. Value of the second nibble was subtracted by 3, so it is added back.
-            auto state = EnforcerBlockerType::NONE;
-            if (!is_split) {
-                if ((code & 0b1100) == 0b1100){
-                    int next_code = next_nibble();
-                    int num       = 0;
-                    while (next_code == 0b1111) {
-                        num++;
-                        next_code = next_nibble();
-                    }
-                    state = EnforcerBlockerType(next_code + 15 * num + 3);//old:next_nibble() + 3;
-                }
-                else {
-                    state = EnforcerBlockerType(code >> 2);
-                }
-            }
+            auto state = is_split ? EnforcerBlockerType::NONE : EnforcerBlockerType((code & 0b1100) == 0b1100 ? next_nibble() + 3 : code >> 2);
 
             // BBS
-            if (state == to_delete_filament)
-                state = replace_filament;
-            else if (to_delete_filament != EnforcerBlockerType::NONE && state != EnforcerBlockerType::NONE) {
-                state = state > to_delete_filament ? EnforcerBlockerType((int)state - 1) : state;
-            }
-
-            if (state > max_ebt) {
-                assert(false);
+            if (state > max_ebt)
                 state = EnforcerBlockerType::NONE;
-            }
 
             // Only valid if is_split.
             int special_side = code >> 2;
@@ -1884,7 +1760,7 @@ void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, in
                 if (is_split) {
                     // root is split, add it into list of parents and split it.
                     // then go to the next.
-                    Vec3i neighbors = m_neighbors[triangle_id];
+                    Vec3i32 neighbors = m_neighbors[triangle_id];
                     parents.push_back({triangle_id, neighbors, 0, num_of_children});
                     m_triangles[triangle_id].set_division(num_of_split_sides, special_side);
                     perform_split(triangle_id, neighbors, EnforcerBlockerType::NONE);
@@ -1904,7 +1780,7 @@ void TriangleSelector::deserialize(const std::pair<std::vector<std::pair<int, in
                 // split the triangle and save it as parent of the next ones.
                 const Triangle &tr = m_triangles[last.facet_id];
                 int   child_idx = last.total_children - last.processed_children - 1;
-                Vec3i neighbors = this->child_neighbors(tr, last.neighbors, child_idx);
+                Vec3i32 neighbors = this->child_neighbors(tr, last.neighbors, child_idx);
                 int this_idx = tr.children[child_idx];
                 m_triangles[this_idx].set_division(num_of_split_sides, special_side);
                 perform_split(this_idx, neighbors, EnforcerBlockerType::NONE);
@@ -1957,23 +1833,9 @@ bool TriangleSelector::has_facets(const std::pair<std::vector<std::pair<int, int
         auto num_children_or_state = [&next_nibble]() -> int {
             int code               = next_nibble();
             int num_of_split_sides = code & 0b11;
-            if (num_of_split_sides == 0) {
-                int state = 0;
-                if ((code & 0b1100) == 0b1100) {
-                    int next_code = next_nibble();
-                    int num       = 0;
-                    while (next_code == 0b1111) {
-                        num++;
-                        next_code = next_nibble();
-                    }
-                    state = next_code + 15 * num + 3; // old:next_nibble() + 3;
-                } else {
-                    state = code >> 2;
-                }
-                return state;
-            } else {
-                return -num_of_split_sides - 1;// < 0 -> negative of a number of children
-            }
+            return num_of_split_sides == 0 ?
+                ((code & 0b1100) == 0b1100 ? next_nibble() + 3 : code >> 2) :
+                - num_of_split_sides - 1;
         };
 
         int state = num_children_or_state();

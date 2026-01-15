@@ -9,7 +9,7 @@
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Semver.hpp"
-#include "Calib.hpp"
+#include "calib.hpp"
 
 using namespace nlohmann;
 
@@ -24,9 +24,6 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-namespace MultiNozzleUtils{
-	struct NozzleGroupInfo;
-}
 class AppConfig
 {
 public:
@@ -74,7 +71,7 @@ public:
 		if (it == m_storage.end())
 			return false;
 		auto it2 = it->second.find(key);
-		if (it2 == it->second.end())
+		if (it2 == it->second.end()) 
 			return false;
 		value = it2->second;
 		return true;
@@ -83,7 +80,8 @@ public:
 		{ std::string value; this->get(section, key, value); return value; }
 	std::string 		get(const std::string &key) const
 		{ std::string value; this->get("app", key, value); return value; }
-    bool get_bool(const std::string &key) const { return this->get(key) == "true" || this->get(key) == "1"; }
+	bool				get_bool(const std::string &key) const
+		{ return this->get(key) == "true" || this->get(key) == "1"; }
 	void			    set(const std::string &section, const std::string &key, const std::string &value)
 	{
 #ifndef NDEBUG
@@ -172,7 +170,34 @@ public:
 	void 				set_vendors(VendorMap &&vendors) { m_vendors = std::move(vendors); m_dirty = true; }
 	const VendorMap&    vendors() const { return m_vendors; }
 
-	const std::vector<std::string> &get_filament_presets() const { return m_filament_presets; }
+	// Orca printer settings
+    typedef std::map<std::string, nlohmann::json> MachineSettingMap;
+    bool has_printer_settings(std::string printer) const {
+        return m_printer_settings.find(printer) != m_printer_settings.end();
+    }
+    void clear_printer_settings(std::string printer) {
+        m_printer_settings.erase(printer);
+        m_dirty = true;
+    }
+    bool has_printer_setting(std::string printer, std::string name) {
+        if (!has_printer_settings(printer))
+            return false;
+        if (!m_printer_settings[printer].contains(name))
+            return false;
+        return true;
+    }
+    std::string get_printer_setting(std::string printer, std::string name) {
+        if (!has_printer_setting(printer, name))
+            return "";
+        return m_printer_settings[printer][name];
+    }
+    std::string set_printer_setting(std::string printer, std::string name, std::string value) {
+        return m_printer_settings[printer][name] = value;
+        m_dirty                = true;
+    }
+
+
+    const std::vector<std::string> &get_filament_presets() const { return m_filament_presets; }
     void set_filament_presets(const std::vector<std::string> &filament_presets){
         m_filament_presets = filament_presets;
         m_dirty            = true;
@@ -206,10 +231,6 @@ public:
 
     void                save_custom_color_to_config(const std::vector<std::string> &colors);
     std::vector<std::string> get_custom_color_from_config();
-
-    void save_nozzle_volume_types_to_config(const std::string& printer_name, const std::string& nozzle_volume_types);
-    std::string get_nozzle_volume_types_from_config(const std::string& printer_name);
-
 	// reset the current print / filament / printer selections, so that
 	// the  PresetBundle::load_selections(const AppConfig &config) call will select
 	// the first non-default preset when called.
@@ -224,7 +245,10 @@ public:
 
 	// Get the Slic3r version check url.
 	// This returns a hardcoded string unless it is overriden by "version_check_url" in the ini file.
-	std::string 		version_check_url() const;
+	std::string 		version_check_url(bool stable_only = false) const;
+
+	// Get the Orca profile update url.
+	std::string 		profile_update_url() const;
 
 	// Returns the original Slic3r version found in the ini file before it was overwritten
 	// by the current version
@@ -239,7 +263,7 @@ public:
     std::vector<std::string> get_recent_projects() const;
     void set_recent_projects(const std::vector<std::string>& recent_projects);
 
-	void set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz);
+	void set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll);
 	std::vector<std::string> get_mouse_device_names() const;
 	bool get_mouse_device_translation_speed(const std::string& name, double& speed) const
 		{ return get_3dmouse_device_numeric_value(name, "translation_speed", speed); }
@@ -253,6 +277,18 @@ public:
 		{ return get_3dmouse_device_numeric_value(name, "zoom_speed", speed); }
 	bool get_mouse_device_swap_yz(const std::string& name, bool& swap) const
 		{ return get_3dmouse_device_numeric_value(name, "swap_yz", swap); }
+	bool get_mouse_device_invert_x(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_x", invert); }
+	bool get_mouse_device_invert_y(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_y", invert); }
+	bool get_mouse_device_invert_z(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_z", invert); }
+	bool get_mouse_device_invert_yaw(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_yaw", invert); }
+	bool get_mouse_device_invert_pitch(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_pitch", invert); }
+	bool get_mouse_device_invert_roll(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_roll", invert); }
 
 	static const std::string SECTION_FILAMENTS;
     static const std::string SECTION_MATERIALS;
@@ -260,7 +296,7 @@ public:
 
 private:
 	template<typename T>
-	bool get_3dmouse_device_numeric_value(const std::string &device_name, const char *parameter_name, T &out) const
+	bool get_3dmouse_device_numeric_value(const std::string &device_name, const char *parameter_name, T &out) const 
 	{
 	    std::string key = std::string("mouse_device:") + device_name;
 	    auto it = m_storage.find(key);
@@ -280,6 +316,9 @@ private:
 
 	// Map of enabled vendors / models / variants
 	VendorMap                                                   m_vendors;
+
+	// Preset for each machine
+	MachineSettingMap											m_printer_settings;
 	// Has any value been modified since the config.ini has been last saved or loaded?
 	bool														m_dirty;
 	// Original version found in the ini file before it was overwritten
@@ -291,8 +330,6 @@ private:
 
 	std::vector<std::string>									m_filament_presets;
     std::vector<std::string>									m_filament_colors;
-	std::vector<std::string>									m_filament_multi_colors;
-	std::vector<std::string>									m_filament_color_types;
 
 	std::vector<PrinterCaliInfo>								m_printer_cali_infos;
 };

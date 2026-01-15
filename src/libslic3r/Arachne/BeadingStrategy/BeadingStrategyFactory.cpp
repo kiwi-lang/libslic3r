@@ -8,7 +8,6 @@
 #include "DistributedBeadingStrategy.hpp"
 #include "RedistributeBeadingStrategy.hpp"
 #include "OuterWallInsetBeadingStrategy.hpp"
-#include "OuterWallContourStrategy.hpp"
 
 #include <limits>
 #include <boost/log/trivial.hpp>
@@ -40,23 +39,16 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(
         BOOST_LOG_TRIVIAL(debug) << "Applying the Widening Beading meta-strategy with minimum input width " << min_feature_size << " and minimum output width " << min_bead_width << ".";
         ret = std::make_unique<WideningBeadingStrategy>(std::move(ret), min_feature_size, min_bead_width);
     }
-    if (outer_wall_offset != 0) {
+    // Orca: we allow negative outer_wall_offset here
+    if (outer_wall_offset != 0) 
+    {
         BOOST_LOG_TRIVIAL(debug) << "Applying the OuterWallOffset meta-strategy with offset = " << outer_wall_offset << ".";
         ret = std::make_unique<OuterWallInsetBeadingStrategy>(outer_wall_offset, std::move(ret));
     }
 
-// this beading strategy will cause junctions with different idx link together,to be fixed later
-#if 0
-    //Apply the OuterWallContourStrategy last, since that adds a 1-width marker wall to mark the boundary of first beading.
-    BOOST_LOG_TRIVIAL(debug) << "Applying the First Beading Contour Strategy.";
-    ret = std::make_unique<OuterWallContourStrategy>(std::move(ret));
-#endif
     //Apply the LimitedBeadingStrategy last, since that adds a 0-width marker wall which other beading strategies shouldn't touch.
     BOOST_LOG_TRIVIAL(debug) << "Applying the Limited Beading meta-strategy with maximum bead count = " << max_bead_count << ".";
     ret = std::make_unique<LimitedBeadingStrategy>(max_bead_count, std::move(ret));
-
-
-
     return ret;
 }
 } // namespace Slic3r::Arachne

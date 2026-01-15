@@ -13,9 +13,6 @@ namespace RasterizationImpl {
 using IndexPair = std::pair<int64_t, int64_t>;
 using Grids     = std::vector<IndexPair>;
 
-inline constexpr int64_t RasteXDistance = scale_(1);
-inline constexpr int64_t RasteYDistance = scale_(1);
-
 inline IndexPair point_map_grid_index(const Point &pt, int64_t xdist, int64_t ydist)
 {
     auto x = pt.x() / xdist;
@@ -25,7 +22,7 @@ inline IndexPair point_map_grid_index(const Point &pt, int64_t xdist, int64_t yd
 
 inline bool nearly_equal(const Point &p1, const Point &p2) { return std::abs(p1.x() - p2.x()) < SCALED_EPSILON && std::abs(p1.y() - p2.y()) < SCALED_EPSILON; }
 
-inline Grids line_rasterization(const Line &line, int64_t xdist = RasteXDistance, int64_t ydist = RasteYDistance)
+inline Grids line_rasterization(const Line &line, int64_t xdist = scale_(1), int64_t ydist = scale_(1))
 {
     Grids     res;
     Point     rayStart     = line.a;
@@ -122,9 +119,7 @@ float LinesBucketQueue::getCurrBottomZ()
     }
 
     for (LinesBucket *bp : lowests) {
-        float prevZ = bp->curBottomZ();
         bp->raise();
-        if (bp->curBottomZ() == prevZ) continue;
         if (bp->valid()) { line_bucket_ptr_queue.push(bp); }
     }
     return layerBottomZ;
@@ -227,16 +222,16 @@ ConflictResultOpt ConflictChecker::find_inter_of_lines_in_diff_objs(PrintObjectP
     LinesBucketQueue conflictQueue;
 
     if (wtdptr.has_value()) { // wipe tower at 0 by default
-        //auto            wtpaths = wtdptr.value()->getFakeExtrusionPathsFromWipeTower();
-        ExtrusionLayers wtels = wtdptr.value()->getTrueExtrusionLayersFromWipeTower();
-        //wtels.type = ExtrusionLayersType::WIPE_TOWER;
-        //for (int i = 0; i < wtpaths.size(); ++i) { // assume that wipe tower always has same height
-        //    ExtrusionLayer el;
-        //    el.paths    = wtpaths[i];
-        //    el.bottom_z = wtpaths[i].front().height * (float) i;
-        //    el.layer    = nullptr;
-        //    wtels.push_back(el);
-        //}
+        auto            wtpaths = wtdptr.value()->getFakeExtrusionPathsFromWipeTower();
+        ExtrusionLayers wtels;
+        wtels.type = ExtrusionLayersType::WIPE_TOWER;
+        for (int i = 0; i < wtpaths.size(); ++i) { // assume that wipe tower always has same height
+            ExtrusionLayer el;
+            el.paths    = wtpaths[i];
+            el.bottom_z = wtpaths[i].front().height * (float) i;
+            el.layer    = nullptr;
+            wtels.push_back(el);
+        }
         conflictQueue.emplace_back_bucket(std::move(wtels), wtdptr.value(), {wtdptr.value()->plate_origin.x(), wtdptr.value()->plate_origin.y()});
     }
     for (PrintObject *obj : objs) {
@@ -291,9 +286,6 @@ ConflictComputeOpt ConflictChecker::line_intersect(const LineWithID &l1, const L
     constexpr double SUPPORT_THRESHOLD = 100;  // this large almost disables conflict check of supports
     constexpr double OTHER_THRESHOLD   = 0.01;
     if (l1._id == l2._id) { return {}; } // return true if lines are from same object
-    double overlap_length = 0.;
-    bool   overlap  = l1._line.overlap(l2._line, overlap_length);
-    if (overlap && overlap_length > scaled(OTHER_THRESHOLD)) return std::make_optional<ConflictComputeResult>(l1._id, l2._id);
     Point inter;
     bool  intersect = l1._line.intersection(l2._line, &inter);
 

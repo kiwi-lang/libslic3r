@@ -69,7 +69,6 @@ struct ExtrusionLine
     std::vector<ExtrusionJunction> junctions;
 
     ExtrusionLine(const size_t inset_idx, const bool is_odd);
-    ExtrusionLine(size_t inset_idx, bool is_odd, bool is_closed);
     ExtrusionLine() : inset_idx(-1), is_odd(true), is_closed(false) {}
     ExtrusionLine(const ExtrusionLine &other) : inset_idx(other.inset_idx), is_odd(other.is_odd), is_closed(other.is_closed), junctions(other.junctions) {}
 
@@ -187,11 +186,8 @@ struct ExtrusionLine
      * \param A Start point of the 3-point-straight line
      * \param B Intermediate point of the 3-point-straight line
      * \param C End point of the 3-point-straight line
-     * \param weighted_average_width The weighted average of the widths of the two colinear extrusion segments
      * */
-    static int64_t calculateExtrusionAreaDeviationError(ExtrusionJunction A, ExtrusionJunction B, ExtrusionJunction C, coord_t& weighted_average_width);
-
-    bool shouldApplyHoleCompensation(const double threshold = 0.8) const;
+    static int64_t calculateExtrusionAreaDeviationError(ExtrusionJunction A, ExtrusionJunction B, ExtrusionJunction C);
 
     bool is_contour() const;
 
@@ -302,10 +298,9 @@ using VariableWidthLines = std::vector<ExtrusionLine>; //<! The ExtrusionLines g
 
 namespace Slic3r {
 
-void extrusion_paths_append(std::list<ExtrusionPath> &dst, const ClipperLib_Z::Paths &extrusion_paths, const ExtrusionRole role, const Flow &flow, double overhang = 0);
-void extrusion_paths_append(ExtrusionPaths &dst, const ClipperLib_Z::Paths &extrusion_paths, const ExtrusionRole role, const Flow &flow, double overhang = 0);
-void extrusion_paths_append(ExtrusionPaths &dst, const Arachne::ExtrusionLine &extrusion, const ExtrusionRole role, const Flow &flow, double overhang = 0);
-void extrusion_path_append(ExtrusionPaths &dst, const ThickPolyline &thick_polyline, const ExtrusionRole role, const Flow &flow, double overhang = 0);
+void extrusion_paths_append(ExtrusionPaths &dst, const ClipperLib_Z::Paths &extrusion_paths, const ExtrusionRole role, const Flow &flow);
+void extrusion_paths_append(ExtrusionPaths &dst, const Arachne::ExtrusionLine &extrusion, const ExtrusionRole role, const Flow &flow);
+
 } // namespace Slic3r
 
 #endif // UTILS_EXTRUSION_LINE_H

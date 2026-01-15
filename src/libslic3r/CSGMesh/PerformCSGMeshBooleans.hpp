@@ -4,8 +4,6 @@
 #include <stack>
 #include <vector>
 
-#include <boost/log/trivial.hpp>
-
 #include "CSGMesh.hpp"
 
 #include "libslic3r/Execution/ExecutionTBB.hpp"
@@ -254,7 +252,7 @@ void perform_csgmesh_booleans_mcut(MeshBoolean::mcut::McutMeshPtr& mcutm,
     }
 
     mcutm = std::move(opstack.top().mcutptr);
-
+    
 }
 
 
@@ -286,12 +284,12 @@ std::tuple<BooleanFailReason,std::string> check_csgmesh_booleans(const Range<It>
                 return;
             }
 
-            /*if (!MeshBoolean::cgal::does_bound_a_volume(*m)) {//has crash problem
+            if (!MeshBoolean::cgal::does_bound_a_volume(*m)) {
                 BOOST_LOG_TRIVIAL(info) << "check_csgmesh_booleans fails! mesh "<<i<<"/"<<csgrange.size()<<" does_bound_a_volume is false, cannot do boolean!";
                 fail_reason= BooleanFailReason::NotBoundAVolume;
                 fail_part_name = csgpart.name;
                 return;
-            }*/
+            }
 
             if (MeshBoolean::cgal::does_self_intersect(*m)) {
                 BOOST_LOG_TRIVIAL(info) << "check_csgmesh_booleans fails! mesh " << i << "/" << csgrange.size() << " does_self_intersect is true, cannot do boolean!";

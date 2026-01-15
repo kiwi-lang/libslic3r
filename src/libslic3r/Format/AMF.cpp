@@ -66,7 +66,7 @@ struct AMFParserContext
 {
     AMFParserContext(XML_Parser parser, DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions, Model* model) :
         m_parser(parser),
-        m_model(*model),
+        m_model(*model), 
         m_config(config),
         m_config_substitutions(config_substitutions)
     {
@@ -112,7 +112,7 @@ struct AMFParserContext
     static void XMLCALL characters(void *userData, const XML_Char *s, int len)
     {
         AMFParserContext *ctx = (AMFParserContext*)userData;
-        ctx->characters(s, len);
+        ctx->characters(s, len);    
     }
 
     static const char* get_attribute(const char **atts, const char *id) {
@@ -248,7 +248,7 @@ struct AMFParserContext
     // Current volume allocated for an amf/object/mesh/volume subtree.
     ModelVolume             *m_volume { nullptr };
     // Faces collected for the current m_volume.
-    std::vector<Vec3i>       m_volume_facets;
+    std::vector<Vec3i32>       m_volume_facets;
     // Transformation matrix of a volume mesh from its coordinate system to Object's coordinate system.
     Transform3d 			 m_volume_transform;
     // Current material allocated for an amf/metadata subtree.
@@ -326,7 +326,7 @@ void AMFParserContext::startElement(const char *name, const char **atts)
                     this->stop();
                 else {
                     m_object_instances_map[object_id].instances.push_back(AMFParserContext::Instance());
-                    m_instance = &m_object_instances_map[object_id].instances.back();
+                    m_instance = &m_object_instances_map[object_id].instances.back(); 
                     node_type_new = NODE_TYPE_INSTANCE;
                 }
             }
@@ -347,7 +347,7 @@ void AMFParserContext::startElement(const char *name, const char **atts)
                 else
                 {
                     // It means that data was saved in old version (2.2.0 and older) of PrusaSlicer
-                    // read old data ...
+                    // read old data ... 
                     std::string gcode = get_attribute(atts, "gcode");
                     // ... and interpret them to the new data
                     CustomGCode::Type type= gcode == "M600" ? CustomGCode::ColorChange :
@@ -379,7 +379,7 @@ void AMFParserContext::startElement(const char *name, const char **atts)
         else if (m_path[2] == NODE_TYPE_INSTANCE) {
             assert(m_instance);
             if (strcmp(name, "deltax") == 0)
-                node_type_new = NODE_TYPE_DELTAX;
+                node_type_new = NODE_TYPE_DELTAX; 
             else if (strcmp(name, "deltay") == 0)
                 node_type_new = NODE_TYPE_DELTAY;
             else if (strcmp(name, "deltaz") == 0)
@@ -415,7 +415,7 @@ void AMFParserContext::startElement(const char *name, const char **atts)
     case 4:
         if (m_path[3] == NODE_TYPE_VERTICES) {
             if (strcmp(name, "vertex") == 0)
-                node_type_new = NODE_TYPE_VERTEX;
+                node_type_new = NODE_TYPE_VERTEX; 
         } else if (m_path[3] == NODE_TYPE_VOLUME) {
             if (strcmp(name, "metadata") == 0) {
                 const char *type = get_attribute(atts, "type");
@@ -436,7 +436,7 @@ void AMFParserContext::startElement(const char *name, const char **atts)
     case 5:
         if (strcmp(name, "coordinates") == 0) {
             if (m_path[4] == NODE_TYPE_VERTEX) {
-                node_type_new = NODE_TYPE_COORDINATES;
+                node_type_new = NODE_TYPE_COORDINATES; 
             } else
                 this->stop();
         } else if (name[0] == 'v' && name[1] >= '1' && name[1] <= '3' && name[2] == 0) {
@@ -632,7 +632,7 @@ void AMFParserContext::endElement(const char * /* name */)
             // Verify validity of face indices, find the vertex span.
             int min_id = m_volume_facets.front()[0];
             int max_id = min_id;
-            for (const Vec3i& face : m_volume_facets) {
+            for (const Vec3i32& face : m_volume_facets) {
                 for (const int tri_id : face) {
                     if (tri_id < 0 || tri_id >= int(m_object_vertices.size())) {
                         this->stop("Found a malformed triangle mesh");
@@ -644,8 +644,8 @@ void AMFParserContext::endElement(const char * /* name */)
             }
 
             // rebase indices to the current vertices list
-            for (Vec3i &face : m_volume_facets)
-                face -= Vec3i(min_id, min_id, min_id);
+            for (Vec3i32 &face : m_volume_facets)
+                face -= Vec3i32(min_id, min_id, min_id);
 
             indexed_triangle_set its { std::move(m_volume_facets), { m_object_vertices.begin() + min_id, m_object_vertices.begin() + max_id + 1 } };
             its_compactify_vertices(its);
@@ -663,7 +663,7 @@ void AMFParserContext::endElement(const char * /* name */)
             m_volume->source.volume_idx = (int)m_model.objects.back()->volumes.size() - 1;
             m_volume->center_geometry_after_creation();
         } else
-            // pass false if the mesh offset has been already taken from the data
+            // pass false if the mesh offset has been already taken from the data 
             m_volume->center_geometry_after_creation(m_volume->source.input_file.empty());
 
         m_volume->calculate_convex_hull();
@@ -778,7 +778,7 @@ void AMFParserContext::endElement(const char * /* name */)
                 }
                 m_object->sla_points_status = sla::PointsStatus::UserModified;
             }
-            else if (m_path.size() == 5 && m_path[1] == NODE_TYPE_OBJECT && m_path[3] == NODE_TYPE_RANGE &&
+            else if (m_path.size() == 5 && m_path[1] == NODE_TYPE_OBJECT && m_path[3] == NODE_TYPE_RANGE && 
                      m_object && strcmp(opt_key, "layer_height_range") == 0) {
                 // Parse object's layer_height_range, a semicolon separated doubles.
                 char* p = m_value[1].data();
@@ -824,7 +824,7 @@ void AMFParserContext::endElement(const char * /* name */)
                     m_volume->source.is_converted_from_meters = m_value[1] == "1";
                 }
             }
-        }
+        } 
         else */if (m_path.size() == 3) {
             if (m_path[1] == NODE_TYPE_MATERIAL) {
                 if (m_material)
@@ -930,9 +930,8 @@ bool load_amf_file(const char *path, DynamicPrintConfig *config, ConfigSubstitut
 
     if (result)
         ctx.endDocument();
-    if (use_inches) {
-        *use_inches = ctx.m_use_inches;
-    }
+
+    *use_inches = ctx.m_use_inches;
 
     for (ModelObject* o : model->objects)
     {
@@ -1010,9 +1009,7 @@ bool extract_model_from_archive(mz_zip_archive& archive, const mz_zip_archive_fi
     }
 
     ctx.endDocument();
-    if (use_inches) {
-        *use_inches = ctx.m_use_inches;
-    }
+    *use_inches = ctx.m_use_inches;
     //if (check_version && (ctx.m_version > VERSION_AMF_COMPATIBLE))
     //{
         // std::string msg = _(L("The selected amf file has been saved with a newer version of " + std::string(SLIC3R_APP_NAME) + " and is not compatible."));
@@ -1329,7 +1326,7 @@ bool load_amf(const char *path, DynamicPrintConfig *config, ConfigSubstitutionCo
         for (const CustomGCode::Item& code : model->custom_gcode_per_print_z.gcodes)
         {
             pt::ptree& code_tree = main_tree.add("code", "");
-            // store custom_gcode_per_print_z gcodes information
+            // store custom_gcode_per_print_z gcodes information 
             code_tree.put("<xmlattr>.print_z"   , code.print_z  );
             code_tree.put("<xmlattr>.type"      , static_cast<int>(code.type));
             code_tree.put("<xmlattr>.extruder"  , code.extruder );
@@ -1340,14 +1337,14 @@ bool load_amf(const char *path, DynamicPrintConfig *config, ConfigSubstitutionCo
             std::string gcode = //code.type == CustomGCode::ColorChange ? config->opt_string("color_change_gcode")    :
                                 code.type == CustomGCode::PausePrint  ? config->opt_string("machine_pause_gcode")     :
                                 code.type == CustomGCode::Template    ? config->opt_string("template_custom_gcode")   :
-                                code.type == CustomGCode::ToolChange  ? "tool_change"   : code.extra;
+                                code.type == CustomGCode::ToolChange  ? "tool_change"   : code.extra; 
             code_tree.put("<xmlattr>.gcode"     , gcode   );
         }
 
         pt::ptree& mode_tree = main_tree.add("mode", "");
-        // store mode of a custom_gcode_per_print_z
-        mode_tree.put("<xmlattr>.value",
-                      model->custom_gcode_per_print_z.mode == CustomGCode::Mode::SingleExtruder ? CustomGCode::SingleExtruderMode :
+        // store mode of a custom_gcode_per_print_z 
+        mode_tree.put("<xmlattr>.value", 
+                      model->custom_gcode_per_print_z.mode == CustomGCode::Mode::SingleExtruder ? CustomGCode::SingleExtruderMode : 
                       model->custom_gcode_per_print_z.mode == CustomGCode::Mode::MultiAsSingle  ?
                       CustomGCode::MultiAsSingleMode  : CustomGCode::MultiExtruderMode);
 

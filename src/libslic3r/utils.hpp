@@ -7,14 +7,17 @@
 #include <functional>
 #include <type_traits>
 #include <system_error>
+#include <regex>
 
 #include <boost/system/error_code.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem/path.hpp>
+#include <boost/date_time.hpp>
+#include "boost/date_time/posix_time/ptime.hpp"
+
 #include <openssl/md5.h>
 
 #include "libslic3r.h"
-#include "libslic3r_version.h"
 
 //define CLI errors
 
@@ -62,16 +65,9 @@
 #define CLI_OBJECT_COLLISION_IN_SEQ_PRINT   -63
 #define CLI_OBJECT_COLLISION_IN_LAYER_PRINT -64
 #define CLI_SPIRAL_MODE_INVALID_PARAMS      -65
-#define CLI_FILAMENT_CAN_NOT_MAP      -66
-#define CLI_ONLY_ONE_TPU_SUPPORTED      -67
-#define CLI_FILAMENTS_NOT_SUPPORTED_BY_EXTRUDER  -68
 
 #define CLI_SLICING_ERROR                  -100
 #define CLI_GCODE_PATH_CONFLICTS           -101
-#define CLI_GCODE_PATH_IN_UNPRINTABLE_AREA -102
-#define CLI_FILAMENT_UNPRINTABLE_ON_FIRST_LAYER -103
-#define CLI_GCODE_PATH_OUTSIDE             -104
-#define CLI_GCODE_IN_WRAPPING_DETECT_AREA  -105
 
 
 namespace boost { namespace filesystem { class directory_entry; }}
@@ -100,8 +96,6 @@ const std::string& var_dir();
 // Return a full resource path for a file_name.
 std::string var(const std::string &file_name);
 
-std::string format_diameter_to_str(double diameter, int precision = 1);
-
 // Set a path with various static definition data (for example the initial config bundles).
 void set_resources_dir(const std::string &path);
 // Return a full path to the resources directory.
@@ -129,210 +123,10 @@ inline std::string convert_to_full_version(std::string short_version)
     }
     return result;
 }
-
-class PathSanitizer
-{
-public:
-    static std::string sanitize(const std::string &path) {
-        return sanitize_impl(path);
-    }
-
-    static std::string sanitize(std::string &&path) {
-        return sanitize_impl(path);
-    }
-
-    static std::string sanitize(const char *path) {
-        return path ? sanitize_impl(std::string(path)) : "";
-    }
-
-    static std::string sanitize(const boost::filesystem::path &path) {
-        return sanitize_impl(path.string());
-    }
-
-private:
-    inline static size_t start_pos = std::string::npos;
-    inline static size_t id_start_pos = std::string::npos;
-    inline static size_t name_size = 0;
-    inline static std::string full;
-
-    static bool init_usrname_range()
-    {
-        if (start_pos != std::string::npos) {
-            return true;
-        }
-#ifdef _WIN32
-        const char *env = std::getenv("USERPROFILE");
-    #if BBL_RELEASE_TO_PUBLIC
-        const size_t len = strlen("\\AppData\\Roaming\\BambuStudio\\user");
-    #else
-        const size_t len = BBL_INTERNAL_TESTING == 1 ? strlen("\\AppData\\Roaming\\BambuStudioInternal\\user") : strlen("\\AppData\\Roaming\\BambuStudioBeta\\user");
-    #endif
-#elif __APPLE__
-        const char *env = std::getenv("HOME");
-    #if BBL_RELEASE_TO_PUBLIC
-        const size_t len = strlen("/Library/Application Support/BambuStudio/user");
-    #else
-        const size_t len = BBL_INTERNAL_TESTING == 1 ? strlen("/Library/Application Support/BambuStudioInternal/user") : strlen("/Library/Application Support/BambuStudioBeta/user");
-    #endif
-#elif __linux__
-        const char *env = std::getenv("HOME");
-    #if BBL_RELEASE_TO_PUBLIC
-        const size_t len = strlen("/.config/BambuStudio/user");
-    #else
-        const size_t len = BBL_INTERNAL_TESTING == 1 ? strlen("/.config/BambuStudioInternal/user") : strlen("/.config/BambuStudioBeta/user");
-    #endif
-#else
-        // Unsupported platform, return raw input
-        return false;
-#endif
-        if (!env) {
-            return false;
-        }
-        full = std::string(env);
-        size_t sep_pos = full.find_last_of("\\/");
-        if (sep_pos == std::string::npos) {
-            return false;
-        }
-        start_pos = sep_pos + 1;
-        name_size = full.length() - start_pos;
-        id_start_pos = full.length() + len + 1;
-
-        if (name_size == 0) {
-            return false;
-        }
-        if (start_pos + name_size > full.length()) {
-            return false;
-        }
-        return true;
-    }
-
-    static inline std::string file_name(const std::string &name) {
-        return boost::filesystem::path(name).filename().string();
-    }
-
-    static std::string sanitize_impl(const std::string &raw)
-    {
-        if (!init_usrname_range()) {
-            return file_name(raw);
-        }
-
-        if (raw.length() < full.length() || raw.empty()) {
-            return file_name(raw);
-        }
-
-        std::string sanitized = raw;
-        if (raw[0] != full[0] || raw[full.length() - 1] != full[full.length() - 1]) {
-            if (std::isupper(raw[start_pos]) && std::tolower(raw[start_pos]) == full[start_pos]) {
-                sanitized.replace(start_pos, 12, std::string(12, '*'));
-                return sanitized;
-            }
-            return file_name(raw);
-        }
-
-        if (raw[start_pos + name_size] == '\\' || raw[start_pos + name_size] == '/') {
-            sanitized.replace(start_pos, name_size, std::string(name_size, '*'));
-        } else if (std::isupper(raw[start_pos]) && std::tolower(raw[start_pos]) == full[start_pos]) {
-            sanitized.replace(start_pos, 12, std::string(12, '*'));
-        } else {
-            return file_name(raw);
-        }
-
-        if (id_start_pos != std::string::npos && id_start_pos < sanitized.length() && (sanitized[id_start_pos - 1] == '\\' || sanitized[id_start_pos - 1] == '/') &&
-            std::isdigit(sanitized[id_start_pos])) {
-            // If the ID part is present, sanitize it as well
-            size_t id_end_pos = sanitized.find_first_of("\\/", id_start_pos);
-            if (id_end_pos == std::string::npos) {
-                id_end_pos = sanitized.length();
-            }
-            sanitized.replace(id_start_pos, id_end_pos - id_start_pos, std::string(id_end_pos - id_start_pos, '*'));
-        }
-
-        return file_name(sanitized);
-    }
-
-    static std::string sanitize_impl(std::string &&raw)
-    {
-        if (!init_usrname_range()) {
-            return file_name(raw);
-        }
-
-        if (raw.length() < full.length() || raw.empty()) {
-            return std::move(file_name(raw));
-        }
-
-        if (raw[0] != full[0] || raw[full.length() - 1] != full[full.length() - 1]) {
-            if (std::isupper(raw[start_pos]) && std::tolower(raw[start_pos]) == full[start_pos]) {
-                raw.replace(start_pos, 12, std::string(12, '*'));
-                return std::move(file_name(raw));
-            }
-            return std::move(file_name(raw));
-        }
-
-        if (raw[start_pos + name_size] == '\\' || raw[start_pos + name_size] == '/') {
-            raw.replace(start_pos, name_size, std::string(name_size, '*'));
-        } else if (std::isupper(raw[start_pos]) && std::tolower(raw[start_pos]) == full[start_pos]) {
-            raw.replace(start_pos, 12, std::string(12, '*'));
-        } else {
-            return std::move(file_name(raw));
-        }
-
-        if (id_start_pos != std::string::npos && id_start_pos < raw.length() && (raw[id_start_pos - 1] == '\\' || raw[id_start_pos - 1] == '/') &&
-            std::isdigit(raw[id_start_pos])) {
-            // If the ID part is present, sanitize it as well
-            size_t id_end_pos = raw.find_first_of("\\/", id_start_pos);
-            if (id_end_pos == std::string::npos) {
-                id_end_pos = raw.length();
-            }
-            raw.replace(id_start_pos, id_end_pos - id_start_pos, std::string(id_end_pos - id_start_pos, '*'));
-        }
-
-        return std::move(file_name(raw));
-    }
-};
-
 template<typename DataType>
 inline DataType round_divide(DataType dividend, DataType divisor) //!< Return dividend divided by divisor rounded to the nearest integer
 {
     return (dividend + divisor / 2) / divisor;
-}
-template<typename DataType>
-inline DataType round_up_divide(DataType dividend, DataType divisor) //!< Return dividend divided by divisor rounded to the nearest integer
-{
-    return (dividend + divisor - 1) / divisor;
-}
-
-template<typename T>
-T get_max_element(const std::vector<T> &vec)
-{
-    static_assert(std::is_arithmetic<T>::value, "T must be of numeric type.");
-    if (vec.empty())
-        return static_cast<T>(0);
-
-    return *std::max_element(vec.begin(), vec.end());
-}
-
-
-template <typename From, typename To>
-std::vector<To> convert_vector(const std::vector<From>& src) {
-    std::vector<To> dst;
-    dst.reserve(src.size());
-    for (const auto& elem : src) {
-        if constexpr (std::is_signed_v<To>) {
-            if (elem > static_cast<From>(std::numeric_limits<To>::max())) {
-                throw std::overflow_error("Source value exceeds destination maximum");
-            }
-            if (elem < static_cast<From>(std::numeric_limits<To>::min())) {
-                throw std::underflow_error("Source value below destination minimum");
-            }
-        }
-        else {
-            if (elem < 0) {
-                throw std::invalid_argument("Negative value in source for unsigned destination");
-            }
-        }
-        dst.push_back(static_cast<To>(elem));
-    }
-    return dst;
 }
 
 // Set a path with GUI localization files.
@@ -347,6 +141,11 @@ const std::string& sys_shapes_dir();
 
 // Return a full path to the custom shapes gallery directory.
 std::string custom_shapes_dir();
+
+// Set a path with shapes gallery files.
+void set_custom_gcodes_dir(const std::string &path);
+// Return a full path to the system shapes gallery directory.
+const std::string& custom_gcodes_dir();
 
 // Set a path with preset files.
 void set_data_dir(const std::string &path);
@@ -368,13 +167,17 @@ void flush_logs();
 // This type is only needed for Perl bindings to relay to Perl that the string is raw, not UTF-8 encoded.
 typedef std::string local_encoded_string;
 
+// Returns next utf8 sequence length. =number of bytes in string, that creates together one utf-8 character. 
+// Starting at pos. ASCII characters returns 1. Works also if pos is in the middle of the sequence.
+extern size_t get_utf8_sequence_length(const std::string& text, size_t pos = 0);
+extern size_t get_utf8_sequence_length(const char *seq, size_t size);
+
 // Convert an UTF-8 encoded string into local coding.
 // On Windows, the UTF-8 string is converted to a local 8-bit code page.
 // On OSX and Linux, this function does no conversion and returns a copy of the source string.
 extern local_encoded_string encode_path(const char *src);
 extern std::string decode_path(const char *src);
 extern std::string normalize_utf8_nfc(const char *src);
-extern std::vector<std::string> split_string(const std::string &str, char delimiter);
 
 // Safely rename a file even if the target exists.
 // On Windows, the file explorer (or anti-virus or whatever else) often locks the file
@@ -396,7 +199,7 @@ CopyFileResult copy_file_inner(const std::string &from, const std::string &to, s
 // of the source file before renaming.
 // Additional error info is passed in error message.
 extern CopyFileResult copy_file(const std::string &from, const std::string &to, std::string& error_message, const bool with_check = false);
-extern bool           copy_framework(const std::string &from, const std::string &to);
+
 // Compares two files if identical.
 extern CopyFileResult check_copy(const std::string& origin, const std::string& copy);
 
@@ -413,6 +216,30 @@ extern bool is_shapes_dir(const std::string& dir);
 //BBS: add json support
 extern bool is_json_file(const std::string& path);
 
+// Orca: custom protocal support utils
+inline bool is_orca_open(const std::string& url) { return boost::starts_with(url, "orcaslicer://open"); }
+inline bool is_prusaslicer_open(const std::string& url) { return boost::starts_with(url, "prusaslicer://open"); }
+inline bool is_bambustudio_open(const std::string& url) { return boost::starts_with(url, "bambustudio://open"); }
+inline bool is_cura_open(const std::string& url) { return boost::starts_with(url, "cura://open"); }
+inline bool is_supported_open_protocol(const std::string& url) { return is_orca_open(url) || is_prusaslicer_open(url) || is_bambustudio_open(url) || is_cura_open(url); }
+inline bool is_printables_link(const std::string& url) {
+    const std::regex url_regex("(http|https)://printables.com", std::regex_constants::icase);
+    return std::regex_match(url, url_regex);
+}
+inline bool is_makerworld_link(const std::string& url) {
+    const std::regex url_regex("(http|https)://makerworld.com", std::regex_constants::icase);
+    return std::regex_match(url, url_regex);
+}
+inline bool is_thingiverse_link(const std::string& url) {
+    const std::regex url_regex("(http|https)://www.thingiverse.com", std::regex_constants::icase);
+    return std::regex_match(url, url_regex);
+}
+
+// sanitize a string to be used as a filename
+inline std::string sanitize_filename(const std::string &filename){
+    const std::regex special_chars("[/\\\\:*?\"<>|]");
+    return std::regex_replace(filename, special_chars, "_");
+}
 // File path / name / extension splitting utilities, working with UTF-8,
 // to be published to Perl.
 namespace PerlUtils {
@@ -497,6 +324,10 @@ template<class T> size_t next_highest_power_of_2(T v,
     return next_highest_power_of_2(uint32_t(v));
 }
 
+template <class VectorType> void reserve_power_of_2(VectorType &vector, size_t n) {
+    vector.reserve(next_highest_power_of_2(n));
+}
+
 template<class VectorType> void reserve_more(VectorType &vector, size_t n)
 {
     vector.reserve(vector.size() + n);
@@ -521,6 +352,14 @@ inline INDEX_TYPE next_idx_modulo(INDEX_TYPE idx, const INDEX_TYPE count)
 	if (++ idx == count)
 		idx = 0;
 	return idx;
+}
+
+
+// Return dividend divided by divisor rounded to the nearest integer
+template<typename INDEX_TYPE>
+inline INDEX_TYPE round_up_divide(const INDEX_TYPE dividend, const INDEX_TYPE divisor)
+{
+    return (dividend + divisor - 1) / divisor;
 }
 
 template<typename CONTAINER_TYPE>
@@ -768,15 +607,15 @@ inline std::string get_bbl_monitor_time_dhm(float time_in_secs)
     time_in_secs -= (float)days * 86400.0f;
     int hours = (int)(time_in_secs / 3600.0f);
     time_in_secs -= (float)hours * 3600.0f;
-    int minutes = (int) std::ceil(time_in_secs / 60.0f);
+    int minutes = (int)(time_in_secs / 60.0f);
 
     char buffer[64];
     if (days > 0)
-        ::sprintf(buffer, "%dd%dh%dmin", days, hours, minutes);
+        ::sprintf(buffer, "%dd%dh%dm", days, hours, minutes);
     else if (hours > 0)
-        ::sprintf(buffer, "%dh%dmin", hours, minutes);
+        ::sprintf(buffer, "%dh%dm", hours, minutes);
     else if (minutes >= 0)
-        ::sprintf(buffer, "%dmin", minutes);
+        ::sprintf(buffer, "%dm", minutes);
     else {
         return "";
     }
@@ -784,43 +623,19 @@ inline std::string get_bbl_monitor_time_dhm(float time_in_secs)
     return buffer;
 }
 
-inline std::string get_bbl_finish_time_dhm(float time_in_secs)
+inline std::string get_bbl_monitor_end_time_dhm(float time_in_secs)
 {
-    if (time_in_secs < 1) return "Finished";
-    time_t   finish_time    = std::time(nullptr) + static_cast<time_t>(time_in_secs);
-    std::tm *finish_tm      = std::localtime(&finish_time);
-    int      finish_hour    = finish_tm->tm_hour;
-    int      finish_minute  = finish_tm->tm_min;
-    int      finish_day     = finish_tm->tm_yday;
-    int      finish_year    = finish_tm->tm_year + 1900;
-    time_t   current_time   = std::time(nullptr);
-    std::tm *current_tm     = std::localtime(&current_time);
-    int      current_day    = current_tm->tm_yday;
-    int      current_year   = current_tm->tm_year + 1900;
+    if (time_in_secs == 0.0f)
+        return {};
 
-    int diff_day = 0;
-    if (current_year != finish_year) {
-        if ((current_year % 4 == 0 && current_year % 100 != 0) || current_year % 400 == 0)
-            diff_day = 366 - current_day;
-        else
-            diff_day = 365 - current_day;
-        for (int year = current_year + 1; year < finish_year; year++) {
-            if ((current_year % 4 == 0 && current_year % 100 != 0) || current_year % 400 == 0)
-                diff_day += 366;
-            else
-                diff_day += 365;
-        }
-        diff_day += finish_day;
-    } else {
-        diff_day = finish_day - current_day;
-    }
+    std::stringstream stream;
+    boost::posix_time::ptime now = boost::posix_time::second_clock::local_time();
+    auto endTime = now + boost::posix_time::seconds(static_cast<int>(time_in_secs));
+    auto facet = new boost::posix_time::time_facet("%H:%M");//%Y-%m-%d %H:%M:%S
+    stream.imbue(std::locale(std::locale::classic(), facet));
+    stream << endTime;
 
-    std::ostringstream formattedTime;
-    formattedTime << std::setw(2) << std::setfill('0') << finish_hour << ":" << std::setw(2) << std::setfill('0') << finish_minute;
-    std::string finish_time_str = formattedTime.str();
-    if (diff_day != 0) finish_time_str += "+" + std::to_string(diff_day);
-
-    return finish_time_str;
+    return stream.str();
 }
 
 inline std::string get_bbl_remain_time_dhms(float time_in_secs)
@@ -829,7 +644,7 @@ inline std::string get_bbl_remain_time_dhms(float time_in_secs)
     time_in_secs -= (float) days * 86400.0f;
     int hours = (int) (time_in_secs / 3600.0f);
     time_in_secs -= (float) hours * 3600.0f;
-    int minutes = (int) std::ceil(time_in_secs / 60.0f);
+    int minutes = (int) (time_in_secs / 60.0f);
     time_in_secs -= (float) minutes * 60.0f;
 
     char buffer[64];
@@ -860,6 +675,9 @@ inline std::string filter_characters(const std::string& str, const std::string& 
     return filteredStr;
 }
 
+void copy_directory_recursively(const boost::filesystem::path &source, const boost::filesystem::path &target, std::function<bool(const std::string)> filter = nullptr);
+
+// Orca: Since 1.7.9 Boost deprecated save_string_file and load_string_file, copy and modified from boost 1.7.8
 void save_string_file(const boost::filesystem::path& p, const std::string& str);
 void load_string_file(const boost::filesystem::path& p, std::string& str);
 

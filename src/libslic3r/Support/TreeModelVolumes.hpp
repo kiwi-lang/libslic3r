@@ -26,12 +26,12 @@ namespace Slic3r
 class BuildVolume;
 class PrintObject;
 
-namespace TreeSupport3D
+namespace FFFTreeSupport
 {
 
 static constexpr const double  SUPPORT_TREE_EXPONENTIAL_FACTOR = 1.5;
-static constexpr const coord_t SUPPORT_TREE_EXPONENTIAL_THRESHOLD = scaled<coord_t>(1. * SUPPORT_TREE_EXPONENTIAL_FACTOR);
-static constexpr const coord_t SUPPORT_TREE_COLLISION_RESOLUTION = scaled<coord_t>(0.5);
+#define SUPPORT_TREE_EXPONENTIAL_THRESHOLD  scaled<coord_t>(1. * SUPPORT_TREE_EXPONENTIAL_FACTOR)
+#define SUPPORT_TREE_COLLISION_RESOLUTION  scaled<coord_t>(0.5)
 static constexpr const bool    SUPPORT_TREE_AVOID_SUPPORT_BLOCKER = true;
 
 class TreeModelVolumes
@@ -54,6 +54,7 @@ public:
     void clear() { 
         this->clear_all_but_object_collision();
         m_collision_cache.clear();
+        m_placeable_areas_cache.clear();
     }
     void clear_all_but_object_collision() { 
         //m_collision_cache.clear_all_but_radius0();
@@ -62,7 +63,7 @@ public:
         m_avoidance_cache_slow.clear();
         m_avoidance_cache_to_model.clear();
         m_avoidance_cache_to_model_slow.clear();
-        m_placeable_areas_cache.clear();
+        m_placeable_areas_cache.clear_all_but_radius0();
         m_avoidance_cache_holefree.clear();
         m_avoidance_cache_holefree_to_model.clear();
         m_wall_restrictions_cache.clear();
@@ -166,8 +167,6 @@ public:
             this->ceilRadius(radius + m_current_min_xy_dist_delta) - m_current_min_xy_dist_delta;
     }
 
-    Polygon m_bed_area;
-
 private:
     // Caching polygons for a range of layers.
     class LayerPolygonCache {
@@ -241,7 +240,7 @@ private:
          */
         std::optional<std::reference_wrapper<const Polygons>> getArea(const TreeModelVolumes::RadiusLayerPair &key) const {
             std::lock_guard<std::mutex> guard(m_mutex);
-            if (key.second >= m_data.size())
+            if (key.second >= LayerIndex(m_data.size()))
                 return std::optional<std::reference_wrapper<const Polygons>>{};
             const auto &layer = m_data[key.second];
             auto it = layer.find(key.first);
@@ -251,7 +250,7 @@ private:
         // Get a collision area at a given layer for a radius that is a lower or equial to the key radius.
         std::optional<std::pair<coord_t, std::reference_wrapper<const Polygons>>> get_lower_bound_area(const TreeModelVolumes::RadiusLayerPair &key) const {
             std::lock_guard<std::mutex> guard(m_mutex);
-            if (key.second >= m_data.size())
+            if (key.second >= LayerIndex(m_data.size()))
                 return {};
             const auto &layer = m_data[key.second];
             if (layer.empty())
@@ -549,7 +548,7 @@ private:
 #endif // SLIC3R_TREESUPPORTS_PROGRESS
 };
 
-} // namespace TreeSupport3D
+} // namespace FFFTreeSupport
 } // namespace Slic3r
 
 #endif //slic3r_TreeModelVolumes_hpp

@@ -33,9 +33,7 @@ struct StringObjectException
     ObjectBase const *object = nullptr;
     std::string opt_key;
     StringExceptionType         type;   // warning type for tips
-    bool is_warning = false;
     std::vector<std::string>    params; // warning params for tips
-    std::string                         hypetext;
 };
 
 class CanceledException : public std::exception
@@ -408,7 +406,7 @@ public:
         // Some data was changed, which in turn invalidated already calculated steps.
         APPLY_STATUS_INVALIDATED,
     };
-    virtual ApplyStatus     apply(const Model &model, DynamicPrintConfig config, bool extruder_applied = false) = 0;
+    virtual ApplyStatus     apply(const Model &model, DynamicPrintConfig config) = 0;
     const Model&            model() const { return m_model; }
 
     struct TaskParams {
@@ -425,8 +423,8 @@ public:
     // After calling the apply() function, call set_task() to limit the task to be processed by process().
     virtual void            set_task(const TaskParams &params) {}
     // Perform the calculation. This is the only method that is to be called at a worker thread.
-    virtual void            process(std::unordered_map<std::string, long long>* slice_time = nullptr, bool use_cache = false) = 0;
-    virtual int             export_cached_data(const std::string& dir_path, int& obj_cnt_exported, bool with_space=false) { return 0;}
+    virtual void            process(long long *time_cost_with_cache = nullptr, bool use_cache = false) = 0;
+    virtual int             export_cached_data(const std::string& dir_path, bool with_space=false) { return 0;}
     virtual int            load_cached_data(const std::string& directory) { return 0;}
     // Clean up after process() finished, either with success, error or if canceled.
     // The adjustments on the Print / PrintObject data due to set_task() are to be reverted here.
@@ -449,7 +447,6 @@ public:
         {
         }
         int             percent { -1 };
-        bool            is_helio{false};
         std::string     text;
         // Bitmap of flags.
         enum FlagBits {
@@ -521,9 +518,9 @@ public:
     bool get_no_check_flag() const { return m_no_check; }
     void set_no_check_flag(bool no_check) { m_no_check = no_check; }
 
+    //SoftFever plate name
     std::string get_plate_name() const { return m_plate_name; }
-    void set_plate_name(const std::string &name) { m_plate_name = name; }
-
+    void set_plate_name(const std::string& name) { m_plate_name = name; }
 protected:
 	friend class PrintObjectBase;
     friend class BackgroundSlicingProcess;
@@ -553,15 +550,15 @@ protected:
 
 	Model                                   m_model;
 	DynamicPrintConfig						m_full_print_config;
-    DynamicPrintConfig						m_ori_full_print_config;  //original full print config without extruder applied
     PlaceholderParser                       m_placeholder_parser;
 
     //BBS: add plate id into print base
     int m_plate_index{ 0 };
     bool m_no_check = false;
 
-    // current plate name
-    std::string m_plate_name;   // utf8 string
+    // SoftFever: current plate name
+    std::string m_plate_name;
+
     // Callback to be evoked regularly to update state of the UI thread.
     status_callback_type                    m_status_callback;
 

@@ -201,16 +201,16 @@ indexed_triangle_set cgal_to_indexed_triangle_set(const _Mesh &cgalmesh)
     const auto &vertices = cgalmesh.vertices();
     int vsize = int(vertices.size());
 
-    for (const auto &vi : vertices) {
+    for (auto &vi : vertices) {
         auto &v = cgalmesh.point(vi); // Don't ask...
         its.vertices.emplace_back(to_vec3f(v));
     }
 
-    for (const auto &face : faces) {
+    for (auto &face : faces) {
         auto vtc = cgalmesh.vertices_around_face(cgalmesh.halfedge(face));
 
         int i = 0;
-        Vec3i facet;
+        Vec3i32 facet;
         for (auto v : vtc) {
             int iv = v;
             if (i > 2 || iv < 0 || iv >= vsize) { i = 0; break; }
@@ -550,7 +550,7 @@ TriangleMesh mcut_to_triangle_mesh(const McutMesh &mcutmesh)
     int faceVertexOffsetBase = 0;
 
     // for each face in CC
-    std::vector<Vec3i> faces(ccFaceCount);
+    std::vector<Vec3i32> faces(ccFaceCount);
     for (uint32_t f = 0; f < ccFaceCount; ++f) {
         int faceSize = faceSizes.at(f);
 
@@ -620,7 +620,7 @@ MCAPI_ATTR void MCAPI_CALL mcDebugOutput(McDebugSource source,
 }
 
 
-bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts, const BooleanCancelCB& cancel_cb, const BooleanProgressCB& progress_cb)
+bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts)
 {
     // create context
     McContext context = MC_NULL_HANDLE;
@@ -651,9 +651,6 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     if (srcMesh.vertexCoordsArray.empty() && (boolean_opts == "UNION" || boolean_opts == "B_NOT_A")) {
         srcMesh = cutMesh;
         mcReleaseContext(context);
-        if (progress_cb) {
-            progress_cb(100.0f);
-        }
         return true;
     }
 
@@ -667,17 +664,11 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
                      // cut mesh
                      reinterpret_cast<const void *>(cutMesh.vertexCoordsArray.data()), cutMesh.faceIndicesArray.data(), cutMesh.faceSizesArray.data(),
                      static_cast<uint32_t>(cutMesh.vertexCoordsArray.size() / 3), static_cast<uint32_t>(cutMesh.faceSizesArray.size()));
-    if (progress_cb) {
-        progress_cb(10.0f);
-    }
     if (err != MC_NO_ERROR) {
         BOOST_LOG_TRIVIAL(debug) << "MCUT mcDispatch fails! err=" << err;
         mcReleaseContext(context);
         if (boolean_opts == "UNION") {
             merge_mcut_meshes(srcMesh, cutMesh);
-            if (progress_cb) {
-                progress_cb(100.0f);
-            }
             return true;
         }
         return false;
@@ -686,17 +677,11 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     // query the number of available connected component
     uint32_t numConnComps;
     err = mcGetConnectedComponents(context, MC_CONNECTED_COMPONENT_TYPE_FRAGMENT, 0, NULL, &numConnComps);
-    if (progress_cb) {
-        progress_cb(20.0f);
-    }
     if (err != MC_NO_ERROR || numConnComps==0) {
         BOOST_LOG_TRIVIAL(debug) << "MCUT mcGetConnectedComponents fails! err=" << err << ", numConnComps" << numConnComps;
         mcReleaseContext(context);
         if (numConnComps == 0 && boolean_opts == "UNION") {
             merge_mcut_meshes(srcMesh, cutMesh);
-            if (progress_cb) {
-                progress_cb(100.0f);
-            }
             return true;
         }
         return false;
@@ -704,52 +689,26 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
 
     std::vector<McConnectedComponent> connectedComponents(numConnComps, MC_NULL_HANDLE);
     err = mcGetConnectedComponents(context, MC_CONNECTED_COMPONENT_TYPE_FRAGMENT, (uint32_t) connectedComponents.size(), connectedComponents.data(), NULL);
-    if (progress_cb) {
-        progress_cb(30.0f);
-    }
+
     McutMesh outMesh;
     int N_vertices = 0;
     // traversal of all connected components
     for (int n = 0; n < numConnComps; ++n) {
-        if (cancel_cb && cancel_cb()) {
-            return false;
-        }
         // query the data of each connected component from MCUT
         McConnectedComponent connComp = connectedComponents[n];
 
         // query the vertices
         McSize numBytes                  = 0;
         err                               = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_VERTEX_DOUBLE, 0, NULL, &numBytes);
-
-        const float sub_progress = 60.0 * n / numConnComps;
-        const float temp_progress = 30.0f + sub_progress;
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.1f);
-        }
-
         uint32_t            ccVertexCount = (uint32_t) (numBytes / (sizeof(double) * 3));
         std::vector<double> ccVertices((uint64_t) ccVertexCount * 3u, 0);
         err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_VERTEX_DOUBLE, numBytes, (void *) ccVertices.data(), NULL);
 
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.2f);
-        }
-
         // query the faces
         numBytes = 0;
         err      = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, 0, NULL, &numBytes);
-
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.3f);
-        }
-
         std::vector<uint32_t> ccFaceIndices(numBytes / sizeof(uint32_t), 0);
         err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FACE_TRIANGULATION, numBytes, ccFaceIndices.data(), NULL);
-
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.4f);
-        }
-
         std::vector<uint32_t> faceSizes(ccFaceIndices.size() / 3, 3);
 
         const uint32_t ccFaceCount = static_cast<uint32_t>(faceSizes.size());
@@ -758,16 +717,8 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
         McPatchLocation patchLocation = (McPatchLocation) 0;
         err                           = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_PATCH_LOCATION, sizeof(McPatchLocation), &patchLocation, NULL);
 
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.5f);
-        }
-
         McFragmentLocation fragmentLocation = (McFragmentLocation) 0;
         err = mcGetConnectedComponentData(context, connComp, MC_CONNECTED_COMPONENT_DATA_FRAGMENT_LOCATION, sizeof(McFragmentLocation), &fragmentLocation, NULL);
-
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.6f);
-        }
 
         outMesh.vertexCoordsArray.insert(outMesh.vertexCoordsArray.end(), ccVertices.begin(), ccVertices.end());
 
@@ -779,11 +730,8 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
         int faceVertexOffsetBase = 0;
 
         // for each face in CC
-        std::vector<Vec3i> faces(ccFaceCount);
+        std::vector<Vec3i32> faces(ccFaceCount);
         for (uint32_t f = 0; f < ccFaceCount; ++f) {
-            if (cancel_cb && cancel_cb()) {
-                return false;
-            }
             bool reverseWindingOrder = (fragmentLocation == MC_FRAGMENT_LOCATION_BELOW) && (patchLocation == MC_PATCH_LOCATION_OUTSIDE);
             int  faceSize            = faceSizes.at(f);
             if (reverseWindingOrder) {
@@ -795,18 +743,10 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
             faceVertexOffsetBase += faceSize;
         }
 
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 0.8f);
-        }
-
         outMesh.faceIndicesArray.insert(outMesh.faceIndicesArray.end(), ccFaceIndices.begin(), ccFaceIndices.end());
         outMesh.faceSizesArray.insert(outMesh.faceSizesArray.end(), faceSizes.begin(), faceSizes.end());
 
         N_vertices += ccVertexCount;
-
-        if (progress_cb) {
-            progress_cb(temp_progress + 60.0 / numConnComps * 1.0f);
-        }
     }
 
     // free connected component data
@@ -815,119 +755,65 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     err = mcReleaseContext(context);
 
     srcMesh = outMesh;
-    if (progress_cb) {
-        progress_cb(100.0f);
-    }
+
     return true;
 }
 
-bool do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts, const BooleanCancelCB& cancel_cb, const BooleanProgressCB& progress_cb, const BooleanFailedCB& failed_cb)
+void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
 {
-    try {
-        TriangleMesh                      tri_src   = mcut_to_triangle_mesh(srcMesh);
-        std::vector<indexed_triangle_set> src_parts = its_split(tri_src.its);
+    TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
+    std::vector<indexed_triangle_set> src_parts = its_split(tri_src.its);
 
-        TriangleMesh                      tri_cut   = mcut_to_triangle_mesh(cutMesh);
-        std::vector<indexed_triangle_set> cut_parts = its_split(tri_cut.its);
+    TriangleMesh tri_cut = mcut_to_triangle_mesh(cutMesh);
+    std::vector<indexed_triangle_set> cut_parts = its_split(tri_cut.its);
 
-        if (src_parts.empty() && boolean_opts == "UNION") {
-            srcMesh = cutMesh;
-            return true;
-        }
-        if (cut_parts.empty()) return true;
-
-        // when src mesh has multiple connected components, mcut refuses to work.
-        // But we can force it to work by spliting the src mesh into disconnected components,
-        // and do booleans seperately, then merge all the results.
-        indexed_triangle_set all_its;
-        const auto total_count = src_parts.size() * cut_parts.size();
-        int count_index = 0;
-        BooleanProgressCB temp_progress_cb = nullptr;
-        if (progress_cb) {
-            temp_progress_cb = [&](float progress)->void {
-                float current_progress = 10.0f + 70.0f * (count_index * 1.0f / total_count) + 70.0f * 1.0f / total_count * progress / 100.0f;
-                if (progress_cb) {
-                    progress_cb(current_progress);
-                }
-            };
-        }
-        if (boolean_opts == "UNION" || boolean_opts == "A_NOT_B") {
-            for (size_t i = 0; i < src_parts.size(); i++) {
-                auto src_part = triangle_mesh_to_mcut(src_parts[i]);
-                for (size_t j = 0; j < cut_parts.size(); j++) {
-                    if (cancel_cb && cancel_cb()) {
-                        return false;
-                    }
-                    auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
-                    do_boolean_single(*src_part, *cut_part, boolean_opts, cancel_cb, temp_progress_cb);
-                    ++count_index;
-                }
-                TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
-                its_merge(all_its, tri_part.its);
-            }
-        } else if (boolean_opts == "INTERSECTION") {
-            for (size_t i = 0; i < src_parts.size(); i++) {
-                for (size_t j = 0; j < cut_parts.size(); j++) {
-                    if (cancel_cb && cancel_cb()) {
-                        return false;
-                    }
-                    ++count_index;
-                    auto src_part = triangle_mesh_to_mcut(src_parts[i]);
-                    auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
-                    bool success  = do_boolean_single(*src_part, *cut_part, boolean_opts, cancel_cb, temp_progress_cb);
-                    if (success) {
-                        TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
-                        its_merge(all_its, tri_part.its);
-                    }
-                }
-            }
-        }
-        srcMesh = *triangle_mesh_to_mcut(all_its);
-        return true;
-    } catch (const std::exception &e) {
-        if (failed_cb) {
-            failed_cb();
-        }
-        BOOST_LOG_TRIVIAL(error) << "check error:" << e.what();
-        return false;
+    if (src_parts.empty() && boolean_opts == "UNION") {
+        srcMesh = cutMesh;
+        return;
     }
+    if(cut_parts.empty()) return;
+
+    // when src mesh has multiple connected components, mcut refuses to work.
+    // But we can force it to work by spliting the src mesh into disconnected components,
+    // and do booleans seperately, then merge all the results.
+    indexed_triangle_set all_its;
+    if (boolean_opts == "UNION" || boolean_opts == "A_NOT_B") {
+        for (size_t i = 0; i < src_parts.size(); i++) {
+            auto src_part = triangle_mesh_to_mcut(src_parts[i]);
+            for (size_t j = 0; j < cut_parts.size(); j++) {
+                auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
+                do_boolean_single(*src_part, *cut_part, boolean_opts);
+            }
+            TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
+            its_merge(all_its, tri_part.its);
+        }
+    }
+    else if (boolean_opts == "INTERSECTION") {
+        for (size_t i = 0; i < src_parts.size(); i++) {
+            for (size_t j = 0; j < cut_parts.size(); j++) {
+                auto src_part = triangle_mesh_to_mcut(src_parts[i]);
+                auto cut_part = triangle_mesh_to_mcut(cut_parts[j]);
+                bool success = do_boolean_single(*src_part, *cut_part, boolean_opts);
+                if (success) {
+                    TriangleMesh tri_part = mcut_to_triangle_mesh(*src_part);
+                    its_merge(all_its, tri_part.its);
+                }
+            }
+        }
+    }
+    srcMesh = *triangle_mesh_to_mcut(all_its);
 }
 
-void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts, const BooleanCancelCB& cancel_cb, const BooleanProgressCB& progress_cb, const BooleanFailedCB& failed_cb)
+void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts)
 {
     McutMesh srcMesh, cutMesh;
     triangle_mesh_to_mcut(src_mesh, srcMesh);
     triangle_mesh_to_mcut(cut_mesh, cutMesh);
     //dst_mesh = make_boolean(srcMesh, cutMesh, boolean_opts);
-    const bool rt = do_boolean(srcMesh, cutMesh, boolean_opts, cancel_cb, progress_cb, failed_cb);
-    if (!rt) {
-        return;
-    }
-    if (cancel_cb && cancel_cb()) {
-        return;
-    }
-    if (progress_cb) {
-        progress_cb(90.0f);
-    }
+    do_boolean(srcMesh, cutMesh, boolean_opts);
     TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
-    if (!tri_src.empty()) {
-        // Split into parts, fix negative volume for each part, then merge back
-        std::vector<TriangleMesh> parts = tri_src.split();
-        if (parts.size() > 1) {
-            TriangleMesh fixed_mesh;
-            for (auto& part : parts) {
-                if (part.volume() < 0) part.flip_triangles();
-                fixed_mesh.merge(part);
-            }
-            dst_mesh.push_back(std::move(fixed_mesh));
-        } else {
-            if (tri_src.volume() < 0) tri_src.flip_triangles();
-            dst_mesh.push_back(std::move(tri_src));
-        }
-    }
-    if (progress_cb) {
-        progress_cb(100.0f);
-    }
+    if (!tri_src.empty())
+        dst_mesh.push_back(std::move(tri_src));
 }
 
 } // namespace mcut

@@ -2,10 +2,10 @@
 #define _libslic3r_h_
 
 #include "libslic3r_version.h"
-#define SLIC3R_APP_FULL_NAME "Bambu Studio"
-#define GCODEVIEWER_APP_NAME "BambuStudio G-code Viewer"
-#define GCODEVIEWER_APP_KEY  "BambuStudioGcodeViewer"
-#define GCODEVIEWER_BUILD_ID std::string("BambuStudio G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
+#define SLIC3R_APP_FULL_NAME "Orca Slicer"
+#define GCODEVIEWER_APP_NAME "OrcaSlicer G-code Viewer"
+#define GCODEVIEWER_APP_KEY  "OrcaSlicerGcodeViewer"
+#define GCODEVIEWER_BUILD_ID std::string("OrcaSlicer G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
 
 // this needs to be included early for MSVC (listing it in Build.PL is not enough)
 #include <memory>
@@ -35,12 +35,12 @@
 #include "Technologies.hpp"
 #include "Semver.hpp"
 
-#if 1
+#if 0
 // Saves around 32% RAM after slicing step, 6.7% after G-code export (tested on PrusaSlicer 2.2.0 final).
 using coord_t = int32_t;
 #else
 //FIXME At least FillRectilinear2 and std::boost Voronoi require coord_t to be 32bit.
-typedef int64_t coord_t;
+using coord_t = int64_t;
 #endif
 
 using coordf_t = double;
@@ -50,32 +50,39 @@ using coordf_t = double;
 // for a trheshold in a difference of radians,
 // for a threshold of a cross product of two non-normalized vectors etc.
 static constexpr double EPSILON = 1e-4;
-// Scaling factor for a conversion from coord_t to coordf_t: 1e-5
+// Scaling factor for a conversion from coord_t to coordf_t: 10e-6
 // This scaling generates a following fixed point representation with for a 32bit integer:
 // 0..4294mm with 1nm resolution
 // int32_t fits an interval of (-2147.48mm, +2147.48mm)
 // with int64_t we don't have to worry anymore about the size of the int.
-static constexpr double SCALING_FACTOR = 0.00001;
+
+// Orca todo: might be better to use 1e-5 for all, namometer resolution is not needed for 3D printing
+static constexpr double SCALING_FACTOR_INTERNAL = 0.000001;
+static constexpr double SCALING_FACTOR_INTERNAL_LARGE_PRINTER = 0.00001;
+static constexpr double LARGE_BED_THRESHOLD = 2147;
+
+extern double SCALING_FACTOR;
+// for creating circles (for brim_ear)
+#define POLY_SIDES 24
 static constexpr double PI = 3.141592653589793238;
-#define POLY_SIDE_COUNT 24 // for brim ear circle
 // When extruding a closed loop, the loop is interrupted and shortened a bit to reduce the seam.
-static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15;
+// SoftFever: replaced by seam_gap now
+// static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15;
 static constexpr double RESOLUTION = 0.0125;
 #define                 SCALED_RESOLUTION (RESOLUTION / SCALING_FACTOR)
 static constexpr double SPARSE_INFILL_RESOLUTION = 0.04;
 #define                 SCALED_SPARSE_INFILL_RESOLUTION (SPARSE_INFILL_RESOLUTION / SCALING_FACTOR)
 
-static constexpr double SUPPORT_RESOLUTION = 0.0375;
+static constexpr double SUPPORT_RESOLUTION = 0.1;
 #define                 SCALED_SUPPORT_RESOLUTION (SUPPORT_RESOLUTION / SCALING_FACTOR)
-// Maximum perimeter length for the loop to apply the small perimeter speed.
-#define                 SMALL_PERIMETER_LENGTH(LENGTH)  (((LENGTH)/SCALING_FACTOR)*2*PI)
+// Maximum perimeter length for the loop to apply the small perimeter speed. 
+#define                 SMALL_PERIMETER_LENGTH(LENGTH)  (((LENGTH) / SCALING_FACTOR) * 2 * PI)
 static constexpr double INSET_OVERLAP_TOLERANCE = 0.4;
 // 3mm ring around the top / bottom / bridging areas.
 //FIXME This is quite a lot.
 static constexpr double EXTERNAL_INFILL_MARGIN = 3;
 static constexpr double BRIDGE_INFILL_MARGIN = 1;
-static constexpr double WIPE_TOWER_MARGIN = 15.;
-static constexpr double WIPE_TOWER_MARGIN_AFTER_SLICING = 0.2;
+static constexpr double WIPE_TOWER_MARGIN = 1.;
 //FIXME Better to use an inline function with an explicit return type.
 //inline coord_t scale_(coordf_t v) { return coord_t(floor(v / SCALING_FACTOR + 0.5f)); }
 #define scale_(val) ((val) / SCALING_FACTOR)
@@ -89,10 +96,11 @@ static constexpr double WIPE_TOWER_MARGIN_AFTER_SLICING = 0.2;
 
 //BBS: some global const config which user can not change, but developer can
 static constexpr bool g_config_support_sharp_tails = true;
+static constexpr bool g_config_remove_small_overhangs = true;
 static constexpr float g_config_tree_support_collision_resolution = 0.2;
 
 // Write slices as SVG images into out directory during the 2D processing of the slices.
-// #define SLIC3R_DEBUG_SLICE_PROCESSING
+//#define SLIC3R_DEBUG_SLICE_PROCESSING
 
 namespace Slic3r {
 
@@ -111,7 +119,7 @@ using deque =
 template<typename T, typename Q>
 inline T unscale(Q v) { return T(v) * T(SCALING_FACTOR); }
 
-enum Axis {
+enum Axis { 
 	X=0,
 	Y,
 	Z,
@@ -184,7 +192,7 @@ inline void append_reversed(std::vector<T>& dest, std::vector<T>&& src)
 
 // Casting an std::vector<> from one type to another type without warnings about a loss of accuracy.
 template<typename T_TO, typename T_FROM>
-std::vector<T_TO> cast(const std::vector<T_FROM> &src)
+std::vector<T_TO> cast(const std::vector<T_FROM> &src) 
 {
     std::vector<T_TO> dst;
     dst.reserve(src.size());
@@ -222,7 +230,7 @@ ForwardIt lower_bound_by_predicate(ForwardIt first, ForwardIt last, LowerThanKey
     ForwardIt it;
     typename std::iterator_traits<ForwardIt>::difference_type count, step;
     count = std::distance(first, last);
-
+ 
     while (count > 0) {
         it = first;
         step = count / 2;
@@ -241,10 +249,10 @@ ForwardIt lower_bound_by_predicate(ForwardIt first, ForwardIt last, LowerThanKey
 template<class ForwardIt, class T, class Compare=std::less<>>
 ForwardIt binary_find(ForwardIt first, ForwardIt last, const T& value, Compare comp={})
 {
-    // Note: BOTH type T and the type after ForwardIt is dereferenced
-    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare.
+    // Note: BOTH type T and the type after ForwardIt is dereferenced 
+    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare. 
     // This is stricter than lower_bound requirement (see above)
-
+ 
     first = std::lower_bound(first, last, value, comp);
     return first != last && !comp(value, *first) ? first : last;
 }
@@ -253,10 +261,10 @@ ForwardIt binary_find(ForwardIt first, ForwardIt last, const T& value, Compare c
 template<class ForwardIt, class LowerThanKeyPredicate, class EqualToKeyPredicate>
 ForwardIt binary_find_by_predicate(ForwardIt first, ForwardIt last, LowerThanKeyPredicate lower_thank_key, EqualToKeyPredicate equal_to_key)
 {
-    // Note: BOTH type T and the type after ForwardIt is dereferenced
-    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare.
+    // Note: BOTH type T and the type after ForwardIt is dereferenced 
+    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare. 
     // This is stricter than lower_bound requirement (see above)
-
+ 
     first = lower_bound_by_predicate(first, last, lower_thank_key);
     return first != last && equal_to_key(*first) ? first : last;
 }
@@ -275,6 +283,12 @@ template<typename T>
 constexpr inline T sqr(T x)
 {
     return x * x;
+}
+
+template<typename Number> constexpr 
+inline bool is_zero(Number value)
+{
+    return std::fabs(double(value)) < 1e-6;
 }
 
 template <typename T, typename Number>
@@ -317,7 +331,7 @@ template<class I> struct is_scaled_coord
 // return type will be bool.
 // For more info how to use, see docs for std::enable_if
 //
-template<class T, class O = T>
+template<class T, class O = T> 
 using FloatingOnly = std::enable_if_t<std::is_floating_point<T>::value, O>;
 
 template<class T, class O = T>

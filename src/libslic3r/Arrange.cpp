@@ -1,6 +1,7 @@
 #include "Arrange.hpp"
 #include "Print.hpp"
 #include "BoundingBox.hpp"
+#include "libslic3r.h"
 
 #include <libnest2d/backends/libslic3r/geometries.hpp>
 #include <libnest2d/optimizers/nlopt/subplex.hpp>
@@ -81,52 +82,64 @@ using ItemGroup = std::vector<std::reference_wrapper<Item>>;
 const double BIG_ITEM_TRESHOLD = 0.02;
 #define VITRIFY_TEMP_DIFF_THRSH 15  // bed temp can be higher than vitrify temp, but not higher than this thresh
 
-void update_arrange_params(ArrangeParams& params, const DynamicPrintConfig & print_cfg, const ArrangePolygons& selected)
+void update_arrange_params(ArrangeParams& params, const DynamicPrintConfig* print_cfg, const ArrangePolygons& selected)
 {
+    double                             skirt_distance = get_real_skirt_dist(*print_cfg);
     // Note: skirt_distance is now defined between outermost brim and skirt, not the object and skirt.
     // So we can't do max but do adding instead.
-    params.brim_skirt_distance = get_real_skirt_dist(print_cfg);
+    params.brim_skirt_distance = skirt_distance;
     params.bed_shrink_x += params.brim_skirt_distance;
     params.bed_shrink_y += params.brim_skirt_distance;
+    // for sequential print, we need to inflate the bed because cleareance_radius is so large
     if (params.is_seq_print) {
-        // set obj distance for auto seq_print
-        bool all_objects_are_short = std::all_of(selected.begin(), selected.end(), [&params](auto& ap) { return ap.height < params.nozzle_height; });
+        params.bed_shrink_x -= params.cleareance_radius / 2;
+        params.bed_shrink_y -= params.cleareance_radius / 2;
+    }
+}
+
+void update_selected_items_inflation(ArrangePolygons& selected, const DynamicPrintConfig* print_cfg, ArrangeParams& params) {
+    // do not inflate brim_width. Objects are allowed to have overlapped brim.
+    Points      bedpts = get_shrink_bedpts(print_cfg, params);
+    BoundingBox bedbb = Polygon(bedpts).bounding_box();
+    // set obj distance for auto seq_print
+    if (params.is_seq_print) {
+        bool all_objects_are_short = std::all_of(selected.begin(), selected.end(), [&](ArrangePolygon& ap) { return ap.height < params.nozzle_height; });
         if (all_objects_are_short) {
-            params.min_obj_distance = std::max(params.min_obj_distance, scaled(MAX_OUTER_NOZZLE_RADIUS + 0.001));
+            params.min_obj_distance = std::max(params.min_obj_distance, scaled(double(MAX_OUTER_NOZZLE_DIAMETER)/2+0.001));
         }
         else
             params.min_obj_distance = std::max(params.min_obj_distance, scaled(params.cleareance_radius + 0.001)); // +0.001mm to avoid clearance check fail due to rounding error
     }
-}
-
-void update_selected_items_inflation(ArrangePolygons& selected, const DynamicPrintConfig & print_cfg, ArrangeParams& params) {
-    // do not inflate brim_width. Objects are allowed to have overlapped brim.
-    Points      bedpts = get_shrink_bedpts(print_cfg, params);
-    BoundingBox bedbb = Polygon(bedpts).bounding_box();
-    params.brim_max = 0;
-    params.plate_has_tree_support = false;
+    double brim_max = 0;
+    bool plate_has_tree_support = false;
     std::for_each(selected.begin(), selected.end(), [&](ArrangePolygon& ap) {
-        params.brim_max = std::max(params.brim_max, ap.brim_width);
-        if (ap.has_tree_support) params.plate_has_tree_support = true;
-    });
+        brim_max = std::max(brim_max, ap.brim_width);
+        if (ap.has_tree_support) plate_has_tree_support = true; });
     std::for_each(selected.begin(), selected.end(), [&](ArrangePolygon& ap) {
         // 1. if user input a distance, use it
         // 2. if there is an object with tree support, all objects use the max tree branch radius (brim_max=branch diameter)
         // 3. otherwise, use each object's own brim width
-        ap.inflation = params.min_obj_distance != 0 ? params.min_obj_distance / 2 : params.plate_has_tree_support ? scaled(params.brim_max / 2) : scaled(ap.brim_width);
+        ap.inflation = params.min_obj_distance != 0 ? params.min_obj_distance / 2 :
+            plate_has_tree_support ? scaled(brim_max / 2) : scaled(ap.brim_width);
+        BoundingBox apbb = ap.poly.contour.bounding_box();
+        auto        diffx = bedbb.size().x() - apbb.size().x() - 5;
+        auto        diffy = bedbb.size().y() - apbb.size().y() - 5;
+        if (diffx > 0 && diffy > 0) {
+            auto min_diff = std::min(diffx, diffy);
+            ap.inflation = std::min(min_diff / 2, ap.inflation);
+        }
         });
-    params.brim_skirt_distance = std::max(params.brim_skirt_distance, float(params.brim_max));
 }
 
-void update_unselected_items_inflation(ArrangePolygons& unselected, const DynamicPrintConfig & print_cfg, const ArrangeParams& params)
+void update_unselected_items_inflation(ArrangePolygons& unselected, const DynamicPrintConfig* print_cfg, const ArrangeParams& params)
 {
-    coord_t exclusion_gap = scale_(1.f);
+    float exclusion_gap = 1.f;
     if (params.is_seq_print) {
-        // bed_shrink_x is typically (-params.min_obj_distance / 2+5) for seq_print
-        exclusion_gap = std::max(exclusion_gap, params.min_obj_distance / 2 + scaled<coord_t>(params.bed_shrink_x + 1.f));  // +1mm gap so the exclusion region is not too close
+        // bed_shrink_x is typically (-params.cleareance_radius / 2+5) for seq_print
+        exclusion_gap = std::max(exclusion_gap, params.cleareance_radius / 2 + params.bed_shrink_x + 1.f);  // +1mm gap so the exclusion region is not too close
         // dont forget to move the excluded region
         for (auto& region : unselected) {
-            if (region.is_virt_object) region.poly.translate(scaled(params.bed_shrink_x+1.f), scaled(params.bed_shrink_y+1.f));
+            if (region.is_virt_object) region.poly.translate(scaled(params.bed_shrink_x), scaled(params.bed_shrink_y));
         }
     }
     // For occulusion regions, inflation should be larger to prevent genrating brim on them.
@@ -134,36 +147,127 @@ void update_unselected_items_inflation(ArrangePolygons& unselected, const Dynami
     // 屏蔽区域只需要膨胀brim宽度，防止brim长过去；挤出标定区域不需要膨胀，brim可以长过去。
     // 以前我们认为还需要膨胀clearance_radius/2，这其实是不需要的，因为这些区域并不会真的摆放物体，
     // 其他物体的膨胀轮廓是可以跟它们重叠的。
-    std::for_each(unselected.begin(), unselected.end(), [&](auto &ap) {
-        ap.inflation = !ap.is_virt_object                                  ? (params.min_obj_distance == 0 ? scaled(ap.brim_width) : params.min_obj_distance / 2) :
-                       (ap.is_wipe_tower && params.plate_has_tree_support) ? scaled(params.brim_max / 2) :
-                                                                             (ap.is_extrusion_cali_object ? 0 : exclusion_gap);
-    });
+    std::for_each(unselected.begin(), unselected.end(),
+        [&](auto& ap) { ap.inflation = !ap.is_virt_object ? (params.min_obj_distance == 0 ? scaled(ap.brim_width) : params.min_obj_distance / 2)
+        : (ap.is_extrusion_cali_object ? 0 : scale_(exclusion_gap)); });
 }
 
-//it will be accurate after call update_params
-Points get_shrink_bedpts(const DynamicPrintConfig & print_cfg, const ArrangeParams& params)
+void update_selected_items_axis_align(ArrangePolygons& selected, const DynamicPrintConfig* print_cfg, const ArrangeParams& params)
 {
-    Points bedpts = get_bed_shape(print_cfg);
+    // now only need to consider "Align to x axis"
+    if (!params.align_to_y_axis)
+        return;
+
+    for (ArrangePolygon& ap : selected) {
+        bool   validResult = false;
+        double angle = 0.0;
+        {
+            const auto& pts = ap.transformed_poly().contour;
+            int         lpt = pts.size();
+            double      a00 = 0, a10 = 0, a01 = 0, a20 = 0, a11 = 0, a02 = 0, a30 = 0, a21 = 0, a12 = 0, a03 = 0;
+            double      xi, yi, xi2, yi2, xi_1, yi_1, xi_12, yi_12, dxy, xii_1, yii_1;
+            xi_1 = pts.back().x();
+            yi_1 = pts.back().y();
+
+            xi_12 = xi_1 * xi_1;
+            yi_12 = yi_1 * yi_1;
+
+            for (int i = 0; i < lpt; i++) {
+                xi = pts[i].x();
+                yi = pts[i].y();
+
+                xi2 = xi * xi;
+                yi2 = yi * yi;
+                dxy = xi_1 * yi - xi * yi_1;
+                xii_1 = xi_1 + xi;
+                yii_1 = yi_1 + yi;
+
+                a00 += dxy;
+                a10 += dxy * xii_1;
+                a01 += dxy * yii_1;
+                a20 += dxy * (xi_1 * xii_1 + xi2);
+                a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+                a02 += dxy * (yi_1 * yii_1 + yi2);
+                a30 += dxy * xii_1 * (xi_12 + xi2);
+                a03 += dxy * yii_1 * (yi_12 + yi2);
+                a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 + xi2 * (yi_1 + 3 * yi));
+                a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 + yi2 * (xi_1 + 3 * xi));
+                xi_1 = xi;
+                yi_1 = yi;
+                xi_12 = xi2;
+                yi_12 = yi2;
+            }
+
+            if (std::abs(a00) > EPSILON) {
+                double db1_2, db1_6, db1_12, db1_24, db1_20, db1_60;
+                double m00, m10, m01, m20, m11, m02, m30, m21, m12, m03;
+                if (a00 > 0) {
+                    db1_2 = 0.5;
+                    db1_6 = 0.16666666666666666666666666666667;
+                    db1_12 = 0.083333333333333333333333333333333;
+                    db1_24 = 0.041666666666666666666666666666667;
+                    db1_20 = 0.05;
+                    db1_60 = 0.016666666666666666666666666666667;
+                }
+                else {
+                    db1_2 = -0.5;
+                    db1_6 = -0.16666666666666666666666666666667;
+                    db1_12 = -0.083333333333333333333333333333333;
+                    db1_24 = -0.041666666666666666666666666666667;
+                    db1_20 = -0.05;
+                    db1_60 = -0.016666666666666666666666666666667;
+                }
+                m00 = a00 * db1_2;
+                m10 = a10 * db1_6;
+                m01 = a01 * db1_6;
+                m20 = a20 * db1_12;
+                m11 = a11 * db1_24;
+                m02 = a02 * db1_12;
+                m30 = a30 * db1_20;
+                m21 = a21 * db1_60;
+                m12 = a12 * db1_60;
+                m03 = a03 * db1_20;
+
+                double cx = m10 / m00;
+                double cy = m01 / m00;
+
+                double a = m20 / m00 - cx * cx;
+                double b = m11 / m00 - cx * cy;
+                double c = m02 / m00 - cy * cy;
+
+                //if a and c are close, there is no dominant axis, then do not rotate
+                // ratio is always no more than 1
+                double ratio = std::abs(a) > std::abs(c) ? std::abs(c / a) :
+                    std::abs(c) > 0 ? std::abs(a / c) : 0;
+                if (ratio>0.66) {
+                    validResult = false;
+                }
+                else {
+                    angle = std::atan2(2 * b, (a - c)) / 2;
+                    angle = PI / 2 - angle;
+                    // if the angle is close to PI or -PI, it means the object is vertical, then do not rotate
+                    if (std::abs(std::abs(angle) - PI) < 0.01)
+                        angle = 0;
+                    validResult = true;
+                }
+            }
+        }
+        if (validResult) { ap.rotation += angle; }
+    }
+}
+
+//it will bed accurate after call update_params
+Points get_shrink_bedpts(const DynamicPrintConfig* print_cfg, const ArrangeParams& params)
+{
+    Points bedpts = get_bed_shape(*print_cfg);
     // shrink bed by moving to center by dist
     auto shrinkFun = [](Points& bedpts, double dist, int direction) {
 #define SGN(x) ((x) >= 0 ? 1 : -1)
         Point center = Polygon(bedpts).bounding_box().center();
         for (auto& pt : bedpts) pt[direction] += dist * SGN(center[direction] - pt[direction]);
     };
-
-    ArrangeParams params_copy = params;
-    if (params.is_seq_print) {
-        // for sequential print, we need to inflate the bed because cleareance_radius is so large
-        params_copy.bed_shrink_x -= unscale_(params_copy.min_obj_distance / 2);
-        params_copy.bed_shrink_y -= unscale_(params_copy.min_obj_distance / 2);
-    } else {
-        // for non-seq print, we need to shrink the bed so the first layer of support won't exceed the bed
-        params_copy.bed_shrink_x = std::max(params_copy.bed_shrink_x, params_copy.brim_skirt_distance / 2);
-        params_copy.bed_shrink_y = std::max(params_copy.bed_shrink_y, params_copy.brim_skirt_distance / 2);
-    }
-    shrinkFun(bedpts, scaled(params_copy.bed_shrink_x), 0);
-    shrinkFun(bedpts, scaled(params_copy.bed_shrink_y), 1);
+    shrinkFun(bedpts, scaled(params.bed_shrink_x), 0);
+    shrinkFun(bedpts, scaled(params.bed_shrink_y), 1);
     return bedpts;
 }
 
@@ -194,15 +298,12 @@ void fill_config(PConf& pcfg, const ArrangeParams &params) {
     else
         pcfg.rotations = {0.};
 
-    pcfg.bed_shrink = { scale_(params.bed_shrink_x), scale_(params.bed_shrink_y) };
-
     // The accuracy of optimization.
     // Goes from 0.0 to 1.0 and scales performance as well
     pcfg.accuracy = params.accuracy;
 
     // Allow parallel execution.
     pcfg.parallel = params.parallel;
-    pcfg.save_svg = params.save_svg;
 
     // BBS: excluded regions in BBS bed
     for (auto& poly : params.excluded_regions)
@@ -222,10 +323,10 @@ void fill_config(PConf& pcfg, const ArrangeParams &params) {
 static double fixed_overfit(const std::tuple<double, Box>& result, const Box &binbb)
 {
     double score = std::get<0>(result);
-    //Box pilebb  = std::get<1>(result);
-    //Box fullbb  = sl::boundingBox(pilebb, binbb);
-    //auto diff = double(fullbb.area()) - binbb.area();
-    //if(diff > 0) score += diff;
+    Box pilebb  = std::get<1>(result);
+    Box fullbb  = sl::boundingBox(pilebb, binbb);
+    auto diff = double(fullbb.area()) - binbb.area();
+    if(diff > 0) score += diff;
 
     return score;
 }
@@ -237,8 +338,8 @@ static double fixed_overfit_topright_sliding(const std::tuple<double, Box> &resu
     Box pilebb = std::get<1>(result);
 
     auto shift = binbb.maxCorner() - pilebb.maxCorner();
-    shift.x() = std::max(0, shift.x()); // do not allow left shift
-    shift.y() = std::max(0, shift.y()); // do not allow bottom shift
+    shift.x() = std::max((coord_t)0, shift.x()); // do not allow left shift
+    shift.y() = std::max((coord_t)0, shift.y()); // do not allow bottom shift
     pilebb.minCorner() += shift;
     pilebb.maxCorner() += shift;
 
@@ -559,36 +660,28 @@ protected:
                 score += height_score / valid_items_cnt;
         }
 
-        std::map<int, std::string> extruder_id_types;
-        std::set<int> tpu_extruder_ids;
+        std::set<int> extruder_ids;
         for (int i = 0; i < m_items.size(); i++) {
             Item& p = m_items[i];
             if (p.is_virt_object) continue;
-            extruder_id_types.insert(p.extrude_id_filament_types.begin(), p.extrude_id_filament_types.end());
-            for (auto id_type : p.extrude_id_filament_types) {
-                if (id_type.second == "TPU") tpu_extruder_ids.insert(id_type.first);
-            }
-        }
-        for (auto id_type : item.extrude_id_filament_types) {
-            if (id_type.second == "TPU") tpu_extruder_ids.insert(id_type.first);
+            extruder_ids.insert(p.extrude_ids.begin(),p.extrude_ids.end());
         }
 
-        // do not allow more than 1 TPU extruder on same plate
-        if (tpu_extruder_ids.size() > 1) score += LARGE_COST_TO_REJECT;
         // add a large cost if not multi materials on same plate is not allowed
-        else if (!params.allow_multi_materials_on_same_plate) {
+        if (!params.allow_multi_materials_on_same_plate) {
             // it's the first object, which can be multi-color
-            bool first_object = extruder_id_types.empty();
+            bool first_object                 = extruder_ids.empty();
             // the two objects (previously packed items and the current item) are considered having same color if either one's colors are a subset of the other
-            bool same_color_with_previous_items = std::includes(extruder_id_types.begin(), extruder_id_types.end(), item.extrude_id_filament_types.begin(),
-                                                                item.extrude_id_filament_types.end());
+            std::set<int> item_extruder_ids(item.extrude_ids.begin(), item.extrude_ids.end());
+            bool same_color_with_previous_items = std::includes(item_extruder_ids.begin(), item_extruder_ids.end(), extruder_ids.begin(), extruder_ids.end())
+                || std::includes(extruder_ids.begin(), extruder_ids.end(), item_extruder_ids.begin(), item_extruder_ids.end());
             if (!(first_object || same_color_with_previous_items)) score += LARGE_COST_TO_REJECT * 1.3;
         }
         // for layered printing, we want extruder change as few as possible
         // this has very weak effect, CAN NOT use a large weight
-        int last_extruder_cnt = extruder_id_types.size();
-        extruder_id_types.insert(item.extrude_id_filament_types.begin(), item.extrude_id_filament_types.end());
-        int new_extruder_cnt = extruder_id_types.size();
+        int last_extruder_cnt = extruder_ids.size();
+        extruder_ids.insert(item.extrude_ids.begin(), item.extrude_ids.end());
+        int new_extruder_cnt= extruder_ids.size();
         if (!params.is_seq_print) {
             score += 1 * (new_extruder_cnt-last_extruder_cnt);
         }
@@ -669,8 +762,16 @@ public:
 
             auto binbb = sl::boundingBox(m_bin);
 
-            auto starting_point = cfg.starting_point == PConfig::Alignment::BOTTOM_LEFT ? binbb.minCorner() :
-                cfg.starting_point == PConfig::Alignment::TOP_RIGHT ? binbb.maxCorner() : binbb.center();
+            auto starting_point = cfg.starting_point == PConfig::Alignment::BOTTOM_LEFT ? binbb.minCorner() : binbb.center();
+            // if we have wipe tower, items should be arranged around wipe tower
+            for (Item itm : items) {
+                if (itm.is_wipe_tower) {
+                    starting_point = itm.boundingBox().center();
+                    BOOST_LOG_TRIVIAL(debug) << "arrange we have wipe tower, change starting point to: " << starting_point;
+                    break;
+                }
+            }
+
             cfg.object_function = [this, binbb, starting_point](const Item &item, const ItemGroup &packed_items) {
                 return fixed_overfit(objfunc(item, starting_point), binbb);
             };
@@ -698,35 +799,21 @@ public:
 
         m_pck.unfitIndicator([this](std::string name) {
             BOOST_LOG_TRIVIAL(debug) << "arrange progress: " + name;
-            });
+                });
 
         if (stopcond) m_pck.stopCondition(stopcond);
-
-        m_pconf.progressFunc = [](const std::string& name) { BOOST_LOG_TRIVIAL(debug) << "arrange progress in NFP: " + name; };
 
         m_pconf.sortfunc= [&params](Item& i1, Item& i2) {
             int p1 = i1.priority(), p2 = i2.priority();
             if (p1 != p2)
                 return p1 > p2;
             if (params.is_seq_print) {
-                return i1.bed_temp != i2.bed_temp                ? (i1.bed_temp > i2.bed_temp) :
-                       i1.height != i2.height                    ? (i1.height < i2.height) :
-                       std::abs(i1.area() / i2.area() - 1) > 0.2 ? (i1.area() > i2.area()) :
-                                                                   i1.extrude_id_filament_types.begin()->first < i2.extrude_id_filament_types.begin()->first;
+                return i1.bed_temp != i2.bed_temp ? (i1.bed_temp > i2.bed_temp) :
+                        (i1.height != i2.height ? (i1.height < i2.height) : (i1.area() > i2.area()));
             }
             else {
-                // single color objects first, then objects with more colors
-                if (i1.extrude_id_filament_types.size() != i2.extrude_id_filament_types.size()) {
-                    if (i1.extrude_id_filament_types.size() == 1 || i2.extrude_id_filament_types.size() == 1)
-                        return i1.extrude_id_filament_types.size() == 1;
-                    else
-                        return i1.extrude_id_filament_types.size() > i2.extrude_id_filament_types.size();
-                }
-                else
-                    return i1.bed_temp != i2.bed_temp ? (i1.bed_temp > i2.bed_temp) :
-                           i1.extrude_id_filament_types != i2.extrude_id_filament_types ? (i1.extrude_id_filament_types.begin()->first < i2.extrude_id_filament_types.begin()->first) :
-                    std::abs(i1.height/params.printable_height - i2.height/params.printable_height)>0.05 ? i1.height > i2.height:
-                    (i1.area() > i2.area());
+                return i1.bed_temp != i2.bed_temp ? (i1.bed_temp > i2.bed_temp) :
+                    (i1.extrude_ids != i2.extrude_ids ? (i1.extrude_ids.front() < i2.extrude_ids.front()) : (i1.area() > i2.area()));
             }
         };
 
@@ -881,100 +968,42 @@ void _arrange(
         std::function<void(unsigned,std::string)> progressfn,
         std::function<bool()>         stopfn)
 {
-    ArrangeParams mod_params    = params;
-    mod_params.min_obj_distance = 0; // items are already inflated
-
-    for (auto &itm : shapes) {
-        // If the item is too big, try to find a rotation that makes it fit
-        if constexpr (std::is_same_v<BinT, Box>) {
-            std::vector<double> allowed_angles{0.};
-            auto bb = itm.boundingBox();
-            auto pure_bin_width = bin.width() + scale_(params.bed_shrink_x) * 2;
-            auto pure_bin_height = bin.height() + scale_(params.bed_shrink_y) * 2;
-            auto                pure_item_width = bb.width() - itm.inflation() * 2;
-            auto                pure_item_height = bb.height() - itm.inflation() * 2;
-            if (pure_item_width >= pure_bin_width || pure_item_height >= pure_bin_height) {
-                auto angle = fit_into_box_rotation(itm.transformedShape(), bin);
-                BOOST_LOG_TRIVIAL(debug) << itm.name << " too big, rotate to fit_into_box_rotation=" << angle;
-                allowed_angles = {angle};
-            }
-
-            // Use the minimum bounding box rotation as a starting point.
-            // TODO: This only works for convex hull. If we ever switch to concave
-            // polygon nesting, a convex hull needs to be calculated.
-            else if (params.align_to_y_axis) {
-                // only rotate the object if its long axis is significanly larger than its short axis (more than 10%)
-                try {
-                    auto bbox = minAreaBoundingBox<ExPolygon, TCompute<ExPolygon>, boost::rational<LargeInt>>(itm.transformedShape());
-                    auto w = bbox.width(), h = bbox.height();
-                    if (w > h * 1.1 || h > w * 1.1) {
-                        if (fabs(bbox.angleToX() + PI / 2) > EPSILON)
-                            allowed_angles = {bbox.angleToX() + PI / 2, 0.0};
-                        else
-                            allowed_angles = {0.0};
-                    }
-                } catch (const std::exception &e) {
-                    // min_area_boundingbox_rotation may throw exception of dividing 0 if the object is already perfectly aligned to X
-                    BOOST_LOG_TRIVIAL(error) << "arranging min_area_boundingbox_rotation fails, msg=" << e.what();
-                }
-            } else if (params.allow_rotations) {
-                auto angle = min_area_boundingbox_rotation(itm.transformedShape());
-                BOOST_LOG_TRIVIAL(debug) << itm.name << " min_area_boundingbox_rotation=" << angle << ", original angle=" << itm.rotation();
-
-                if (fabs(angle) < EPSILON) {
-                    allowed_angles = {0., PI * 0.25, PI * 0.5, PI * 0.75};
-                } else {
-                    allowed_angles = {0., angle, angle + PI * 0.25, angle + PI * 0.5, angle + PI * 0.75};
-                }
-            }
-
-            itm.allowed_rotations.clear();
-            itm.allowed_rotations.reserve(allowed_angles.size());
-            double original_angle = itm.rotation();
-            auto original_infl  = itm.inflation();
-            for (auto angle : allowed_angles) {
-                auto rotsh = itm.rawShape();
-                sl::rotate(rotsh, angle);
-                bb = sl::boundingBox(rotsh);
-                bp2d::Coord infl = std::min(original_infl, static_cast<bp2d::Coord>(std::floor(std::min(pure_bin_width - bb.width(), pure_bin_height - bb.height())) / 2.0));
-
-                // check and correct the inflation
-                if (infl < original_infl){
-                    sl::offset(rotsh, infl);
-                    auto box = sl::boundingBox(rotsh);
-                    auto diff_w = box.width() - pure_bin_width;
-                    auto diff_h = box.height() - pure_bin_height;
-                    if (diff_w > 0 || diff_h > 0)
-                    {
-                        infl -= static_cast<bp2d::Coord>(std::max(diff_w, diff_h));
-                    }
-                }
-
-                if (infl >= 0/* && itm.height <= params.printable_height*/) {
-                    // if the bed is expanded, the item should also be expanded
-                    if (params.bed_shrink_x < 0) infl = std::max(infl,(bp2d::Coord) scale_(-params.bed_shrink_x));
-                    itm.allowed_rotations.push_back({angle, infl});
-                }
-            }
-        }
-    }
-
     // Integer ceiling the min distance from the bed perimeters
-    coord_t md = params.min_obj_distance / 2;
+    coord_t md = params.min_obj_distance;
+    md = md / 2;
 
     auto corrected_bin = bin;
     //sl::offset(corrected_bin, md);
+    ArrangeParams mod_params = params;
+    mod_params.min_obj_distance = 0;  // items are already inflated
 
     AutoArranger<BinT> arranger{corrected_bin, mod_params, progressfn, stopfn};
+
+    remove_large_items(excludes, corrected_bin);
 
     // If there is something on the plate
     if (!excludes.empty()) arranger.preload(excludes);
 
     std::vector<std::reference_wrapper<Item>> inp;
     inp.reserve(shapes.size() + excludes.size());
-    for (auto &itm : shapes) inp.emplace_back(itm);
+    for (auto &itm : shapes  ) inp.emplace_back(itm);
     for (auto &itm : excludes) inp.emplace_back(itm);
 
+    // Use the minimum bounding box rotation as a starting point.
+    // TODO: This only works for convex hull. If we ever switch to concave
+    // polygon nesting, a convex hull needs to be calculated.
+    if (params.allow_rotations) {
+        for (auto &itm : shapes) {
+            itm.rotation(min_area_boundingbox_rotation(itm.transformedShape()));
+
+            // If the item is too big, try to find a rotation that makes it fit
+            if constexpr (std::is_same_v<BinT, Box>) {
+                auto bb = itm.boundingBox();
+                if (bb.width() >= bin.width() || bb.height() >= bin.height())
+                    itm.rotate(fit_into_box_rotation(itm.transformedShape(), bin));
+            }
+        }
+    }
 
     arranger(inp.begin(), inp.end());
     for (Item &itm : inp) itm.inflation(0);
@@ -1041,13 +1070,12 @@ static void process_arrangeable(const ArrangePolygon &arrpoly,
     item.binId(arrpoly.bed_idx);
     item.priority(arrpoly.priority);
     item.itemId(arrpoly.itemid);
-    item.extrude_id_filament_types = arrpoly.extrude_id_filament_types;
+    item.extrude_ids = arrpoly.extrude_ids;
     item.height = arrpoly.height;
     item.name = arrpoly.name;
     //BBS: add virtual object logic
     item.is_virt_object = arrpoly.is_virt_object;
     item.is_wipe_tower = arrpoly.is_wipe_tower;
-    item.is_extrusion_cali_object = arrpoly.is_extrusion_cali_object;
     item.bed_temp = arrpoly.first_bed_temp;
     item.print_temp = arrpoly.print_temp;
     item.vitrify_temp = arrpoly.vitrify_temp;

@@ -8,7 +8,6 @@
 #include <string>
 
 #include <boost/log/trivial.hpp>
-#include <boost/locale.hpp>
 
 #ifdef _WIN32
 #define DIR_SEPARATOR '\\'
@@ -22,7 +21,7 @@
 
 namespace Slic3r {
 
-bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::string &message, bool gamma_correct)
+bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::string &message)
 {
     if (meshptr == nullptr)
         return false;
@@ -34,11 +33,6 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
         message = _L("load_obj: failed to parse");
         return false;
     }
-
-    obj_info.ml_region = data.ml_region;
-    obj_info.ml_name = data.ml_name;
-    obj_info.ml_id = data.ml_id;
-
     bool exist_mtl = false;
     if (data.mtllibs.size() > 0) { // read mtl
         for (auto mtl_name : data.mtllibs) {
@@ -46,20 +40,16 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
                 continue;
             }
             exist_mtl = true;
-            bool  mtl_name_is_path = false;
-            std::wstring   wide_mtl_name = boost::locale::conv::to_utf<wchar_t>(mtl_name, "UTF-8");
-            if (boost::istarts_with(wide_mtl_name,"./")){
-                boost::replace_first(wide_mtl_name, "./", "");
-            }
-            boost::filesystem::path mtl_abs_path(wide_mtl_name);
+            bool                    mtl_name_is_path = false;
+            boost::filesystem::path mtl_abs_path(mtl_name);
             if (boost::filesystem::exists(mtl_abs_path)) {
                 mtl_name_is_path = true;
             }
             boost::filesystem::path mtl_path;
             if (!mtl_name_is_path) {
                 boost::filesystem::path full_path(path);
-                auto  dir      = full_path.parent_path().wstring();
-                auto  mtl_file = dir + L"/" + wide_mtl_name;
+                std::string             dir = full_path.parent_path().string();
+                auto                    mtl_file = dir + "/" + mtl_name;
                 boost::filesystem::path temp_mtl_path(mtl_file);
                 mtl_path = temp_mtl_path;
             }
@@ -115,13 +105,8 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
         size_t j = i * OBJ_VERTEX_LENGTH;
         its.vertices.emplace_back(data.coordinates[j], data.coordinates[j + 1], data.coordinates[j + 2]);
         if (data.has_vertex_color) {
-            RGBA color{data.coordinates[j + 3], data.coordinates[j + 4], data.coordinates[j + 5],data.coordinates[j + 6]};
-            if (gamma_correct) {
-                ColorRGBA::gamma_correct(color);
-            }
-            for (int i = 0; i < color.size(); i++) {
-                color[i] = std::clamp(color[i], 0.f, 1.f);
-            }
+            RGBA color{std::clamp(data.coordinates[j + 3], 0.f, 1.f), std::clamp(data.coordinates[j + 4], 0.f, 1.f), std::clamp(data.coordinates[j + 5], 0.f, 1.f),
+                       std::clamp(data.coordinates[j + 6], 0.f, 1.f)};
             obj_info.vertex_colors.emplace_back(color);
         }
     }
@@ -151,26 +136,25 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
                 // Insert one or two faces (triangulate a quad).
                 its.indices.emplace_back(indices[0], indices[1], indices[2]);
                 int  face_index =its.indices.size() - 1;
-                auto get_face_color = [&mtl_data ,& gamma_correct](const std::string mtl_name, RGBA &face_color) {
+                RGBA face_color;
+                auto set_face_color = [&uvs, &data, &mtl_data, &obj_info, &face_color](int face_index, const std::string mtl_name) {
                     if (mtl_data.new_mtl_unmap.find(mtl_name) != mtl_data.new_mtl_unmap.end()) {
-                        for (size_t n = 0; n < 3; n++) { // 0.1 is light ambient
-                            float object_ka = 0.f;
-                            if (mtl_data.new_mtl_unmap[mtl_name]->Ka[n] > 0.01 && mtl_data.new_mtl_unmap[mtl_name]->Ka[n] < 0.99) {
-                                object_ka = mtl_data.new_mtl_unmap[mtl_name]->Ka[n] * 0.1;
+                        bool is_merge_ka_kd = true;
+                        for (size_t n = 0; n < 3; n++) {
+                            if (float(mtl_data.new_mtl_unmap[mtl_name]->Ka[n] + mtl_data.new_mtl_unmap[mtl_name]->Kd[n]) > 1.0) {
+                                is_merge_ka_kd=false;
+                                break;
                             }
-                            auto  value   = object_ka + float(mtl_data.new_mtl_unmap[mtl_name]->Kd[n]);
-                            float temp    = gamma_correct ? ColorRGBA::gamma_correct(value) : value;
-                            face_color[n] = std::clamp(temp, 0.f, 1.f);
                         }
-                        face_color[3] = gamma_correct ? ColorRGBA::gamma_correct(mtl_data.new_mtl_unmap[mtl_name]->Tr) : mtl_data.new_mtl_unmap[mtl_name]->Tr; // alpha
-                        return true;
-                    }
-                    return false;
-                };
-                auto set_face_color = [&uvs, &data, &mtl_data, &obj_info, &get_face_color](int face_index, const std::string mtl_name) {
-                    if (mtl_data.new_mtl_unmap.find(mtl_name) != mtl_data.new_mtl_unmap.end()) {
-                        RGBA face_color;
-                        get_face_color(mtl_name,face_color);
+                        for (size_t n = 0; n < 3; n++) {
+                            if (is_merge_ka_kd) {
+                                face_color[n] = std::clamp(float(mtl_data.new_mtl_unmap[mtl_name]->Ka[n] + mtl_data.new_mtl_unmap[mtl_name]->Kd[n]), 0.f, 1.f);
+                            }
+                            else {
+                                face_color[n] = std::clamp(float(mtl_data.new_mtl_unmap[mtl_name]->Kd[n]), 0.f, 1.f);
+                            }
+                        }
+                        face_color[3] = mtl_data.new_mtl_unmap[mtl_name]->Tr; // alpha
                         if (mtl_data.new_mtl_unmap[mtl_name]->map_Kd.size() > 0) {
                             auto png_name       = mtl_data.new_mtl_unmap[mtl_name]->map_Kd;
                             obj_info.has_uv_png = true;
@@ -185,11 +169,6 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
                             obj_info.uvs.emplace_back(uv_array);
                         }
                         obj_info.face_colors.emplace_back(face_color);
-                    }
-                    else {
-                        if (obj_info.lost_material_name.empty()) {
-                            obj_info.lost_material_name = mtl_name;
-                        }
                     }
                 };
                 auto set_face_color_by_mtl = [&data, &set_face_color](int face_index) {
@@ -206,16 +185,6 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
                     }
                 };
                 if (exist_mtl) {
-                    if (mtl_data.first_time_using_makerlab && obj_info.mtl_colors.empty()) {
-                        obj_info.first_time_using_makerlab = true;
-                        obj_info.mtl_colors.reserve(mtl_data.mtl_orders.size());
-                        for (int i = 0; i < mtl_data.mtl_orders.size(); i++) {
-                            RGBA face_color;
-                            if (get_face_color(mtl_data.mtl_orders[i],face_color)) {
-                                obj_info.mtl_colors.emplace_back(face_color);
-                            }
-                        }
-                    }
                     set_face_color_by_mtl(face_index);
                 }
                 if (cnt == 4) {
@@ -239,11 +208,11 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo &obj_info, std::s
     return true;
 }
 
-bool load_obj(const char *path, Model *model, ObjInfo& obj_info, std::string &message, const char *object_name_in,bool gamma_correct)
+bool load_obj(const char *path, Model *model, ObjInfo& obj_info, std::string &message, const char *object_name_in)
 {
     TriangleMesh mesh;
 
-    bool ret = load_obj(path, &mesh, obj_info, message, gamma_correct);
+    bool ret = load_obj(path, &mesh, obj_info, message);
 
     if (ret) {
         std::string  object_name;

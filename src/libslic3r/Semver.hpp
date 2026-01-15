@@ -110,10 +110,30 @@ public:
 	void set_maj(int maj) { ver.major = maj; }
 	void set_min(int min) { ver.minor = min; }
 	void set_patch(int patch) { ver.patch = patch; }
-	void set_metadata(boost::optional<const std::string&> meta) { ver.metadata = meta ? strdup(*meta) : nullptr; }
-	void set_metadata(const char *meta) { ver.metadata = meta ? strdup(meta) : nullptr; }
-	void set_prerelease(boost::optional<const std::string&> pre) { ver.prerelease = pre ? strdup(*pre) : nullptr; }
-	void set_prerelease(const char *pre) { ver.prerelease = pre ? strdup(pre) : nullptr; }
+    void set_metadata(boost::optional<const std::string &> meta)
+    {
+        if (ver.metadata)
+            free(ver.metadata);
+        ver.metadata = meta ? strdup(*meta) : nullptr;
+    }
+    void set_metadata(const char *meta)
+    {
+        if (ver.metadata)
+            free(ver.metadata);
+        ver.metadata = meta ? strdup(meta) : nullptr;
+    }
+    void set_prerelease(boost::optional<const std::string &> pre)
+    {
+        if (ver.prerelease)
+            free(ver.prerelease);
+        ver.prerelease = pre ? strdup(*pre) : nullptr;
+    }
+    void set_prerelease(const char *pre)
+    {
+        if (ver.prerelease)
+            free(ver.prerelease);
+        ver.prerelease = pre ? strdup(pre) : nullptr;
+    }
 
 	// Comparison
 	bool operator<(const Semver &b)  const { return ::semver_compare(ver, b.ver) == -1; }
@@ -139,6 +159,15 @@ public:
 
 		if (ver.prerelease != nullptr) { res += '-'; res += ver.prerelease; }
 		if (ver.metadata != nullptr)   { res += '+'; res += ver.metadata; }
+		return res;
+	}
+	std::string to_string_sf() const {
+		//BBS: version format
+		std::string res;
+		res = (boost::format("%1%.%2%.%3%") % ver.major % ver.minor % ver.patch).str();
+
+		if (ver.prerelease != nullptr) { res += '-'; res += ver.prerelease; }
+		if (ver.metadata != nullptr) { res += '+'; res += ver.metadata; }
 		return res;
 	}
 
