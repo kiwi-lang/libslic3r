@@ -1,13 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2022 Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
-///|/
-///|/ ported from lib/Slic3r/Line.pm:
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "Geometry.hpp"
 #include "Line.hpp"
 #include "Polyline.hpp"
@@ -50,7 +40,7 @@ bool Line::intersection_infinite(const Line &other, Point* point) const
     return true;
 }
 
-coordf_t Line::perp_distance_to(const Point &point) const
+double Line::perp_distance_to(const Point &point) const
 {
     const Line  &line = *this;
     const Vec2d  v  = (line.b - line.a).cast<double>();
@@ -115,14 +105,14 @@ bool Line::clip_with_bbox(const BoundingBox &bbox)
 	return result;
 }
 
-void Line::extend(coordf_t offset)
+void Line::extend(double offset)
 {
-    Vector offset_vector = (offset * this->vector().cast<coordf_t>().normalized()).cast<coord_t>();
+    Vector offset_vector = (offset * this->vector().cast<double>().normalized()).cast<coord_t>();
     this->a -= offset_vector;
     this->b += offset_vector;
 }
 
-Vec3d Linef3::intersect_plane(coordf_t z) const
+Vec3d Linef3::intersect_plane(double z) const
 {
     auto   v = (this->b - this->a).cast<double>();
     double t = (z - this->a(2)) / v(2);
@@ -137,56 +127,6 @@ BoundingBox get_extents(const Lines &lines)
         bbox.merge(line.b);
     }
     return bbox;
-
-}
-
-Point Line::point_at(coordf_t distance) const {
-    Point point;
-    coordf_t len = this->length();
-    point = this->a;
-    if (this->a.x() != this->b.x())
-        point.x() = (coord_t)( this->a.x() + (this->b.x() - this->a.x()) * distance / len );
-    if (this->a.y() != this->b.y())
-        point.y() = (coord_t)( this->a.y() + (this->b.y() - this->a.y()) * distance / len );
-    return point;
-}
-
-double Line::distance_to_squared_abp(const Point &a, const Point &b, const Point &point, Point *nearest_point) {
-    const Vec2d v = ((b) - (a)).cast<double>();
-    const Vec2d va = (point - (a)).cast<double>();
-    const double l2 = v.squaredNorm();
-    if (l2 == 0.0) {
-        // a == b case
-        if (nearest_point) {
-            *nearest_point = a;
-        }
-        return va.squaredNorm();
-    }
-    // Consider the line extending the segment, parameterized as a + t (b - a).
-    // We find projection of this point onto the line.
-    // It falls where t = [(this-a) . (b-a)] / |b-a|^2
-    const double t = va.dot(v);
-    if (t <= 0.0) {
-        // beyond the 'a' end of the segment
-        if (nearest_point) {
-            *nearest_point = a;
-        }
-        return va.squaredNorm();
-    } else if (t >= l2) {
-        // beyond the 'b' end of the segment
-        if (nearest_point) {
-            *nearest_point = (b);
-        }
-        return (point - (b)).cast<double>().squaredNorm();
-    }
-
-    const Vec2d w = ((t / l2) * v).eval();
-    if (nearest_point) {
-        Vec2d a_dbl = (a).cast<double>();
-        Vec2d intersect_pt = a_dbl + w;
-        *nearest_point = Point(intersect_pt);
-    }
-    return (w - va).squaredNorm();
 }
 
 } // namespace Slic3r

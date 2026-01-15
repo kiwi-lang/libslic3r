@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportMaterial_hpp_
 #define slic3r_SupportMaterial_hpp_
 
@@ -24,16 +19,16 @@ class PrintObject;
 class PrintObjectSupportMaterial
 {
 public:
-    PrintObjectSupportMaterial(const PrintObject *object, std::shared_ptr<SlicingParameters> slicing_params);
+	PrintObjectSupportMaterial(const PrintObject *object, const SlicingParameters &slicing_params);
 
 	// Is raft enabled?
-	bool 		has_raft() 					const { return m_slicing_params->has_raft(); }
+	bool 		has_raft() 					const { return m_slicing_params.has_raft(); }
 	// Has any support?
-	bool 		has_support()				const { return m_object_config->support_material.value || m_object_config->support_material_enforce_layers; }
-	bool 		build_plate_only() 			const { return this->has_support() && m_object_config->support_material_buildplate_only.value; }
+	bool 		has_support()				const { return m_object_config->enable_support.value || m_object_config->enforce_support_layers; }
+	bool 		build_plate_only() 			const { return this->has_support() && m_object_config->support_on_build_plate_only.value; }
 
-	bool 		synchronize_layers()		const { return m_slicing_params->soluble_interface && m_object_config->support_material_synchronize_layers.value; }
-	bool 		has_contact_loops() 		const { return m_object_config->support_material_interface_contact_loops.value; }
+	bool 		synchronize_layers()		const { return m_slicing_params.soluble_interface && m_print_config->independent_support_layer_height.value; }
+	bool 		has_contact_loops() 		const { return m_object_config->support_interface_loop_pattern.value; }
 
 	// Generate support material for the object.
 	// New support layers will be added to the object,
@@ -96,7 +91,7 @@ private:
 	const PrintObjectConfig *m_object_config;
 	// Pre-calculated parameters shared between the object slicer and the support generator,
 	// carrying information on a raft, 1st layer height, 1st object layer height, gap between the raft and object etc.
-    std::shared_ptr<SlicingParameters> m_slicing_params;
+	SlicingParameters	     m_slicing_params;
 	// Various precomputed support parameters to be shared with external functions.
 	SupportParameters 		 m_support_params;
 };

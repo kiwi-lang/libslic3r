@@ -1,22 +1,26 @@
-///|/ Copyright (c) Prusa Research 2017 - 2023 Vojtěch Bubník @bubnikv, David Kocík @kocikdav, Lukáš Matěna @lukasmatena, Filip Sykala @Jony01, Enrico Turri @enricoturri1966, Oleksandra Iushchenko @YuSanka, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_AppConfig_hpp_
 #define slic3r_AppConfig_hpp_
 
 #include <set>
 #include <map>
 #include <string>
-
+#include "nlohmann/json.hpp"
 #include <boost/algorithm/string/trim_all.hpp>
-#include <boost/filesystem/path.hpp>
-#ifdef WIN32
-#include <boost/nowide/fstream.hpp>
-#endif
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Semver.hpp"
+#include "calib.hpp"
+
+using namespace nlohmann;
+
+#define ENV_DEV_HOST		"0"
+#define ENV_QAT_HOST		"1"
+#define ENV_PRE_HOST		"2"
+#define ENV_PRODUCT_HOST	"3"
+
+#define SUPPORT_DARK_MODE
+//#define _MSW_DARK_MODE
+
 
 namespace Slic3r {
 
@@ -28,95 +32,36 @@ public:
 		Editor,
 		GCodeViewer
 	};
-	enum class EAppColorType : unsigned char
-	{
-		Platter,
-		Main,
-		Highlight,
-	};
 
-	enum HardwareType : uint8_t
-	{
-		//first 4 bits for cpu
-		hHasCpu = uint8_t(0x0F),
-		hCpuIntel = 1,
-		hCpuAmd = 2,
-		hCpuApple = 3,
-		hCpuArmGeneric = 4,
-		hCpuOther = 5,
-		//last 4 bits for gpu
-		hHasGpu = uint8_t(0xF0),
-		hGpuIntel = 1 << 4,
-		hGpuAmd = 2 << 4,
-		hGpuApple = 3 << 4,
-		hGpuArmGeneric = 4 << 4,
-		hGpuOther = 5 << 4,
-		hGpuNvidia = 6 << 4,
-	};
-
-	struct ConfigFileInfo {
-		bool correct_checksum{ false };
-		bool contains_null{ false };
-	};
-
-	struct LayoutEntry {
-		std::string name;
-		std::string description;
-		boost::filesystem::path path;
-		Semver version;
-		LayoutEntry() {}
-		LayoutEntry(std::string name, std::string description, boost::filesystem::path path, Semver version) : name(name), description(description), path(path), version(version) {}
-	};
-	struct Tag {
-		ConfigOptionMode tag;
-		std::string name;
-		std::string description;
-		std::string color_hash; // with the hash, '#' + 6 digits.
-		Tag() {}
-		Tag(std::string name, std::string description, ConfigOptionMode tag, std::string color_hash) : name(name), description(description), tag(tag), color_hash(color_hash) {}
-	};
-
-    struct ConfigurationEntry
-    {
-        std::string installed_name;
-        Semver      version;
-        boost::filesystem::path config_path;
-        boost::filesystem::path exe_path;
-        std::map<std::string, std::string> other_keys;
-        boost::filesystem::path get_config_path(const std::string &data_dir_root) const;
-    };
-
-	explicit AppConfig(EAppMode mode) :
-		m_mode(mode)
+    //BBS: remove GCodeViewer as seperate APP logic
+	explicit AppConfig() :
+		m_dirty(false),
+		m_orig_version(Semver::invalid()),
+		m_mode(EAppMode::Editor),
+		m_legacy_datadir(false)
 	{
 		this->reset();
 	}
 
-    // Clear and reset to defaults.
-    void                reset();
-    // Override missing or keys with their defaults.
-    void                set_defaults();
-    void                init_ui_layout();
-    ConfigurationEntry  get_installation() { return m_data_dir; }
-    boost::filesystem::path data_dir() { return m_data_dir.config_path; }
-    // return false if already init
-    bool                init_root_data_dir(const std::string &default_app_data_path);
-    std::string         get_root_data_dir() { return m_data_dir_root; }
-    void                load_installed_repo(const boost::filesystem::path &filename);
-    void                save_installed_repo();
-    const std::vector<ConfigurationEntry> &get_all_slicer_installed() const { return m_all_slic3r_installed; }
-    void                set_new_installation(ConfigurationEntry new_install);
+	std::string get_language_code();
+	std::string get_hms_host();
+
+	// Clear and reset to defaults.
+	void 			   	reset();
+	// Override missing or keys with their defaults.
+	void 			   	set_defaults();
 
 	// Load the slic3r.ini from a user profile directory (or a datadir, if configured).
 	// return error string or empty strinf
 	std::string         load();
-	// Load from an explicit path.
-	std::string         load(const std::string &path);
 	// Store the slic3r.ini into a user profile directory (or a datadir, if configured).
 	void 			   	save();
 
 	// Does this config need to be saved?
 	bool 				dirty() const { return m_dirty; }
+
+
+	void				set_dirty() { m_dirty = true; }
 
 	// Const accessor, it will return false if a section or a key does not exist.
 	bool get(const std::string &section, const std::string &key, std::string &value) const
@@ -133,15 +78,11 @@ public:
 	}
 	std::string 		get(const std::string &section, const std::string &key) const
 		{ std::string value; this->get(section, key, value); return value; }
-	bool  				get_bool(const std::string &section, const std::string &key) const
-		{ return this->get(section, key) == "1"; }
 	std::string 		get(const std::string &key) const
-		{ std::string value; this->get("", key, value); return value; }
-	bool  				get_bool(const std::string &key) const
-		{ return this->get(key) == "1"; }
-	int  				get_int(const std::string &key) const
-		{ return atoi(this->get(key).c_str()); }
-	bool			    set(const std::string &section, const std::string &key, const std::string &value)
+		{ std::string value; this->get("app", key, value); return value; }
+	bool				get_bool(const std::string &key) const
+		{ return this->get(key) == "true" || this->get(key) == "1"; }
+	void			    set(const std::string &section, const std::string &key, const std::string &value)
 	{
 #ifndef NDEBUG
 		{
@@ -155,12 +96,44 @@ public:
 		if (old != value) {
 			old = value;
 			m_dirty = true;
-			return true;
 		}
-		return false;
 	}
-	bool			    set(const std::string &key, const std::string &value)
-		{ return this->set("", key, value);  }
+
+	void			    set_str(const std::string& section, const std::string& key, const std::string& value)
+	{
+#ifndef NDEBUG
+		{
+			std::string key_trimmed = key;
+			boost::trim_all(key_trimmed);
+			assert(key_trimmed == key);
+			assert(!key_trimmed.empty());
+		}
+#endif // NDEBUG
+		std::string& old = m_storage[section][key];
+		if (old != value) {
+			old = value;
+			m_dirty = true;
+		}
+	}
+
+	void				set(const std::string& section, const std::string &key, bool value)
+	{
+		if (value){
+			set(section, key, std::string("true"));
+		} else {
+			set(section, key, std::string("false"));
+		}
+	}
+
+
+	void			    set(const std::string &key, const std::string &value)
+		{ this->set("app", key, value);  }
+
+	void                set_bool(const std::string &key, const bool &value)
+		{
+			this->set("app", key, value);
+		}
+
 	bool				has(const std::string &section, const std::string &key) const
 	{
 		auto it = m_storage.find(section);
@@ -170,62 +143,101 @@ public:
 		return it2 != it->second.end() && ! it2->second.empty();
 	}
 	bool				has(const std::string &key) const
-		{ return this->has("", key); }
+		{ return this->has("app", key); }
 
-	bool				erase(const std::string &section, const std::string &key);
+	void				erase(const std::string &section, const std::string &key)
+	{
+		auto it = m_storage.find(section);
+		if (it != m_storage.end()) {
+			it->second.erase(key);
+		}
+	}
 
 	bool                has_section(const std::string &section) const
 		{ return m_storage.find(section) != m_storage.end(); }
 	const std::map<std::string, std::string>& get_section(const std::string &section) const
-		{ auto it = m_storage.find(section); assert(it != m_storage.end()); return it->second; }
-	bool 				set_section(const std::string &section, std::map<std::string, std::string> data);
-	bool 				clear_section(const std::string &section);
+		{ return m_storage.find(section)->second; }
+	void set_section(const std::string &section, const std::map<std::string, std::string>& data)
+		{ m_storage[section] = data; }
+	void 				clear_section(const std::string &section)
+		{ m_storage[section].clear(); }
 
 	typedef std::map<std::string, std::map<std::string, std::set<std::string>>> VendorMap;
 	bool                get_variant(const std::string &vendor, const std::string &model, const std::string &variant) const;
-	bool                set_variant(const std::string &vendor, const std::string &model, const std::string &variant, bool enable);
-	bool                set_vendors(const AppConfig &from) { return this->set_vendors(from.vendors()); }
-	bool 				set_vendors(const VendorMap &vendors);
-	bool 				set_vendors(VendorMap &&vendors);
+	void                set_variant(const std::string &vendor, const std::string &model, const std::string &variant, bool enable);
+	void                set_vendors(const AppConfig &from);
+	void 				set_vendors(const VendorMap &vendors) { m_vendors = vendors; m_dirty = true; }
+	void 				set_vendors(VendorMap &&vendors) { m_vendors = std::move(vendors); m_dirty = true; }
 	const VendorMap&    vendors() const { return m_vendors; }
 
-	// return recent/skein_directory or recent/config_directory or empty string.
+	// Orca printer settings
+    typedef std::map<std::string, nlohmann::json> MachineSettingMap;
+    bool has_printer_settings(std::string printer) const {
+        return m_printer_settings.find(printer) != m_printer_settings.end();
+    }
+    void clear_printer_settings(std::string printer) {
+        m_printer_settings.erase(printer);
+        m_dirty = true;
+    }
+    bool has_printer_setting(std::string printer, std::string name) {
+        if (!has_printer_settings(printer))
+            return false;
+        if (!m_printer_settings[printer].contains(name))
+            return false;
+        return true;
+    }
+    std::string get_printer_setting(std::string printer, std::string name) {
+        if (!has_printer_setting(printer, name))
+            return "";
+        return m_printer_settings[printer][name];
+    }
+    std::string set_printer_setting(std::string printer, std::string name, std::string value) {
+        return m_printer_settings[printer][name] = value;
+        m_dirty                = true;
+    }
+
+
+    const std::vector<std::string> &get_filament_presets() const { return m_filament_presets; }
+    void set_filament_presets(const std::vector<std::string> &filament_presets){
+        m_filament_presets = filament_presets;
+        m_dirty            = true;
+    }
+    const std::vector<std::string> &get_filament_colors() const { return m_filament_colors; }
+    void set_filament_colors(const std::vector<std::string> &filament_colors){
+        m_filament_colors = filament_colors;
+        m_dirty                = true;
+    }
+
+	const std::vector<PrinterCaliInfo> &get_printer_cali_infos() const { return m_printer_cali_infos; }
+    void save_printer_cali_infos(const PrinterCaliInfo& cali_info, bool need_change_status = true);
+
+	// return recent/last_opened_folder or recent/settings_folder or empty string.
 	std::string 		get_last_dir() const;
-	bool 				update_config_dir(const std::string &dir);
-	bool 				update_skein_dir(const std::string &dir);
+	void 				update_config_dir(const std::string &dir);
+	void 				update_skein_dir(const std::string &dir);
 
 	//std::string 		get_last_output_dir(const std::string &alt) const;
 	//void                update_last_output_dir(const std::string &dir);
 	std::string 		get_last_output_dir(const std::string& alt, const bool removable = false) const;
-	bool                update_last_output_dir(const std::string &dir, const bool removable = false);
+	void                update_last_output_dir(const std::string &dir, const bool removable = false);
 
-	bool                get_show_overwrite_dialog() const { return get("show_overwrite_dialog") != "0"; }
+	// BBS: backup & restore
+	std::string 		get_last_backup_dir() const;
+	void                update_last_backup_dir(const std::string &dir);
 
-	// create color
-	uint32_t			create_color(float saturation, float value, EAppColorType color_template = EAppColorType::Main);
+	std::string         get_region();
+	std::string         get_country_code();
+    bool				is_engineering_region();
 
-	// reset the current print / filament / printer selections, so that 
+    void                save_custom_color_to_config(const std::vector<std::string> &colors);
+    std::vector<std::string> get_custom_color_from_config();
+	// reset the current print / filament / printer selections, so that
 	// the  PresetBundle::load_selections(const AppConfig &config) call will select
 	// the first non-default preset when called.
     void                reset_selections();
 
 	// Get the default config path from Slic3r::data_dir().
-	std::string			config_path() const;
-
-    // Get the current path to ui_layout directory
-    boost::filesystem::path  layout_config_path();
-    LayoutEntry              get_ui_layout();
-    std::vector<LayoutEntry> get_ui_layouts() { return m_ui_layout; }
-
-    // Tags
-    std::vector<Tag>         tags() { return m_tags; }
-
-    // splashscreen
-    std::string              splashscreen(bool is_editor);
-
-    // Hardware
-    HardwareType			 hardware() { return m_hardware; }
-    void					 set_hardware_type(HardwareType hard);
+	std::string			config_path();
 
 	// Returns true if the user's data directory comes from before Slic3r 1.40.0 (no updating)
 	bool 				legacy_datadir() const { return m_legacy_datadir; }
@@ -233,24 +245,25 @@ public:
 
 	// Get the Slic3r version check url.
 	// This returns a hardcoded string unless it is overriden by "version_check_url" in the ini file.
-	std::string 		version_check_url() const;
-	// Get the Slic3r url to vendor index archive zip.
-	std::string  		index_archive_url() const;
-	// Get the Slic3r url to folder with vendor profile files.
-	std::string 		profile_folder_url() const;
+	std::string 		version_check_url(bool stable_only = false) const;
 
+	// Get the Orca profile update url.
+	std::string 		profile_update_url() const;
 
 	// Returns the original Slic3r version found in the ini file before it was overwritten
 	// by the current version
 	Semver 				orig_version() const { return m_orig_version; }
 
 	// Does the config file exist?
-	bool 				exists() const;
+	bool 				exists();
+
+	void                set_loading_path(const std::string& path) { m_loading_path = path; }
+	std::string         loading_path() { return (m_loading_path.empty() ? config_path() : m_loading_path); }
 
     std::vector<std::string> get_recent_projects() const;
-    bool set_recent_projects(const std::vector<std::string>& recent_projects);
+    void set_recent_projects(const std::vector<std::string>& recent_projects);
 
-	bool set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll);
+	void set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll);
 	std::vector<std::string> get_mouse_device_names() const;
 	bool get_mouse_device_translation_speed(const std::string& name, double& speed) const
 		{ return get_3dmouse_device_numeric_value(name, "translation_speed", speed); }
@@ -281,10 +294,6 @@ public:
     static const std::string SECTION_MATERIALS;
     static const std::string SECTION_EMBOSS_STYLE;
 
-#ifdef WIN32
-	static std::string appconfig_md5_hash_line(const std::string_view data);
-	static ConfigFileInfo check_config_file_and_verify_checksum(boost::nowide::ifstream& ifs);
-#endif
 private:
 	template<typename T>
 	bool get_3dmouse_device_numeric_value(const std::string &device_name, const char *parameter_name, T &out) const 
@@ -304,27 +313,25 @@ private:
 	EAppMode													m_mode { EAppMode::Editor };
 	// Map of section, name -> value
 	std::map<std::string, std::map<std::string, std::string>> 	m_storage;
+
 	// Map of enabled vendors / models / variants
 	VendorMap                                                   m_vendors;
+
+	// Preset for each machine
+	MachineSettingMap											m_printer_settings;
 	// Has any value been modified since the config.ini has been last saved or loaded?
 	bool														m_dirty;
 	// Original version found in the ini file before it was overwritten
 	Semver                                                      m_orig_version;
 	// Whether the existing version is before system profiles & configuration updating
 	bool                                                        m_legacy_datadir;
-    // ui_layout installed
-    std::vector<LayoutEntry>                                    m_ui_layout;
-    // tags installed
-	std::vector<Tag>                                            m_tags;
-	//splashscreen
-	std::pair<std::string,std::string>                          m_default_splashscreen;
-	// hardware type
-	HardwareType												m_hardware;
-    // our installation. can be empty if data_dir() is set by command line
-    ConfigurationEntry                                          m_data_dir;
-    // directory of all configurations for all "installed" version.
-    std::string                                                 m_data_dir_root;
-    std::vector<ConfigurationEntry>                             m_all_slic3r_installed;
+
+	std::string                                                 m_loading_path;
+
+	std::vector<std::string>									m_filament_presets;
+    std::vector<std::string>									m_filament_colors;
+
+	std::vector<PrinterCaliInfo>								m_printer_cali_infos;
 };
 
 } // namespace Slic3r

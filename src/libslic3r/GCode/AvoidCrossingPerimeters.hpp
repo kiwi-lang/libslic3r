@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2022 Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_AvoidCrossingPerimeters_hpp_
 #define slic3r_AvoidCrossingPerimeters_hpp_
 
@@ -12,7 +8,7 @@
 namespace Slic3r {
 
 // Forward declarations.
-class GCodeGenerator;
+class GCode;
 class Layer;
 class Point;
 
@@ -28,50 +24,29 @@ public:
     void        reset_once_modifiers()  { m_use_external_mp_once = false; m_disabled_once = false; }
 
     void        init_layer(const Layer &layer);
-    bool        is_init() { return m_init; }
 
-    Polyline    travel_to(const GCodeGenerator &gcodegen, const Point& point)
+    Polyline    travel_to(const GCode& gcodegen, const Point& point)
     {
         bool could_be_wipe_disabled;
         return this->travel_to(gcodegen, point, &could_be_wipe_disabled);
     }
 
-    Polyline    travel_to(const GCodeGenerator &gcodegen, const Point& point, bool* could_be_wipe_disabled);
+    Polyline    travel_to(const GCode& gcodegen, const Point& point, bool* could_be_wipe_disabled);
 
     struct Boundary {
         // Collection of boundaries used for detection of crossing perimeters for travels
         Polygons                        boundaries;
-        // this is empty if m_use_external_mp, or the size of boundaries if not.
-        // each entry is the boundary's island id. the island id is the boundary index of the contour.
-        std::vector<size_t>             islands;
         // Bounding box of boundaries
         BoundingBoxf                    bbox;
-        std::vector<BoundingBox>        bboxes;
         // Precomputed distances of all points in boundaries
         std::vector<std::vector<float>> boundaries_params;
         // Used for detection of intersection between line and any polygon from boundaries
         EdgeGrid::Grid                  grid;
-        // grid for searching in the contour of one island. the id of the island is the idx of the contour in boundaries
-        std::map<int, EdgeGrid::Grid>   island_to_grid;
-        //used to move the point inside the boundary
-        std::vector<std::pair<ExPolygon, ExPolygon>> boundary_growth;
-        // area (top) where you don't want to travel, even more so than over voids.
-        ExPolygons to_avoid;
-        // Used for detection of intersection between line and any polygon from to_avoid
-        EdgeGrid::Grid to_avoid_grid;
 
         void clear()
         {
             boundaries.clear();
-            islands.clear();
-            bbox = BoundingBoxf();
-            bboxes.clear();
             boundaries_params.clear();
-            grid = EdgeGrid::Grid();
-            island_to_grid.clear();
-            boundary_growth.clear();
-            to_avoid.clear();
-            to_avoid_grid = EdgeGrid::Grid();
         }
     };
 
@@ -79,14 +54,10 @@ private:
     bool           m_use_external_mp { false };
     // just for the next travel move
     bool           m_use_external_mp_once { false };
-    // this flag disables avoid_crossing_perimeters just for the next travel move
+    // this flag disables reduce_crossing_wall just for the next travel move
     // we enable it by default for the first travel move in print
     bool           m_disabled_once { true };
 
-    bool m_init{ false };
-
-    // for assert, to see if we are correctly initialized
-    const Layer             *m_init_to;
     // Lslices offseted by half an external perimeter width. Used for detection if line or polyline is inside of any polygon.
     ExPolygons               m_lslices_offset;
     std::vector<BoundingBox> m_lslices_offset_bboxes;

@@ -1,18 +1,3 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena, Filip Sykala @Jony01, Lukáš Hejl @hejllukas
-///|/ Copyright (c) 2017 Eyal Soha @eyal0
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Geometry.pm:
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2013 Jose Luis Perez Diez
-///|/ Copyright (c) 2013 Anders Sundman
-///|/ Copyright (c) 2013 Jesse Vincent
-///|/ Copyright (c) 2012 Mike Sheldrake @mesheldrake
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Geometry_hpp_
 #define slic3r_Geometry_hpp_
 
@@ -26,6 +11,11 @@
 #include <cereal/access.hpp>
 
 namespace Slic3r { 
+
+    namespace ClipperLib {
+        class PolyNode;
+        using PolyNodes = std::vector<PolyNode*>;
+    }
 
 namespace Geometry {
 
@@ -49,9 +39,9 @@ static inline Orientation orient(const Point &a, const Point &b, const Point &c)
     // BOOST_STATIC_ASSERT(sizeof(coord_t) == sizeof(int64_t));
     if (a.x() <= 0xffffffff && b.x() <= 0xffffffff && c.x() <= 0xffffffff &&
         a.y() <= 0xffffffff && b.y() <= 0xffffffff && c.y() <= 0xffffffff) {
-    int64_t u = int64_t(b.x()) * int64_t(c.y()) - int64_t(b.y()) * int64_t(c.x());
-    int64_t v = int64_t(a.x()) * int64_t(c.y()) - int64_t(a.y()) * int64_t(c.x());
-    int64_t w = int64_t(a.x()) * int64_t(b.y()) - int64_t(a.y()) * int64_t(b.x());
+        int64_t u = int64_t(b(0)) * int64_t(c(1)) - int64_t(b(1)) * int64_t(c(0));
+        int64_t v = int64_t(a(0)) * int64_t(c(1)) - int64_t(a(1)) * int64_t(c(0));
+        int64_t w = int64_t(a(0)) * int64_t(b(1)) - int64_t(a(1)) * int64_t(b(0));
         int64_t d = u - v + w;
         return (d > 0) ? ORIENTATION_CCW : ((d == 0) ? ORIENTATION_COLINEAR : ORIENTATION_CW);
     } else {
@@ -311,6 +301,7 @@ bool directions_parallel(double angle1, double angle2, double max_diff = 0);
 bool directions_perpendicular(double angle1, double angle2, double max_diff = 0);
 template<class T> bool contains(const std::vector<T> &vector, const Point &point);
 template<typename T> T rad2deg(T angle) { return T(180.0) * angle / T(PI); }
+double rad2deg_dir(double angle);
 template<typename T> constexpr T deg2rad(const T angle) { return T(PI) * angle / T(180.0); }
 template<typename T> T angle_to_0_2PI(T angle)
 {
@@ -413,15 +404,6 @@ Vec3d extract_euler_angles(const Transform3d& transform);
 // Euler angles can be obtained by extract_euler_angles()
 void rotation_from_two_vectors(Vec3d from, Vec3d to, Vec3d &rotation_axis, double &phi, Matrix3d *rotation_matrix = nullptr);
 
-
-// Returns the euler angles extracted from the given rotation matrix
-// Warning -> The matrix should not contain any scale or shear !!!
-Vec3d extract_rotation(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& rotation_matrix);
-
-// Returns the euler angles extracted from the given affine transform
-// Warning -> The transform should not contain any shear !!!
-Vec3d extract_rotation(const Transform3d& transform);
-
 class Transformation
 {
     Transform3d m_matrix{ Transform3d::Identity() };
@@ -487,19 +469,32 @@ public:
     void set_matrix(const Transform3d& transform) { m_matrix = transform; }
 
     Transformation operator * (const Transformation& other) const;
-    bool operator==(const Transformation& trsf) const;
-    bool operator!=(const Transformation& trsf) const { return !operator==(trsf); }
+
+    // Find volume transformation, so that the chained (instance_trafo * volume_trafo) will be as close to identity
+    // as possible in least squares norm in regard to the 8 corners of bbox.
+    // Bounding box is expected to be centered around zero in all axes.
+    static Transformation volume_to_bed_transformation(const Transformation& instance_transformation, const BoundingBoxf3& bbox);
+
+    // BBS: backup use this compare
+    friend bool operator==(Transformation const& l, Transformation const& r) {
+        return l.m_matrix.isApprox(r.m_matrix);
+    }
+
+    friend bool operator!=(Transformation const &l, Transformation const &r)
+    {
+        return !(l == r);
+    }
 
 private:
 	friend class cereal::access;
     template<class Archive> void serialize(Archive& ar) { ar(m_matrix); }
     explicit Transformation(int) {}
     template <class Archive> static void load_and_construct(Archive& ar, cereal::construct<Transformation>& construct)
-	{
-		// Calling a private constructor with special "int" parameter to indicate that no construction is necessary.
-		construct(1);
+    {
+        // Calling a private constructor with special "int" parameter to indicate that no construction is necessary.
+        construct(1);
         ar(construct.ptr()->m_matrix);
-	}
+    }
 };
 
 struct TransformationSVD
@@ -529,7 +524,7 @@ extern Transform3d transform3d_from_string(const std::string& transform_str);
 extern Eigen::Quaterniond rotation_xyz_diff(const Vec3d &rot_xyz_from, const Vec3d &rot_xyz_to);
 // Rotation by Z to align rot_xyz_from to rot_xyz_to.
 // This should only be called if it is known, that the two rotations only differ in rotation around the Z axis.
-extern double rotation_diff_z(const Transform3d &trafo_from, const Transform3d &trafo_to);
+extern double rotation_diff_z(const Vec3d &rot_xyz_from, const Vec3d &rot_xyz_to);
 
 // Is the angle close to a multiple of 90 degrees?
 inline bool is_rotation_ninety_degrees(double a)
@@ -544,37 +539,6 @@ inline bool is_rotation_ninety_degrees(double a)
 inline bool is_rotation_ninety_degrees(const Vec3d &rotation)
 {
     return is_rotation_ninety_degrees(rotation.x()) && is_rotation_ninety_degrees(rotation.y()) && is_rotation_ninety_degrees(rotation.z());
-}
-
-// Returns true if one transformation may be converted into another transformation by
-// rotation around Z and by mirroring in X / Y only. Two objects sharing such transformation
-// may share support structures and they share Z height.
-bool trafos_differ_in_rotation_by_z_and_mirroring_by_xy_only(const Transform3d &t1, const Transform3d &t2);
-inline bool trafos_differ_in_rotation_by_z_and_mirroring_by_xy_only(const Transformation &t1, const Transformation &t2)
-    { return trafos_differ_in_rotation_by_z_and_mirroring_by_xy_only(t1.get_matrix(), t2.get_matrix()); }
-
-template <class Tout = double, class Tin>
-std::pair<Tout, Tout> dir_to_spheric(const Vec<3, Tin> &n, Tout norm = 1.)
-{
-    Tout z       = n.z();
-    Tout r       = norm;
-    Tout polar   = std::acos(z / r);
-    Tout azimuth = std::atan2(n(1), n(0));
-    return {polar, azimuth};
-}
-
-template <class T = double>
-Vec<3, T> spheric_to_dir(double polar, double azimuth)
-{
-    return {T(std::cos(azimuth) * std::sin(polar)),
-            T(std::sin(azimuth) * std::sin(polar)), T(std::cos(polar))};
-}
-
-template <class T = double, class Pair>
-Vec<3, T> spheric_to_dir(const Pair &v)
-{
-    double plr = std::get<0>(v), azm = std::get<1>(v);
-    return spheric_to_dir<T>(plr, azm);
 }
 
 } } // namespace Slicer::Geometry

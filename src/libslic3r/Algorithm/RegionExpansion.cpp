@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "RegionExpansion.hpp"
 
 #include <libslic3r/AABBTreeIndirect.hpp>
@@ -30,17 +26,15 @@ inline double clipper_round_offset_error(double offset, double arc_tolerance)
 
 RegionExpansionParameters RegionExpansionParameters::build(
     // Scaled expansion value
-    coord_t             _full_expansion,
+    float                full_expansion,
     // Expand by waves of expansion_step size (expansion_step is scaled).
-    coord_t             _expansion_step,
+    float                expansion_step,
     // Don't take more than max_nr_steps for small expansion_step.
     size_t               max_nr_expansion_steps)
 {
-    assert(_full_expansion > 0);
-    assert(_expansion_step > 0);
+    assert(full_expansion > 0);
+    assert(expansion_step > 0);
     assert(max_nr_expansion_steps > 0);
-    float full_expansion = float(_full_expansion);
-    float expansion_step = float(_expansion_step);
 
     RegionExpansionParameters out;
     // Initial expansion of src to make the source regions intersect with boundary regions just a bit.

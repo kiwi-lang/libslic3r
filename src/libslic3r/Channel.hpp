@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Channel_hpp_
 #define slic3r_Channel_hpp_
 
@@ -9,8 +5,8 @@
 #include <deque>
 #include <condition_variable>
 #include <mutex>
-#include <optional>
 #include <utility>
+#include <boost/optional.hpp>
 
 
 namespace Slic3r {
@@ -69,11 +65,11 @@ public:
         return item;
     }
 
-    std::optional<T> try_pop()
+    boost::optional<T> try_pop()
     {
         UniqueLock lock(m_mutex);
         if (m_queue.empty()) {
-            return std::nullopt;
+            return boost::none;
         } else {
             auto item = std::move(m_queue.front());
             m_queue.pop();

@@ -1,12 +1,3 @@
-///|/ Copyright (c) Prusa Research 2016 - 2022 Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/SVG.pm:
-///|/ Copyright (c) Prusa Research 2018 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SVG_hpp_
 #define slic3r_SVG_hpp_
 
@@ -28,6 +19,7 @@ public:
     float height;
     bool  flipY;
 
+    SVG() = default;
     SVG(const char* afilename) :
         arrows(false), fill("grey"), stroke("black"), filename(afilename), flipY(false)
         { open(filename); }
@@ -48,6 +40,7 @@ public:
         { return open(filename.c_str()); }
     bool open(const std::string &filename, const BoundingBox &bbox, const coord_t bbox_offset = scale_(1.), bool flipY = true)
         { return open(filename.c_str(), bbox, bbox_offset, flipY); }
+    bool is_opened() { return f != NULL; }
 
     void draw(const Line &line, std::string stroke = "black", coordf_t stroke_width = 0);
     void draw(const ThickLine &line, const std::string &fill, const std::string &stroke, coordf_t stroke_width = 0);
@@ -62,10 +55,8 @@ public:
     void draw_outline(const Surface &surface, std::string stroke_outer = "black", std::string stroke_holes = "blue", coordf_t stroke_width = 0);
     void draw(const Surfaces &surfaces, std::string fill = "grey", const float fill_opacity=1.f);
     void draw_outline(const Surfaces &surfaces, std::string stroke_outer = "black", std::string stroke_holes = "blue", coordf_t stroke_width = 0);
-    //void draw(const SurfacesPtr& surfaces, std::string fill = "grey", const float fill_opacity = 1.f);
-    //void draw_outline(const SurfacesPtr& surfaces, std::string stroke_outer = "black", std::string stroke_holes = "blue", coordf_t stroke_width = 0);
-    void draw(const SurfacesConstPtr& surfaces, std::string fill = "grey", const float fill_opacity = 1.f);
-    void draw_outline(const SurfacesConstPtr& surfaces, std::string stroke_outer = "black", std::string stroke_holes = "blue", coordf_t stroke_width = 0);
+    void draw(const SurfacesPtr &surfaces, std::string fill = "grey", const float fill_opacity=1.f);
+    void draw_outline(const SurfacesPtr &surfaces, std::string stroke_outer = "black", std::string stroke_holes = "blue", coordf_t stroke_width = 0);
  
     void draw(const Polygon &polygon, std::string fill = "grey");
     void draw_outline(const Polygon &polygon, std::string stroke = "black", coordf_t stroke_width = 0);
@@ -74,9 +65,7 @@ public:
     void draw(const Polyline &polyline, std::string stroke = "black", coordf_t stroke_width = 0);
     void draw(const Polylines &polylines, std::string stroke = "black", coordf_t stroke_width = 0);
     void draw(const ThickLines &thicklines, const std::string &fill = "lime", const std::string &stroke = "black", coordf_t stroke_width = 0);
-    void draw(const ThickPolylines& thickpolylines, const std::string& stroke = "black");
-    void draw(const ThickPolylines& thickpolylines, const float scale, const std::string& stroke = "black");
-    void draw(const ThickPolylines &polylines, const std::string &stroke, coordf_t stroke_width);
+    void draw(const ThickPolylines &polylines, const std::string &stroke = "black", coordf_t stroke_width = 0);
     void draw(const ThickPolylines &thickpolylines, const std::string &fill, const std::string &stroke, coordf_t stroke_width);
     void draw(const Point &point, std::string fill = "black", coord_t radius = 0);
     void draw(const Points &points, std::string fill = "black", coord_t radius = 0);
@@ -84,11 +73,12 @@ public:
     // Support for rendering the ClipperLib paths
     void draw(const ClipperLib::Path  &polygon, double scale, std::string fill = "grey", coordf_t stroke_width = 0);
     void draw(const ClipperLib::Paths &polygons, double scale, std::string fill = "grey", coordf_t stroke_width = 0);
-    
-    void draw_text(const Point &pt, const char *text, const char *color, coordf_t font_size = 20.f);
-    void draw_legend(const Point &pt, const char *text, const char *color, coordf_t font_size = 10.f);
-    void draw_text(const Point &pt, const char *text, const std::string &color, coordf_t font_size = 20.f) {draw_text(pt, text, color.c_str(), font_size);}
-    void draw_legend(const Point &pt, const char *text, const std::string &color, coordf_t font_size = 10.f) {draw_legend(pt, text, color.c_str(), font_size);}
+
+    void draw_text(const Point &pt, const char *text, const char *color, int font_size = 20);
+    void draw_legend(const Point &pt, const char *text, const char *color);
+    //BBS
+    void draw_grid(const BoundingBox& bbox, const std::string& stroke = "black", coordf_t stroke_width = scale_(0.05), coordf_t step=scale_(1.0));
+    void add_comment(const std::string comment);
 
     void Close();
     
@@ -114,12 +104,6 @@ public:
         ExPolygonAttributes() : ExPolygonAttributes("gray", "black", "blue") {}
         ExPolygonAttributes(const std::string &color) :
             ExPolygonAttributes(color, color, color) {}
-        ExPolygonAttributes(
-            const std::string &color,
-            const coord_t width,
-            float opacity = 0.5f) :
-            ExPolygonAttributes(color, color, color, width, opacity)
-            {}
 
         ExPolygonAttributes(
             const std::string &color_fill,
@@ -188,9 +172,9 @@ public:
         { export_expolygons(path.c_str(), expolygons_with_attributes); }
 
 private:
-    static float to_svg_coord(float x) throw();
-    static float to_svg_x(float x) throw() { return to_svg_coord(x); }
-           float to_svg_y(float x) const throw() { return flipY ? this->height - to_svg_coord(x) : to_svg_coord(x); }
+    static float    to_svg_coord(float x) throw() { return unscale<float>(x) * 10.f; }
+    static float    to_svg_x(float x) throw() { return to_svg_coord(x); }
+    float           to_svg_y(float x) const throw() { return flipY ? this->height - to_svg_coord(x) : to_svg_coord(x); }
 };
 
 }

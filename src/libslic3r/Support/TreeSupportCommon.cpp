@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Tree supports by Thomas Rahm, losely based on Tree Supports by CuraEngine.
 // Original source of Thomas Rahm's tree supports:
 // https://github.com/ThomasRahm/CuraEngine
@@ -11,7 +7,6 @@
 // CuraEngine is released under the terms of the AGPLv3 or higher.
 
 #include "TreeSupportCommon.hpp"
-#include "libslic3r/Slicing.hpp"
 
 namespace Slic3r::FFFTreeSupport {
 
@@ -23,86 +18,83 @@ TreeSupportMeshGroupSettings::TreeSupportMeshGroupSettings(const PrintObject &pr
 //    const std::vector<unsigned int>  printing_extruders = print_object.object_extruders();
 
     // Support must be enabled and set to Tree style.
-    assert(config.support_material || config.support_material_enforce_layers > 0);
-    assert(config.support_material_style.value == smsTree || config.support_material_style.value == smsOrganic);
+    assert(config.enable_support || config.enforce_support_layers > 0);
+    assert(is_tree(config.support_type));
 
-    const double layer_height_mm = check_z_step(config.layer_height.value, print_config.z_step);
     // Calculate maximum external perimeter width over all printing regions, taking into account the default layer height.
-    double external_perimeter_width = 0.;
+    coordf_t external_perimeter_width = 0.;
     for (size_t region_id = 0; region_id < print_object.num_printing_regions(); ++ region_id) {
         const PrintRegion &region = print_object.printing_region(region_id);
-        external_perimeter_width = std::max<double>(external_perimeter_width, region.flow(print_object, frExternalPerimeter, layer_height_mm, 2 /*not first layer, even layer*/).width());
+        external_perimeter_width = std::max<coordf_t>(external_perimeter_width, region.flow(print_object, frExternalPerimeter, config.layer_height).width());
     }
-    
-    this->layer_height              = scale_t(layer_height_mm);
-    this->resolution                = scale_t(print_config.resolution_internal.value);
-    // Arache feature <- why? it's not even editable when the organic support are activated! And it doesn't take into account the %! I'll fix it to 25% of external_perimeter_width. 
-    this->min_feature_size          = scale_t(external_perimeter_width * 0.25); //config.min_feature_size.value);
+
+    this->layer_height              = scaled<coord_t>(config.layer_height.value);
+    this->resolution                = scaled<coord_t>(print_config.resolution.value);
+    // Arache feature
+    this->min_feature_size          = scaled<coord_t>(config.min_feature_size.value);
     // +1 makes the threshold inclusive
-    this->support_angle             = 0.5 * M_PI - std::clamp<double>((config.support_material_threshold + 1) * M_PI / 180., 0., 0.5 * M_PI);
-    this->support_line_width        = support_material_flow(&print_object, layer_height_mm).scaled_width();
-    this->support_roof_line_width   = support_material_interface_flow(&print_object, layer_height_mm).scaled_width();
+    this->support_angle             = 0.5 * M_PI - std::clamp<double>((config.support_threshold_angle + 1) * M_PI / 180., 0., 0.5 * M_PI);
+    this->support_line_width        = support_material_flow(&print_object, config.layer_height).scaled_width();
+    this->support_roof_line_width   = support_material_interface_flow(&print_object, config.layer_height).scaled_width();
     //FIXME add it to SlicingParameters and reuse in both tree and normal supports?
-    this->support_bottom_enable = config.support_material_interface_layers.value > 0 &&
-        (!config.support_material_bottom_interface_layers.is_enabled() ||
-         config.support_material_bottom_interface_layers.value > 0);
-    this->support_bottom_height     = !this->support_bottom_enable ? 0 :
-        this->layer_height * (config.support_material_bottom_interface_layers.is_enabled() ?
-            config.support_material_bottom_interface_layers.value :
-            config.support_material_interface_layers.value);
-        
-    this->support_material_buildplate_only = config.support_material_buildplate_only;
-    this->support_xy_distance       = scaled<coord_t>(config.support_material_xy_spacing.get_abs_value(external_perimeter_width));
+    this->support_bottom_enable     = config.support_interface_top_layers.value > 0 && config.support_interface_bottom_layers.value != 0;
+    this->support_bottom_height     = this->support_bottom_enable ?
+        (config.support_interface_bottom_layers.value > 0 ?
+            config.support_interface_bottom_layers.value :
+            config.support_interface_top_layers.value) * this->layer_height :
+        0;
+    this->support_material_buildplate_only = config.support_on_build_plate_only;
+    this->support_xy_distance       = scaled<coord_t>(config.support_object_xy_distance.value);
     // Separation of interfaces, it is likely smaller than support_xy_distance.
     this->support_xy_distance_overhang = std::min(this->support_xy_distance, scaled<coord_t>(0.5 * external_perimeter_width));
-    // compute separate support_material_contact_distance_type. As organic support only support one layer height,
-    // it has to be done here, where we have access to the printobject
     this->support_top_distance      = scaled<coord_t>(slicing_params.gap_support_object);
     this->support_bottom_distance   = scaled<coord_t>(slicing_params.gap_object_support);
-    if (config.support_material_contact_distance_type.value == zdNone) {
-        this->support_top_distance      = 0;
-        this->support_bottom_distance   = 0;
-    } else if (config.support_material_contact_distance_type.value == zdFilament && print_object.layers().size() > 0 &&
-        print_object.layers().front()->regions().size() > 0) {
-        //get one region, with organic support there is only one layer height anyway
-        assert(print_object.num_printing_regions() > 0);
-        const LayerRegion *lr = print_object.layers().front()->regions().front();
-        assert(is_approx(lr->layer()->height, layer_height_mm, EPSILON) || lr->layer()->id() == 0);
-        coord_t diff_lh_filamenth = scale_t(lr->bridging_height_avg()) - this->layer_height;
-        this->support_top_distance += diff_lh_filamenth;
-        this->support_bottom_distance += diff_lh_filamenth;
-    }
 //    this->support_interface_skip_height =
 //    this->support_infill_angles     = 
-    this->support_roof_enable       = config.support_material_interface_layers.value > 0;
-    this->support_roof_layers       = this->support_roof_enable ? config.support_material_interface_layers.value : 0;
-    this->support_floor_enable = this->support_roof_enable &&
-        (!config.support_material_bottom_interface_layers.is_enabled() ||
-         config.support_material_bottom_interface_layers.value > 0);
-    this->support_floor_layers = !this->support_floor_enable ? 0 :
-        config.support_material_bottom_interface_layers.is_enabled() ?
-                                                               config.support_material_bottom_interface_layers.value :
-                                                               this->support_roof_layers;
-    //    this->minimum_roof_area         = 
+    this->support_roof_enable       = config.support_interface_top_layers.value > 0;
+    this->support_roof_layers       = this->support_roof_enable ? config.support_interface_top_layers.value : 0;
+    this->support_floor_enable      = config.support_interface_top_layers.value > 0 && config.support_interface_bottom_layers.value > 0;
+    this->support_floor_layers      = this->support_floor_enable ? config.support_interface_bottom_layers.value : 0;
+//    this->minimum_roof_area         = 
 //    this->support_roof_angles       = 
-    this->support_roof_pattern      = config.support_material_top_interface_pattern.value;
-    this->support_pattern           = config.support_material_pattern;
-    this->support_line_spacing      = scaled<coord_t>(config.support_material_spacing.value);
+    this->support_roof_pattern      = config.support_interface_pattern;
+    this->support_pattern           = config.support_base_pattern;
+    this->support_line_spacing      = scaled<coord_t>(config.support_base_pattern_spacing.value);
 //    this->support_bottom_offset     = 
 //    this->support_wall_count        = config.support_material_with_sheath ? 1 : 0;
     this->support_wall_count        = 1;
-    this->support_roof_line_distance = scaled<coord_t>(config.support_material_interface_spacing.value) + this->support_roof_line_width;
+    this->support_roof_line_distance = scaled<coord_t>(config.support_interface_spacing.value) + this->support_roof_line_width;
 //    this->minimum_support_area      = 
 //    this->minimum_bottom_area       = 
 //    this->support_offset            = 
-    this->support_tree_branch_distance = scaled<coord_t>(config.support_tree_branch_distance.value);
-    this->support_tree_angle          = std::clamp<double>(config.support_tree_angle * M_PI / 180., 0., 0.5 * M_PI - EPSILON);
-    this->support_tree_angle_slow     = std::clamp<double>(config.support_tree_angle_slow * M_PI / 180., 0., this->support_tree_angle - EPSILON);
-    this->support_tree_branch_diameter = scaled<coord_t>(config.support_tree_branch_diameter.value);
-    this->support_tree_branch_diameter_angle = std::clamp<double>(config.support_tree_branch_diameter_angle * M_PI / 180., 0., 0.5 * M_PI - EPSILON);
-    this->support_tree_top_rate       = config.support_tree_top_rate.value; // percent
+    this->support_tree_branch_distance = scaled<coord_t>(config.tree_support_branch_distance_organic.value);
+    this->support_tree_angle          = std::clamp<double>(config.tree_support_branch_angle_organic * M_PI / 180., 0., 0.5 * M_PI - EPSILON);
+    this->support_tree_angle_slow     = std::clamp<double>(config.tree_support_angle_slow * M_PI / 180., 0., this->support_tree_angle - EPSILON);
+    this->support_tree_branch_diameter = scaled<coord_t>(config.tree_support_branch_diameter_organic.value);
+    this->support_tree_branch_diameter_angle = std::clamp<double>(config.tree_support_branch_diameter_angle * M_PI / 180., 0., 0.5 * M_PI - EPSILON);
+    this->support_tree_top_rate       = config.tree_support_top_rate.value; // percent
 //    this->support_tree_tip_diameter = this->support_line_width;
-    this->support_tree_tip_diameter = std::clamp(scaled<coord_t>(config.support_tree_tip_diameter.value), coord_t(0), this->support_tree_branch_diameter);
+    this->support_tree_tip_diameter = std::clamp(scaled<coord_t>(config.tree_support_tip_diameter.value), (coord_t)0, this->support_tree_branch_diameter);
+
+    std::cout << "\n---------------\n"
+              << "layer_height: " << layer_height << "\nresolution: " << resolution << "\nmin_feature_size: " << min_feature_size
+              << "\nsupport_angle: " << support_angle << "\nconfig.support_threshold_angle: " << config.support_threshold_angle << "\nsupport_line_width: " << support_line_width
+              << "\nsupport_roof_line_width: " << support_roof_line_width << "\nsupport_bottom_enable: " << support_bottom_enable
+              << "\nsupport_bottom_height: " << support_bottom_height
+              << "\nsupport_material_buildplate_only: " << support_material_buildplate_only
+              << "\nsupport_xy_distance: " << support_xy_distance << "\nsupport_xy_distance_overhang: " << support_xy_distance_overhang
+              << "\nsupport_top_distance: " << support_top_distance << "\nsupport_bottom_distance: " << support_bottom_distance
+              << "\nsupport_roof_enable: " << support_roof_enable << "\nsupport_roof_layers: " << support_roof_layers
+              << "\nsupport_floor_enable: " << support_floor_enable << "\nsupport_floor_layers: " << support_floor_layers
+              << "\nsupport_roof_pattern: " << support_roof_pattern << "\nsupport_pattern: " << support_pattern
+              << "\nsupport_line_spacing: " << support_line_spacing << "\nsupport_wall_count: " << support_wall_count
+              << "\nsupport_roof_line_distance: " << support_roof_line_distance
+              << "\nsupport_tree_branch_distance: " << support_tree_branch_distance
+              << "\nsupport_tree_angle_slow: " << support_tree_angle_slow
+              << "\nsupport_tree_branch_diameter: " << support_tree_branch_diameter
+              << "\nsupport_tree_branch_diameter_angle: " << support_tree_branch_diameter_angle
+              << "\nsupport_tree_top_rate: " << support_tree_top_rate << "\nsupport_tree_tip_diameter: " << support_tree_tip_diameter
+              << "\n---------------\n";
 }
 
 TreeSupportSettings::TreeSupportSettings(const TreeSupportMeshGroupSettings &mesh_group_settings, const SlicingParameters &slicing_params)

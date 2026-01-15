@@ -65,8 +65,10 @@ class SkeletalTrapezoidation
     coord_t transition_filter_dist; //!< Filter transition mids (i.e. anchors) closer together than this
     coord_t allowed_filter_deviation; //!< The allowed line width deviation induced by filtering
     coord_t beading_propagation_transition_dist; //!< When there are different beadings propagated from below and from above, use this transitioning distance
-    static constexpr coord_t central_filter_dist = scaled<coord_t>(0.02); //!< Filter areas marked as 'central' smaller than this
-    static constexpr coord_t snap_dist = scaled<coord_t>(0.02); //!< Generic arithmatic inaccuracy. Only used to determine whether a transition really needs to insert an extra edge.
+    //!< Filter areas marked as 'central' smaller than this
+    inline coord_t central_filter_dist() { return scaled<coord_t>(0.02); }
+    //!< Generic arithmatic inaccuracy. Only used to determine whether a transition really needs to insert an extra edge.
+    inline coord_t snap_dist() { return scaled<coord_t>(0.02); }
 
     /*!
      * The strategy to use to fill a certain shape with lines.
@@ -80,7 +82,10 @@ class SkeletalTrapezoidation
 
 public:
     using Segment  = PolygonsSegmentIndex;
-    using NodeSet  = ankerl::unordered_dense::set<node_t*>;
+    using NodeSet = ankerl::unordered_dense::set<node_t *>;
+    using EdgeSet = ankerl::unordered_dense::set<edge_t *>;
+    using EdgeMap = ankerl::unordered_dense::map<const VD::edge_type *, edge_t *>;
+    using NodeMap = ankerl::unordered_dense::map<const VD::vertex_type *, node_t *>;
 
     /*!
      * Construct a new trapezoidation problem to solve.
@@ -164,8 +169,8 @@ protected:
      * mapping each voronoi VD edge to the corresponding halfedge HE edge
      * In case the result segment is discretized, we map the VD edge to the *last* HE edge
      */
-    ankerl::unordered_dense::map<const VD::edge_type *, edge_t *> vd_edge_to_he_edge;
-    ankerl::unordered_dense::map<const VD::vertex_type *, node_t *> vd_node_to_he_node;
+    EdgeMap vd_edge_to_he_edge;
+    NodeMap vd_node_to_he_node;
     node_t &makeNode(const VD::vertex_type &vd_node, Point p); //!< Get the node which the VD node maps to, or create a new mapping if there wasn't any yet.
 
     /*!
@@ -572,8 +577,6 @@ protected:
      * Genrate small segments for local maxima where the beading would only result in a single bead
      */
     void generateLocalMaximaSingleBeads();
-
-    friend bool detect_voronoi_edge_intersecting_input_segment(const VD &voronoi_diagram, const std::vector<Segment> &segments);
 };
 
 } // namespace Slic3r::Arachne

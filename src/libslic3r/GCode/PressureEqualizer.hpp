@@ -1,14 +1,8 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas
-///|/ Copyright (c) SuperSlicer 2023 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GCode_PressureEqualizer_hpp_
 #define slic3r_GCode_PressureEqualizer_hpp_
 
 #include "../libslic3r.h"
 #include "../PrintConfig.hpp"
-#include "../ExtrusionRole.hpp"
 
 #include <queue>
 
@@ -70,7 +64,7 @@ private:
         float positive;
         float negative;
     };
-    ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(GCodeExtrusionRole::Count)];
+    ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(ExtrusionRole::erCount)];
     float                           m_max_volumetric_extrusion_rate_slope_positive;
     float                           m_max_volumetric_extrusion_rate_slope_negative;
 
@@ -82,12 +76,13 @@ private:
     // X,Y,Z,E,F
     float                           m_current_pos[5];
     size_t                          m_current_extruder;
-    std::vector<std::string>        m_extruder_names;
-    GCodeExtrusionRole              m_current_extrusion_role;
+    ExtrusionRole     m_current_extrusion_role;
     bool                            m_retracted;
     bool                            m_use_relative_e_distances;
-    int                             m_gcode_precision_xyz = 3;
-    int                             m_gcode_precision_e = 5;
+
+	// Maximum segment length to split a long segment if the initial and the final flow rate differ.
+	// Smaller value means a smoother transition between two different flow rates.
+    float                           m_max_segment_length;
 
     // Indicate if extrude set speed block was opened using the tag ";_EXTRUDE_SET_SPEED"
     // or not (not opened, or it was closed using the tag ";_EXTRUDE_END").
@@ -132,7 +127,8 @@ private:
         float       time()          const { return dist_xyz() / feedrate(); }
         float       time_inv()      const { return feedrate() / dist_xyz(); }
         float       volumetric_correction_avg() const { 
-            float avg_correction = 0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate; 
+        // Orca: cap the correction to 0.05 - 1.00000001 to avoid zero feedrate
+            float avg_correction = std::max(0.05f,0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate); 
             assert(avg_correction > 0.f);
             assert(avg_correction <= 1.00000001f);
             return avg_correction;
@@ -157,7 +153,7 @@ private:
         // Index of the active extruder.
         size_t      extruder_id;
         // Extrusion role of this segment.
-        GCodeExtrusionRole extrusion_role;
+        ExtrusionRole extrusion_role;
 
         // Current volumetric extrusion rate.
         float       volumetric_extrusion_rate;
@@ -188,12 +184,12 @@ private:
 #endif
 
     bool process_line(const char *line, const char *line_end, GCodeLine &buf);
+    long advance_segment_beyond_small_gap(long idx_cur_pos);
     void output_gcode_line(size_t line_idx);
-    void parse_activate_extruder(const std::string&);
 
     // Go back from the current circular_buffer_pos and lower the feedtrate to decrease the slope of the extrusion rate changes.
     // Then go forward and adjust the feedrate to decrease the slope of the extrusion rate changes.
-    void adjust_volumetric_rate();
+    void adjust_volumetric_rate(size_t first_line_idx, size_t last_line_idx);
 
     // Push the text to the end of the output_buffer.
     inline void push_to_output(GCodeG1Formatter &formatter);

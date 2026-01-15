@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2017 - 2023 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_PlaceholderParser_hpp_
 #define slic3r_PlaceholderParser_hpp_
 
@@ -30,7 +25,7 @@ public:
         // between PlaceholderParser evaluations.
         std::unique_ptr<DynamicConfig>  global_config;
     };
-    
+
     PlaceholderParser(const DynamicConfig *external_config = nullptr);
     
     void clear_config() { m_config.clear(); }
@@ -76,16 +71,7 @@ public:
     // Update timestamp, year, month, day, hour, minute, second variables at m_config.
     void update_timestamp() { update_timestamp(m_config); }
 
-    // set custom variables
-    void parse_custom_variables(const ConfigOptionString& custom_variables);
-    void parse_custom_variables(const ConfigOptionStrings& filament_custom_variables);
-
-    //remove custom vars and stored config
-    void reset();
-
 private:
-    void append_custom_variables(std::map<std::string, std::vector<std::string>> name2var_array, uint16_t nb_extruders);
-
 	// config has a higher priority than external_config when looking up a symbol.
     DynamicConfig 			 m_config;
     const DynamicConfig 	*m_external_config;

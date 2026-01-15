@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Oleksandra Iushchenko @YuSanka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 
 #include "CutUtils.hpp"
 #include "Geometry.hpp"
@@ -445,6 +441,11 @@ const ModelObjectPtrs& Cut::perform_by_contour(std::vector<Part> parts, int dowe
     ModelObject* lower{ nullptr };
     if (m_attributes.has(ModelObjectCutAttribute::KeepLower)) cut_mo->clone_for_cut(&lower);
 
+    if (upper && lower) {
+        upper->name = upper->name + "_A";
+        lower->name = lower->name + "_B";
+    }
+
     const size_t cut_parts_cnt = parts.size();
     bool has_modifiers = false;
 
@@ -527,6 +528,10 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
     ModelObject* lower{ nullptr };
     cut_mo->clone_for_cut(&lower);
 
+    if (upper && lower) {
+        upper->name = upper->name + "_A";
+        lower->name = lower->name + "_B";
+    }
     const double groove_half_depth = 0.5 * double(groove.depth);
 
     Model tmp_model_for_cut = Model();

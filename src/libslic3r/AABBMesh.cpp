@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 - 2022 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "AABBMesh.hpp"
 #include <Execution/ExecutionTBB.hpp>
 
@@ -117,6 +113,8 @@ AABBMesh &AABBMesh::operator=(AABBMesh &&other) = default;
 
 AABBMesh::AABBMesh(AABBMesh &&other) = default;
 
+
+
 const std::vector<Vec3f>& AABBMesh::vertices() const
 {
     return m_tm->vertices;
@@ -128,6 +126,8 @@ const std::vector<Vec3i32>& AABBMesh::indices()  const
 {
     return m_tm->indices;
 }
+
+
 
 const Vec3f& AABBMesh::vertices(size_t idx) const
 {
@@ -146,6 +146,7 @@ Vec3d AABBMesh::normal_by_face_id(int face_id) const {
 
     return its_unnormalized_normal(*m_tm, face_id).cast<double>().normalized();
 }
+
 
 AABBMesh::hit_result
 AABBMesh::query_ray_hit(const Vec3d &s, const Vec3d &dir) const

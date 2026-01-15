@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "OrganicSupport.hpp"
 #include "SupportCommon.hpp"
 
@@ -14,7 +10,7 @@
 
 #include <cassert>
 
-#include <oneapi/tbb/parallel_for.h>
+#include <tbb/parallel_for.h>
 
 #define TREE_SUPPORT_ORGANIC_NUDGE_NEW 1
 
@@ -342,7 +338,7 @@ void smooth_trees_inside_influence_areas(Branch &root, bool is_root)
             int64_t min_dist = std::numeric_limits<int64_t>::max();
             Point   min_proj_scaled;
             for (const Polygon& polygon : el.influence_area) {
-                Point proj_scaled = polygon.point_projection(new_pos_scaled).first;
+                Point proj_scaled = polygon.point_projection(new_pos_scaled);
                 if (int64_t dist = (proj_scaled - new_pos_scaled).cast<int64_t>().squaredNorm(); dist < min_dist) {
                     min_dist = dist;
                     min_proj_scaled = proj_scaled;

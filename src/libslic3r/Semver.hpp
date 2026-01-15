@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2018 - 2022 Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Semver_hpp_
 #define slic3r_Semver_hpp_
 
@@ -9,7 +5,7 @@
 #include <cstring>
 #include <ostream>
 #include <stdexcept>
-#include <optional>
+#include <boost/optional.hpp>
 #include <boost/format.hpp>
 
 #include "semver/semver.h"
@@ -24,36 +20,27 @@ class Semver
 public:
 	struct Major { const int i;  Major(int i) : i(i) {} };
 	struct Minor { const int i;  Minor(int i) : i(i) {} };
-	struct Counter { const int i;  Counter(int i) : i(i) {} }; //for SuSi
 	struct Patch { const int i;  Patch(int i) : i(i) {} };
 
 	Semver() : ver(semver_zero()) {}
 
-	Semver(int major, int minor, int counter, int patch,
-		std::optional<std::string> metadata, std::optional<std::string> prerelease)
+	Semver(int major, int minor, int patch,
+		boost::optional<const std::string&> metadata, boost::optional<const std::string&> prerelease)
 		: ver(semver_zero())
 	{
-		semver_free(&ver);
-		ver.counter_size = 4;
-		ver.counters = new int[4];
-		ver.counters[0] = major;
-		ver.counters[1] = minor;
-		ver.counters[2] = counter;
-		ver.counters[3] = patch;
+		ver.major = major;
+		ver.minor = minor;
+		ver.patch = patch;
 		set_metadata(metadata);
 		set_prerelease(prerelease);
 	}
 
-	Semver(int major, int minor, int counter, int patch, const char *metadata = nullptr, const char *prerelease = nullptr)
+	Semver(int major, int minor, int patch, const char *metadata = nullptr, const char *prerelease = nullptr)
 		: ver(semver_zero())
 	{
-		semver_free(&ver);
-		ver.counter_size = 4;
-		ver.counters = new int[4];
-		ver.counters[0] = major;
-		ver.counters[1] = minor;
-		ver.counters[2] = counter;
-		ver.counters[3] = patch;
+		ver.major = major;
+		ver.minor = minor;
+		ver.patch = patch;
 		set_metadata(metadata);
 		set_prerelease(prerelease);
 	}
@@ -68,13 +55,13 @@ public:
 		parsed->ver = semver_zero();
 	}
 
-	static std::optional<Semver> parse(const std::string &str)
+	static boost::optional<Semver> parse(const std::string &str)
 	{
 		semver_t ver = semver_zero();
 		if (::semver_parse(str.c_str(), &ver) == 0) {
 			return Semver(ver);
 		} else {
-			return std::nullopt;
+			return boost::none;
 		}
 	}
 
@@ -82,16 +69,13 @@ public:
 
 	static const Semver inf()
 	{
-		semver_t ver = { new int[4], 4, nullptr, nullptr };
-		for (int i = 0; i < ver.counter_size; i++)
-			ver.counters[i] = std::numeric_limits<int>::max();
+		static semver_t ver = { std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), std::numeric_limits<int>::max(), nullptr, nullptr };
 		return Semver(ver);
 	}
 
 	static const Semver invalid()
 	{
-		semver_t ver = { new int[1], 1, nullptr, nullptr };
-		ver.counters[0] = -1;
+		static semver_t ver = { -1, 0, 0, nullptr, nullptr };
 		return Semver(ver);
 	}
 
@@ -115,24 +99,18 @@ public:
 
 	~Semver() { ::semver_free(&ver); }
 
-    // const accessors
-    int maj() const { return ver.counter_size > 0 ? ver.counters[0] : 0; }
-    int min() const { return ver.counter_size > 1 ? ver.counters[1] : 0; }
-    int counter() const { return ver.counter_size > 2 ? ver.counters[2] : 0; }
-    int patch() const { return ver.counter_size > 3 ? ver.counters[3] : 0; }
-    bool has_maj() const { return ver.counter_size > 0; }
-    bool has_min() const { return ver.counter_size > 1; }
-    bool has_counter() const { return ver.counter_size > 2; }
-    bool has_patch() const { return ver.counter_size > 3; }
-    const char *prerelease() const { return ver.prerelease; }
-    const char *metadata() const { return ver.metadata; }
+	// const accessors
+	int 		maj()        const { return ver.major; }
+	int 		min()        const { return ver.minor; }
+	int 		patch() 	 const { return ver.patch; }
+	const char*	prerelease() const { return ver.prerelease; }
+	const char*	metadata() 	 const { return ver.metadata; }
 	
 	// Setters
-	void set_maj(int maj) { if(ver.counter_size > 0) ver.counters[0] = maj; }
-	void set_min(int min) { if (ver.counter_size > 1) ver.counters[1] = min; }
-	void set_counter(int count) { if (ver.counter_size > 2) ver.counters[2] = count; }
-	void set_patch(int patch) { if (ver.counter_size > 3) ver.counters[3] = patch; }
-    void set_metadata(std::optional<std::string> meta)
+	void set_maj(int maj) { ver.major = maj; }
+	void set_min(int min) { ver.minor = min; }
+	void set_patch(int patch) { ver.patch = patch; }
+    void set_metadata(boost::optional<const std::string &> meta)
     {
         if (ver.metadata)
             free(ver.metadata);
@@ -144,7 +122,7 @@ public:
             free(ver.metadata);
         ver.metadata = meta ? strdup(meta) : nullptr;
     }
-    void set_prerelease(std::optional<std::string> pre)
+    void set_prerelease(boost::optional<const std::string &> pre)
     {
         if (ver.prerelease)
             free(ver.prerelease);
@@ -173,40 +151,39 @@ public:
 
 	// Conversion
 	std::string to_string() const {
+		//BBS: version format
 		std::string res;
-		for (int i = 0; i < ver.counter_size; i++) {
-			res += ( (i==0 ? boost::format("%1%") : boost::format(".%1%")) % ver.counters[i]).str();
-		}
+		int patch_1 = ver.patch/100;
+		int patch_2 = ver.patch%100;
+		res = (boost::format("%1%.%2%.%3%.%4%") % ver.major % ver.minor % patch_1 % patch_2).str();
+
 		if (ver.prerelease != nullptr) { res += '-'; res += ver.prerelease; }
 		if (ver.metadata != nullptr)   { res += '+'; res += ver.metadata; }
 		return res;
 	}
+	std::string to_string_sf() const {
+		//BBS: version format
+		std::string res;
+		res = (boost::format("%1%.%2%.%3%") % ver.major % ver.minor % ver.patch).str();
+
+		if (ver.prerelease != nullptr) { res += '-'; res += ver.prerelease; }
+		if (ver.metadata != nullptr) { res += '+'; res += ver.metadata; }
+		return res;
+	}
 
 	// Arithmetics
-	//Semver& operator+=(const Major &b) { set_maj(maj()+b.i); return *this; }
-	//Semver& operator+=(const Minor &b) { set_min(min() + b.i); return *this; }
-	//Semver& operator+=(const Counter& b) { set_counter(counter() + b.i); return *this; }
-	//Semver& operator+=(const Patch &b) { set_patch(patch() + b.i); return *this; }
-	//Semver& operator-=(const Major& b) { set_maj(maj() - b.i); return *this; }
-	//Semver& operator-=(const Minor& b) { set_min(min() - b.i); return *this; }
-	//Semver& operator-=(const Counter& b) { set_counter(counter() - b.i); return *this; }
-	//Semver& operator-=(const Patch& b) { set_patch(patch() - b.i); return *this; }
-	//Semver operator+(const Major &b) const { Semver res(*this); return res += b; }
-	//Semver operator+(const Minor &b) const { Semver res(*this); return res += b; }
-	//Semver operator+(const Counter& b) const { Semver res(*this); return res += b; }
-	//Semver operator+(const Patch& b) const { Semver res(*this); return res += b; }
-	//Semver operator-(const Major &b) const { Semver res(*this); return res -= b; }
-	//Semver operator-(const Minor &b) const { Semver res(*this); return res -= b; }
-	//Semver operator-(const Counter& b) const { Semver res(*this); return res -= b; }
-	//Semver operator-(const Patch& b) const { Semver res(*this); return res -= b; }
-
-    Semver no_patch() const{
-        Semver no_patch_ver = *this;
-        no_patch_ver.set_patch(0);
-        no_patch_ver.set_prerelease(std::nullopt);
-        no_patch_ver.set_metadata(std::nullopt);
-        return no_patch_ver;
-    }
+	Semver& operator+=(const Major &b) { ver.major += b.i; return *this; }
+	Semver& operator+=(const Minor &b) { ver.minor += b.i; return *this; }
+	Semver& operator+=(const Patch &b) { ver.patch += b.i; return *this; }
+	Semver& operator-=(const Major &b) { ver.major -= b.i; return *this; }
+	Semver& operator-=(const Minor &b) { ver.minor -= b.i; return *this; }
+	Semver& operator-=(const Patch &b) { ver.patch -= b.i; return *this; }
+	Semver operator+(const Major &b) const { Semver res(*this); return res += b; }
+	Semver operator+(const Minor &b) const { Semver res(*this); return res += b; }
+	Semver operator+(const Patch &b) const { Semver res(*this); return res += b; }
+	Semver operator-(const Major &b) const { Semver res(*this); return res -= b; }
+	Semver operator-(const Minor &b) const { Semver res(*this); return res -= b; }
+	Semver operator-(const Patch &b) const { Semver res(*this); return res -= b; }
 
 	// Stream output
 	friend std::ostream& operator<<(std::ostream& os, const Semver &self) {
@@ -218,7 +195,7 @@ private:
 
 	Semver(semver_t ver) : ver(ver) {}
 
-	static semver_t semver_zero() { return { nullptr, 0, nullptr, nullptr }; }
+	static semver_t semver_zero() { return { 0, 0, 0, nullptr, nullptr }; }
 	static char * strdup(const std::string &str) { return ::semver_strdup(str.data()); }
 };
 

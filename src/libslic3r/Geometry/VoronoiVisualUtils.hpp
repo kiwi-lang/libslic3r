@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2020 - 2021 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include <stack>
 
 #include <libslic3r/Geometry.hpp>

@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportCommon_hpp_
 #define slic3r_SupportCommon_hpp_
 
@@ -25,7 +21,7 @@ void remove_bridges_from_contacts(
     const Layer         &lower_layer,
     const LayerRegion   &layerm,
     float                fw, 
-    ExPolygons          &contact_polygons);
+    Polygons            &contact_polygons);
 
 // Turn some of the base layers into base interface layers.
 // For soluble interfaces with non-soluble bases, print maximum two first interface layers with the base

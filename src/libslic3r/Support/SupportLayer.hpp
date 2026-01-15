@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportLayer_hpp_
 #define slic3r_SupportLayer_hpp_
 
@@ -98,8 +94,6 @@ public:
 	coordf_t bottom_z { 0 };
 	// Layer height in unscaled coordinates.
 	coordf_t height { 0 };
-    // Layer height for collision in unscaled coordinates.
-    coordf_t height_block { 0 };
 	// Index of a PrintObject layer_id supported by this layer. This will be set for top contact layers.
 	// If this is not a contact layer, it will be set to size_t(-1).
 	size_t 	 idx_object_layer_above { size_t(-1) };
@@ -108,8 +102,6 @@ public:
 	size_t 	 idx_object_layer_below { size_t(-1) };
 	// Use a bridging flow when printing this support layer.
 	bool 	 bridging { false };
-	// support resolution
-	coord_t resolution = SCALED_EPSILON;
 
 	// Polygons to be filled by the support pattern.
 	Polygons polygons;
