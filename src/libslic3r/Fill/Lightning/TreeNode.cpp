@@ -3,13 +3,8 @@
 
 #include "TreeNode.hpp"
 
-#include <algorithm>
-#include <limits>
-#include <cassert>
-#include <cstdlib>
-
 #include "../../Geometry.hpp"
-#include "libslic3r/Line.hpp"
+#include "../../Thread.hpp"
 
 namespace Slic3r::FillLightning {
 
@@ -295,7 +290,7 @@ Node::RectilinearJunction Node::straighten(
             auto junction_moving_dir_len = coord_t(junction_moving_dir.norm());
             if (junction_moving_dir_len > junction_magnitude)
             {
-                junction_moving_dir = junction_moving_dir * junction_magnitude / junction_moving_dir_len;
+                junction_moving_dir = junction_moving_dir * ((double)junction_magnitude / (double)junction_moving_dir_len);
             }
             m_p += junction_moving_dir;
         }
@@ -356,7 +351,7 @@ void Node::convertToPolylines(size_t long_line_idx, Polylines &output) const
         output[long_line_idx].points.push_back(m_p);
         return;
     }
-    size_t first_child_idx = rand() % m_children.size();
+    size_t first_child_idx = safe_rand(int(m_children.size() - 1)); // int safe_rand(int max) is inclusive
     m_children[first_child_idx]->convertToPolylines(long_line_idx, output);
     output[long_line_idx].points.push_back(m_p);
 

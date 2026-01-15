@@ -3,28 +3,16 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "QuadricEdgeCollapse.hpp"
-
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
 #include <tuple>
 #include <optional>
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <iterator>
-#include <limits>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cstddef>
-
 #include "MutablePriorityQueue.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/libslic3r.h"
+#include <oneapi/tbb/parallel_for.h>
 
 using namespace Slic3r;
+
+#ifndef NDEBUG
+//    #define EXPENSIVE_DEBUG_CHECKS
+#endif // NDEBUG
 
 // only private namespace not neccessary be in .hpp
 namespace QuadricEdgeCollapse {
@@ -279,13 +267,13 @@ void Slic3r::its_quadric_edge_collapse(
             is_flipped(new_vertex0, ti0, ti1, v_info1, t_infos, e_infos, its)) {
             // try other triangle's edge
             Vec3d errors = calculate_3errors(t0, its.vertices, v_infos);
-            Vec3i ord = (errors[0] < errors[1]) ? 
+            Vec3i32 ord = (errors[0] < errors[1]) ? 
                 ((errors[0] < errors[2])? 
-                    ((errors[1] < errors[2]) ? Vec3i(0, 1, 2) : Vec3i(0, 2, 1)) :
-                    Vec3i(2, 0, 1)):
+                    ((errors[1] < errors[2]) ? Vec3i32(0, 1, 2) : Vec3i32(0, 2, 1)) :
+                    Vec3i32(2, 0, 1)):
                 ((errors[1] < errors[2])?
-                    ((errors[0] < errors[2]) ? Vec3i(1, 0, 2) : Vec3i(1, 2, 0)) :
-                    Vec3i(2, 1, 0));
+                    ((errors[0] < errors[2]) ? Vec3i32(1, 0, 2) : Vec3i32(1, 2, 0)) :
+                    Vec3i32(2, 1, 0));
             if (t_info0.min_index == ord[0]) { 
                 t_info0.min_index = ord[1];
                 e.value = errors[t_info0.min_index];
@@ -904,7 +892,7 @@ void QuadricEdgeCollapse::store_surround(const char *obj_filename,
         triangles.insert(ti);
         if (item.second == 0) continue;
 
-        const Vec3i &t = its.indices[ti];
+        const Vec3i32 &t = its.indices[ti];
         for (size_t i = 0; i < 3; ++i) {
             const auto &v_info = v_infos[t[i]];
             for (size_t d = 0; d < v_info.count; ++d) {

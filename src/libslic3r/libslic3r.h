@@ -16,33 +16,23 @@
 
 #include "libslic3r_version.h"
 
-// Profiles for the alpha are stored into the PrusaSlicer-alpha directory to not mix with the current release.
-#define SLIC3R_APP_FULL_NAME SLIC3R_APP_KEY
-// #define SLIC3R_APP_FULL_NAME SLIC3R_APP_KEY "-alpha"
-// #define SLIC3R_APP_FULL_NAME SLIC3R_APP_KEY "-beta"
-
-
-
-#define GCODEVIEWER_APP_NAME "PrusaSlicer G-code Viewer"
-#define GCODEVIEWER_APP_KEY  "PrusaSlicerGcodeViewer"
-
 // this needs to be included early for MSVC (listing it in Build.PL is not enough)
-#include <memory>
 #include <array>
 #include <algorithm>
-#include <ostream>
-#include <iostream>
-#include <math.h>
-#include <queue>
-#include <sstream>
-#include <cstdio>
-#include <stdint.h>
-#include <stdarg.h>
-#include <vector>
 #include <cassert>
 #include <cmath>
-#include <type_traits>
+#include <cstdarg>
+#include <cstdint>
+#include <cstdio>
+#include <ostream>
+#include <iostream>
+#include <memory>
 #include <optional>
+#include <queue>
+#include <set>
+#include <sstream>
+#include <type_traits>
+#include <vector>
 
 #ifdef _WIN32
 // On MSVC, std::deque degenerates to a list of pointers, which defeats its purpose of reducing allocator load and memory fragmentation.
@@ -54,42 +44,61 @@
 #include "Technologies.hpp"
 #include "Semver.hpp"
 
-using coord_t = 
-#if 1
-// Saves around 32% RAM after slicing step, 6.7% after G-code export (tested on PrusaSlicer 2.2.0 final).
-    int32_t;
+
+#define COORD_64B 1
+#ifndef COORD_64B
+    // Saves around 32% RAM after slicing step, 6.7% after G-code export (tested on PrusaSlicer 2.2.0 final).
+using coord_t = int32_t;
+//using coor2 = int64_t;
+using coordf_t = double;
+using distf_t = double;
+using distsqrf_t = double;
+// to optimise computation by staying in int
+using lengthsqr_t = int64_t;
 #else
     //FIXME At least FillRectilinear2 and std::boost Voronoi require coord_t to be 32bit.
-    int64_t;
+using coord_t = int64_t;
+//using Coord2 = double;
+using coordf_t = double;
+using distf_t = double;
+using distsqrf_t = double;
+using lengthsqr_t = uint64_t;
 #endif
 
-using coordf_t = double;
+
+inline uint16_t operator "" _u(unsigned long long value)
+{
+    return static_cast<uint16_t>(value);
+}
+
+
+// Scaling factor for a conversion from coord_t to coordf_t: 10e-6
+// This scaling generates a following fixed point representation with for a 32bit integer:
+// 0..4294mm with 1nm resolution
+// int32_t fits an interval of (-2147.48mm, +2147.48mm)
+// with int64_t we don't have to worry anymore about the size of the int.
+static constexpr double SCALING_FACTOR   = 0.000001;
+static constexpr double UNSCALING_FACTOR = 1000000; // 1 / SCALING_FACTOR; <- linux has some problem compiling this constexpr
 
 //FIXME This epsilon value is used for many non-related purposes:
 // For a threshold of a squared Euclidean distance,
 // for a trheshold in a difference of radians,
 // for a threshold of a cross product of two non-normalized vectors etc.
 static constexpr double EPSILON = 1e-4;
-// Scaling factor for a conversion from coord_t to coordf_t: 10e-6
-// This scaling generates a following fixed point representation with for a 32bit integer:
-// 0..4294mm with 1nm resolution
-// int32_t fits an interval of (-2147.48mm, +2147.48mm)
-// with int64_t we don't have to worry anymore about the size of the int.
-static constexpr double SCALING_FACTOR = 0.000001;
-static constexpr double PI = 3.141592653589793238;
+static constexpr coord_t SCALED_EPSILON = 100; // coord_t(EPSILON/ SCALING_FACTOR); <- linux has some problem compiling this constexpr
+
+//for creating circles (for brim_ear)
+#define POLY_SIDES 24
+#define PI 3.141592653589793238
 // When extruding a closed loop, the loop is interrupted and shortened a bit to reduce the seam.
-static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15;
+//static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15; now seam_gap
 // Maximum perimeter length for the loop to apply the small perimeter speed. 
-#define                 SMALL_PERIMETER_LENGTH  ((6.5 / SCALING_FACTOR) * 2 * PI)
+//#define                 SMALL_PERIMETER_LENGTH  ((6.5 / SCALING_FACTOR) * 2 * PI)
 static constexpr double INSET_OVERLAP_TOLERANCE = 0.4;
-// 3mm ring around the top / bottom / bridging areas.
-//FIXME This is quite a lot.
-static constexpr double EXTERNAL_INFILL_MARGIN = 3.;
 //FIXME Better to use an inline function with an explicit return type.
 //inline coord_t scale_(coordf_t v) { return coord_t(floor(v / SCALING_FACTOR + 0.5f)); }
-#define scale_(val) ((val) / SCALING_FACTOR)
+#define scale_(val) (coord_t)((val) / SCALING_FACTOR)
 
-#define SCALED_EPSILON scale_(EPSILON)
 
 #ifndef UNUSED
 #define UNUSED(x) (void)(x)
@@ -115,7 +124,28 @@ using deque =
 template<typename T, typename Q>
 inline T unscale(Q v) { return T(v) * T(SCALING_FACTOR); }
 
-constexpr size_t MAX_NUMBER_OF_BEDS = 9;
+constexpr double   unscaled(coord_t v) { return double(v) * SCALING_FACTOR; }
+constexpr double   unscaled(coordf_t v) { return v * SCALING_FACTOR; }
+constexpr coord_t  scale_t(double v) { return coord_t(v * UNSCALING_FACTOR); }
+constexpr coordf_t scale_d(double v) { return coordf_t(v * UNSCALING_FACTOR); }
+
+inline distsqrf_t coord_sqr(coord_t length) { return distf_t(length) * distf_t(length); }
+
+// lossy square (works only for 2^38 length), by dividing by 128 to remove epsilon (and a bit more)
+#ifndef COORD_64B
+inline lengthsqr_t coord_int_sqr(coord_t length) { 
+    return lengthsqr_t(length) * lengthsqr_t(length);
+}
+#else
+static constexpr uint8_t SQUARE_BIT_REDUCTION  = 7;
+inline lengthsqr_t coord_int_sqr(coord_t length) { 
+    assert(length < std::pow(2,38));
+    // remove epsilon (/128)
+    // as we're computing the norm, we can use abs 
+    lengthsqr_t temp = std::abs(length) >> SQUARE_BIT_REDUCTION;
+    return temp * temp;
+}
+#endif
 
 enum Axis { 
 	X=0,
@@ -128,7 +158,6 @@ enum Axis {
 	UNKNOWN_AXIS = NUM_AXES,
 	NUM_AXES_WITH_UNKNOWN,
 };
-
 template <typename T, typename Alloc, typename Alloc2>
 inline void append(std::vector<T, Alloc> &dest, const std::vector<T, Alloc2> &src)
 {
@@ -139,7 +168,16 @@ inline void append(std::vector<T, Alloc> &dest, const std::vector<T, Alloc2> &sr
 }
 
 template <typename T, typename Alloc>
-inline void append(std::vector<T, Alloc> &dest, std::vector<T, Alloc> &&src)
+inline void append(std::set<T, Alloc>& dest, const std::set<T, Alloc>& src)
+{
+    if (dest.empty())
+        dest = src;
+    else
+        dest.insert(src.begin(), src.end());
+}
+
+template <typename T, typename Alloc>
+inline void append(std::vector<T, Alloc>& dest, std::vector<T, Alloc>&& src)
 {
     if (dest.empty())
         dest = std::move(src);
@@ -148,8 +186,8 @@ inline void append(std::vector<T, Alloc> &dest, std::vector<T, Alloc> &&src)
             std::make_move_iterator(src.begin()),
             std::make_move_iterator(src.end()));
         // Release memory of the source contour now.
-        src.clear();
-        src.shrink_to_fit();
+    src.clear();
+    src.shrink_to_fit();
     }
 }
 
@@ -277,8 +315,13 @@ template<typename ContainerType, typename ValueType> inline bool one_of(const Va
 template<typename T> inline bool one_of(const T& v, const std::initializer_list<T>& il)
     { return contains(il, v); }
 
-template<typename T>
-constexpr inline T sqr(T x)
+//template<typename T>
+//constexpr inline T sqr(T x)
+constexpr inline double sqr(double x)
+{
+    return x * x;
+}
+constexpr inline float sqr(float x)
 {
     return x * x;
 }
@@ -489,10 +532,64 @@ Fn for_each_in_tuple(Fn fn, Tup &&tup)
     return fn;
 }
 
-template<typename T>
-inline bool is_in_range(const T &value, const T &low, const T &high) {
-    return low <= value && value <= high;
+#if _DEBUG
+// to check when & how an object is created/copied/deleted
+class Intrumentation {
+public:
+    //SlicingParameters() = default;
+    Intrumentation() {
+        std::cout << "create" << "\n";
+    }
+    Intrumentation(const Intrumentation& sp) {
+        std::cout << "copy" << "\n";
+    }
+    virtual ~Intrumentation() {
+        std::cout << "destroy" << "\n";
+    }
+    Intrumentation& operator=(const Intrumentation& sp) {
+        std::cout << "assign" << "\n";
+        return *this;
+    }
+    Intrumentation(Intrumentation&& sp) {
+        std::cout << "move-copy" << "\n";
+    }
+    Intrumentation& operator=(Intrumentation&& sp) {
+        std::cout << "move-assign" << "\n";
+        return *this;
+    }
+};
+#endif
+
+
+// from PrintConfig.hpp, but also used in extrusionentity & polyline
+enum class ArcFittingType {
+    Disabled,
+    Bambu,
+    ArcWelder
+};
+
+#ifdef _DEBUG
+#define _DEBUGINFO
+    #define release_assert(X) assert(X)
+#else
+#ifdef _RELWITHDEBINFO
+#define _DEBUGINFO
+inline void release_assert(bool valid) {
+    // superslicer variant -> don't hard crash on assert (nightly). For debug, use the slic3r variant (dev branch).
+    // if (!valid)
+        // throw new std::exception();
 }
+#endif
+//error if release, as it's purely a debug thingy that need to be cleaned
+#endif
+
+#ifdef _DEBUGINFO
+#ifdef WIN32
+#define UNOPTIMIZE __pragma(optimize("", off))
+#else
+//#define UNOPTIMIZE _Pragma("optimize(\"\", off)")
+#endif
+#endif
 
 } // namespace Slic3r
 

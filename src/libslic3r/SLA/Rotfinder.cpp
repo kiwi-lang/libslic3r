@@ -2,29 +2,22 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <libslic3r/SLA/Rotfinder.hpp>
-#include <libslic3r/Execution/ExecutionTBB.hpp>
-#include <libslic3r/Optimize/BruteforceOptimizer.hpp>
-#include <libslic3r/Geometry.hpp>
 #include <limits>
-#include <thread>
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <iterator>
-#include <vector>
-#include <cinttypes>
-#include <cstdlib>
 
+#include <libslic3r/SLA/Rotfinder.hpp>
+
+#include <libslic3r/Execution/ExecutionTBB.hpp>
+#include <libslic3r/Execution/ExecutionSeq.hpp>
+
+#include <libslic3r/Optimize/BruteforceOptimizer.hpp>
+#include <libslic3r/Optimize/NLoptOptimizer.hpp>
+
+#include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/PrintConfig.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Execution/Execution.hpp"
-#include "libslic3r/Model.hpp"
-#include "libslic3r/Optimize/Optimizer.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/TriangleMesh.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include <libslic3r/Geometry.hpp>
+
+#include <thread>
 
 namespace Slic3r { namespace sla {
 
@@ -206,8 +199,8 @@ XYRotation from_transform3f(const Transform3f &tr)
 
 inline bool is_on_floor(const SLAPrintObjectConfig &cfg)
 {
-    auto opt_elevation = cfg.support_object_elevation.getFloat();
-    auto opt_padaround = cfg.pad_around_object.getBool();
+    auto opt_elevation = cfg.support_object_elevation.get_float();
+    auto opt_padaround = cfg.pad_around_object.get_bool();
 
     return opt_elevation < EPSILON || opt_padaround;
 }

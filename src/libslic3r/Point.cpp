@@ -11,13 +11,11 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "Point.hpp"
-
-#include <algorithm>
-#include <cstring>
-
+#include "Line.hpp"
+#include "MultiPoint.hpp"
 #include "Int128.hpp"
 #include "BoundingBox.hpp"
-#include "libslic3r/libslic3r.h"
+#include <algorithm>
 
 namespace Slic3r {
 
@@ -129,17 +127,17 @@ BoundingBoxf get_extents(const std::vector<Vec2d> &pts)
 
 int nearest_point_index(const Points &points, const Point &pt)
 {
-    int64_t distance = std::numeric_limits<int64_t>::max();
+    lengthsqr_t distance = std::numeric_limits<lengthsqr_t>::max();
     int     idx      = -1;
 
     for (const Point &pt2 : points) {
         // If the X distance of the candidate is > than the total distance of the
         // best previous candidate, we know we don't want it.
-        int64_t d = sqr<int64_t>(pt2.x() - pt.x());
+        lengthsqr_t d = coord_int_sqr(pt2.x() - pt.x());
         if (d < distance) {
             // If the Y distance of the candidate is > than the total distance of the
             // best previous candidate, we know we don't want it.
-            d += sqr<int64_t>(pt2.y() - pt.y());
+            d += coord_int_sqr(pt2.y() - pt.y());
             if (d < distance) {
                 idx      = &pt2 - points.data();
                 distance = d;
@@ -148,6 +146,49 @@ int nearest_point_index(const Points &points, const Point &pt)
     }
 
     return idx;
+}
+
+// TODO: replace by line_alg::distance_to_squared(Line(prev, it->point), point, &proj)
+Point Point::projection_onto(const Point &line_a, const Point &line_b) const
+{
+    if (line_a == line_b)
+        return line_a;
+
+    /*
+        (Ported from VisiLibity by Karl J. Obermeyer)
+        The projection of point_temp onto the line determined by
+        line_segment_temp can be represented as an affine combination
+        expressed in the form projection of
+        Point = theta*line_segment_temp.first + (1.0-theta)*line_segment_temp.second.
+        If theta is outside the interval [0,1], then one of the Line_Segment's endpoints
+        must be closest to calling Point.
+    */
+    double lx    = (double) (line_b(0) - line_a(0));
+    double ly    = (double) (line_b(1) - line_a(1));
+    double theta = ((double) (line_b(0) - (*this) (0)) * lx + (double) (line_b(1) - (*this) (1)) * ly) /
+                   (sqr(lx) + sqr(ly));
+
+    if (0.0 <= theta && theta <= 1.0) {
+        Vec2d float_vec = theta * line_a.cast<coordf_t>() + (1.0 - theta) * line_b.cast<coordf_t>();
+        // Point(double, double) round the values
+        return Point(float_vec.x(), float_vec.y());
+    }
+
+    // Else pick closest endpoint.
+    return ((line_a - *this).cast<double>().squaredNorm() < (line_b - *this).cast<double>().squaredNorm()) ? line_a : line_b;
+}
+
+/// This method create a new point on the line defined by this and p2.
+/// The new point is place at position defined by |p2-this| * percent, starting from this
+/// \param percent the proportion of the segment length to place the point
+/// \param p2 the second point, forming a segment with this
+/// \return a new point, == this if percent is 0 and == p2 if percent is 1
+Point Point::interpolate(const double percent, const Point &p2) const
+{
+    Point p_out;
+    p_out.x() = coord_t(this->x()*(1 - percent) + p2.x()*(percent));
+    p_out.y() = coord_t(this->y()*(1 - percent) + p2.y()*(percent));
+    return p_out;
 }
 
 std::ostream& operator<<(std::ostream &stm, const Vec2d &pointf)

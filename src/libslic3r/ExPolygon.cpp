@@ -10,23 +10,20 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <ankerl/unordered_dense.h>
-#include <algorithm>
-#include <cassert>
-#include <cmath>
-#include <limits>
-#include <cstring>
-
 #include "BoundingBox.hpp"
 #include "ExPolygon.hpp"
+
+#include "Exception.hpp"
 #include "Geometry/MedialAxis.hpp"
 #include "Polygon.hpp"
 #include "Line.hpp"
 #include "ClipperUtils.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
+#include "SVG.hpp"
+#include <algorithm>
+#include <cassert>
+#include <list>
+
+#include <ankerl/unordered_dense.h>
 
 namespace Slic3r {
 
@@ -142,15 +139,15 @@ bool ExPolygon::on_boundary(const Point &point, double eps) const
 Point ExPolygon::point_projection(const Point &point) const
 {
     if (this->holes.empty()) {
-        return this->contour.point_projection(point);
+        return this->contour.point_projection(point).first;
     } else {
         double dist_min2 = std::numeric_limits<double>::max();
-        Point  closest_pt_min;
-        for (size_t i = 0; i < this->num_contours(); ++ i) {
-            Point closest_pt = this->contour_or_hole(i).point_projection(point);
+        Point closest_pt_min;
+        for (size_t i = 0; i < this->num_contours(); ++i) {
+            Point closest_pt = this->contour_or_hole(i).point_projection(point).first;
             double d2 = (closest_pt - point).cast<double>().squaredNorm();
             if (d2 < dist_min2) {
-                dist_min2      = d2;
+                dist_min2 = d2;
                 closest_pt_min = closest_pt;
             }
         }
@@ -186,161 +183,213 @@ bool ExPolygon::overlaps(const ExPolygon &other) const
            other.contains(this->contour.points.front());
 }
 
-void ExPolygon::simplify_p(double tolerance, Polygons* polygons) const
-{
-    Polygons pp = this->simplify_p(tolerance);
-    polygons->insert(polygons->end(), pp.begin(), pp.end());
+// @Deprecated. please don't use it. a simplification can cut a thin isma.
+void ExPolygon::douglas_peucker(coord_t tolerance) {
+    assert(false); //deprecated
+    bool need_union = false;
+    assert(this->contour.size() < 3 || this->contour.is_counter_clockwise());
+    for(auto &hole :this->holes) assert(hole.is_clockwise());
+    this->contour.douglas_peucker(tolerance);
+    for(auto &hole :this->holes) assert(hole.is_clockwise());
+    if (this->contour.size() < 3) {
+        this->clear();
+    } else {
+        if (!this->contour.is_counter_clockwise()) {
+            this->contour.reverse();
+            need_union = true;
+        }
+        for(auto &hole :this->holes) assert(hole.is_clockwise());
+        for (size_t i_hole = 0; i_hole < this->holes.size(); ++i_hole) {
+            assert(this->holes[i_hole].size() < 3 || this->holes[i_hole].is_clockwise());
+            this->holes[i_hole].douglas_peucker(tolerance);
+            if (this->holes[i_hole].size() < 3) {
+                this->holes.erase(this->holes.begin() + i_hole);
+                --i_hole;
+            } else {
+                if (!this->holes[i_hole].is_clockwise()) {
+                    this->holes[i_hole].reverse();
+                    need_union = true;
+                }
+            }
+        }
+    }
+    // do we need to do an union_ex() here? -> it's possible that the new holes cut into the new perimeter, so yes... even if unlikely
+    
+    assert_valid();
+    if (need_union) {
+        ExPolygons expolygons = union_ex(expolygons);
+        assert(expolygons.size() == 1);
+        if (expolygons.size() > 0) {
+            //TODO choose biggest
+            *this = expolygons.front();
+            this->douglas_peucker(tolerance);
+        } else {
+            clear();
+        }
+
+    }
+    assert_valid();
 }
 
-Polygons ExPolygon::simplify_p(double tolerance) const
+//FIXME: dangerous, please not use it (polygons may be not ordered correctly).
+void
+ExPolygon::simplify_p(coord_t tolerance, Polygons &polygons) const
 {
+    Polygons pp = this->simplify_p(tolerance);
+    polygons.insert(polygons.end(), pp.begin(), pp.end());
+}
+
+Polygons
+ExPolygon::simplify_p(coord_t tolerance) const
+{
+    //Polygons pp;
+    //pp.reserve(this->holes.size() + 1);
+    //// contour
+    //{
+    //    Polygon p = this->contour;
+    //    p.points.push_back(p.points.front());
+    //    p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+    //    p.points.pop_back();
+    //    pp.emplace_back(std::move(p));
+    //}
+    //// holes
+    //for (Polygon p : this->holes) {
+    //    p.points.push_back(p.points.front());
+    //    p.points = MultiPoint::douglas_peucker(p.points, tolerance);
+    //    p.points.pop_back();
+    //    pp.emplace_back(std::move(p));
+    //}
+    //return simplify_polygons(pp);
     Polygons pp;
     pp.reserve(this->holes.size() + 1);
     // contour
     {
         Polygon p = this->contour;
-        p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
-        p.points.pop_back();
-        pp.emplace_back(std::move(p));
+        assert(p.is_counter_clockwise());
+        p.douglas_peucker(tolerance);
+        if (!p.is_counter_clockwise()) {
+            p.reverse();
+        }
+        if (p.size() >= 2) {
+            pp.push_back(std::move(p));
+        }
     }
+    if(pp.empty()) return pp;
     // holes
-    for (Polygon p : this->holes) {
-        p.points.push_back(p.points.front());
-        p.points = MultiPoint::douglas_peucker(p.points, tolerance);
-        p.points.pop_back();
-        pp.emplace_back(std::move(p));
+    for (Polygon polygon : this->holes) {
+        Polygon oldp = polygon;
+        assert(oldp.is_clockwise());
+        polygon.douglas_peucker(tolerance);
+#ifdef _DEBUG
+        if (polygon.size() > 2 && polygon.is_counter_clockwise()) {
+            static int aodfjiaqsdz = 0;
+            std::stringstream stri;
+            stri <<  "_hourglass_" << (aodfjiaqsdz++) << ".svg";
+            SVG svg(stri.str());
+            oldp.scale(1000,1000);
+            polygon.scale(1000,1000);
+            svg.draw(oldp, "grey");
+            svg.draw(oldp.split_at_first_point(), "orange", scale_t(0.05));
+            svg.draw(polygon, "black");
+            svg.draw(polygon.split_at_first_point(), "red", scale_t(0.04));
+            Polygons polys = union_(Polygons{oldp});
+            svg.draw(to_polylines(polys), "cyan", scale_t(0.032));
+            polys = union_(Polygons{polygon});
+            svg.draw(to_polylines(polys), "blue", scale_t(0.025));
+            svg.Close();
+            assert(false);
+        }
+#endif
+        // if polygon began to be counnter-clockwise, then it means that the fucked up part of the
+        //   hourglass is the only part / dominant part left
+        if (polygon.size() > 2 && polygon.is_clockwise()) {
+            // size == 2 => triangle
+            pp.push_back(std::move(polygon));
+        }
     }
+    // union
     return simplify_polygons(pp);
 }
 
-ExPolygons ExPolygon::simplify(double tolerance) const
+ExPolygons
+ExPolygon::simplify(coord_t tolerance) const
 {
-    return union_ex(this->simplify_p(tolerance));
+    //return union_ex(this->simplify_p(tolerance));
+    ExPolygons expolys;
+    this->simplify(tolerance, expolys);
+    return expolys;
 }
 
-void ExPolygon::simplify(double tolerance, ExPolygons* expolygons) const
+void
+ExPolygon::simplify(coord_t tolerance, ExPolygons &expolygons) const
 {
-    append(*expolygons, this->simplify(tolerance));
-}
-
-void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines* polylines) const
-{
-    // init helper object
-    Slic3r::Geometry::MedialAxis ma(min_width, max_width, *this);
+    //append(*expolygons, this->simplify(tolerance));
     
-    // compute the Voronoi diagram and extract medial axis polylines
-    ThickPolylines pp;
-    ma.build(&pp);
-    
-    /*
-    SVG svg("medial_axis.svg");
-    svg.draw(*this);
-    svg.draw(pp);
-    svg.Close();
-    */
-    
-    /* Find the maximum width returned; we're going to use this for validating and 
-       filtering the output segments. */
-    double max_w = 0;
-    for (ThickPolylines::const_iterator it = pp.begin(); it != pp.end(); ++it)
-        max_w = fmaxf(max_w, *std::max_element(it->width.begin(), it->width.end()));
-    
-    /* Loop through all returned polylines in order to extend their endpoints to the 
-       expolygon boundaries */
-    bool removed = false;
-    for (size_t i = 0; i < pp.size(); ++i) {
-        ThickPolyline& polyline = pp[i];
-        
-        // extend initial and final segments of each polyline if they're actual endpoints
-        /* We assign new endpoints to temporary variables because in case of a single-line
-           polyline, after we extend the start point it will be caught by the intersection()
-           call, so we keep the inner point until we perform the second intersection() as well */
-        Point new_front = polyline.points.front();
-        Point new_back  = polyline.points.back();
-        if (polyline.endpoints.first && !this->on_boundary(new_front, SCALED_EPSILON)) {
-            Vec2d p1 = polyline.points.front().cast<double>();
-            Vec2d p2 = polyline.points[1].cast<double>();
-            // prevent the line from touching on the other side, otherwise intersection() might return that solution
-            if (polyline.points.size() == 2)
-                p2 = (p1 + p2) * 0.5;
-            // Extend the start of the segment.
-            p1 -= (p2 - p1).normalized() * max_width;
-            this->contour.intersection(Line(p1.cast<coord_t>(), p2.cast<coord_t>()), &new_front);
+    bool need_union = false;
+    assert(this->contour.size() < 3 || this->contour.is_counter_clockwise());
+    for(auto &hole :this->holes) assert(hole.is_clockwise());
+    expolygons.push_back(*this);
+    expolygons.back().contour.douglas_peucker(tolerance);
+    for(auto &hole :expolygons.back().holes) assert(hole.is_clockwise());
+    if (expolygons.back().contour.size() < 3) {
+        expolygons.pop_back();
+    } else {
+        if (!expolygons.back().contour.is_counter_clockwise()) {
+            expolygons.back().contour.reverse();
+            need_union = true;
         }
-        if (polyline.endpoints.second && !this->on_boundary(new_back, SCALED_EPSILON)) {
-            Vec2d p1 = (polyline.points.end() - 2)->cast<double>();
-            Vec2d p2 = polyline.points.back().cast<double>();
-            // prevent the line from touching on the other side, otherwise intersection() might return that solution
-            if (polyline.points.size() == 2)
-                p1 = (p1 + p2) * 0.5;
-            // Extend the start of the segment.
-            p2 += (p2 - p1).normalized() * max_width;
-            this->contour.intersection(Line(p1.cast<coord_t>(), p2.cast<coord_t>()), &new_back);
-        }
-        polyline.points.front() = new_front;
-        polyline.points.back()  = new_back;
-        
-        /*  remove too short polylines
-            (we can't do this check before endpoints extension and clipping because we don't
-            know how long will the endpoints be extended since it depends on polygon thickness
-            which is variable - extension will be <= max_width/2 on each side)  */
-        if ((polyline.endpoints.first || polyline.endpoints.second)
-            && polyline.length() < max_w*2) {
-            pp.erase(pp.begin() + i);
-            --i;
-            removed = true;
-            continue;
-        }
-    }
-    
-    /*  If we removed any short polylines we now try to connect consecutive polylines
-        in order to allow loop detection. Note that this algorithm is greedier than 
-        MedialAxis::process_edge_neighbors() as it will connect random pairs of 
-        polylines even when more than two start from the same point. This has no 
-        drawbacks since we optimize later using nearest-neighbor which would do the 
-        same, but should we use a more sophisticated optimization algorithm we should
-        not connect polylines when more than two meet.  */
-    if (removed) {
-        for (size_t i = 0; i < pp.size(); ++i) {
-            ThickPolyline& polyline = pp[i];
-            if (polyline.endpoints.first && polyline.endpoints.second) continue; // optimization
-            
-            // find another polyline starting here
-            for (size_t j = i+1; j < pp.size(); ++j) {
-                ThickPolyline& other = pp[j];
-                if (polyline.last_point() == other.last_point()) {
-                    other.reverse();
-                } else if (polyline.first_point() == other.last_point()) {
-                    polyline.reverse();
-                    other.reverse();
-                } else if (polyline.first_point() == other.first_point()) {
-                    polyline.reverse();
-                } else if (polyline.last_point() != other.first_point()) {
-                    continue;
+        for(auto &hole :expolygons.back().holes) assert(hole.is_clockwise());
+        for (size_t i_hole = 0; i_hole < expolygons.back().holes.size(); ++i_hole) {
+            assert(expolygons.back().holes[i_hole].size() < 3 || expolygons.back().holes[i_hole].is_clockwise());
+            expolygons.back().holes[i_hole].douglas_peucker(tolerance);
+            if (expolygons.back().holes[i_hole].size() < 3) {
+                expolygons.back().holes.erase(expolygons.back().holes.begin() + i_hole);
+                --i_hole;
+            } else {
+                if (!expolygons.back().holes[i_hole].is_clockwise()) {
+                    expolygons.back().holes[i_hole].reverse();
+                    need_union = true;
                 }
-                
-                polyline.points.insert(polyline.points.end(), other.points.begin() + 1, other.points.end());
-                polyline.width.insert(polyline.width.end(), other.width.begin(), other.width.end());
-                polyline.endpoints.second = other.endpoints.second;
-                assert(polyline.width.size() == polyline.points.size()*2 - 2);
-                
-                pp.erase(pp.begin() + j);
-                j = i;  // restart search from i+1
             }
         }
     }
+    // do we need to do an union_ex() here? -> it's possible that the new holes cut into the new perimeter, so yes... even if unlikely
     
-    polylines->insert(polylines->end(), pp.begin(), pp.end());
+    Slic3r::assert_valid(expolygons);
+    if (need_union) {
+        expolygons = union_ex(expolygons);
+        ensure_valid(expolygons, tolerance);
+    }
+    Slic3r::assert_valid(expolygons);
 }
 
-void ExPolygon::medial_axis(double min_width, double max_width, Polylines* polylines) const
+/// remove point that are at SCALED_EPSILON * 2 distance.
+//simplier than simplify
+void ExPolygon::remove_point_too_close(const coord_t tolerance) {
+    this->contour.remove_point_too_close(tolerance);
+    if (contour.empty()) {
+        this->holes.clear();
+    }
+    for (Polygon &hole : this->holes) {
+        hole.remove_point_too_close(tolerance);
+    }
+    //note: may need a union_ex(), as contour may now cross a hole.
+}
+
+void ExPolygon::medial_axis(double min_width, double max_width, ThickPolylines &polylines) const
 {
     ThickPolylines tp;
-    this->medial_axis(min_width, max_width, &tp);
-    polylines->reserve(polylines->size() + tp.size());
+    Geometry::MedialAxis{ *this, coord_t(max_width), coord_t(min_width), coord_t(max_width / 2.0) }.build(tp);
+    polylines.insert(polylines.end(), tp.begin(), tp.end());
+}
+
+void ExPolygon::medial_axis(double min_width, double max_width, Polylines &polylines) const
+{
+    ThickPolylines tp;
+    this->medial_axis(min_width, max_width, tp);
+    polylines.reserve(polylines.size() + tp.size());
     for (auto &pl : tp)
-        polylines->emplace_back(pl.points);
+        polylines.emplace_back(pl.points);
 }
 
 Lines ExPolygon::lines() const
@@ -352,6 +401,28 @@ Lines ExPolygon::lines() const
     }
     return lines;
 }
+
+#ifdef _DEBUG
+// to create a cpp multipoint to create test units.
+std::string ExPolygon::to_debug_string()
+{
+    std::string ret("ExPolygon expoly(");
+    ret += contour.to_debug_string();
+    if (!holes.empty() && !holes.front().empty()) {
+        ret += std::string(",");
+        ret += holes.front().to_debug_string();
+    } else {
+        ret += std::string(",{}");
+    }
+    ret += std::string(");\n");
+    for (size_t i = 1; i < holes.size(); ++i) {
+        ret += std::string("expoly.holes.push_back(Polygon");
+        ret += holes.front().to_debug_string();
+        ret += std::string(")\n");
+    }
+    return ret;
+}
+#endif
 
 // Do expolygons match? If they match, they must have the same topology,
 // however their contours may be rotated.
@@ -447,11 +518,17 @@ bool has_duplicate_points(const ExPolygons &expolys)
 #else
     // Detect duplicates by inserting into an ankerl::unordered_dense hash set, which is is around 1/4 faster than qsort.
     struct PointHash {
-        uint64_t operator()(const Point &p) const noexcept {
+        uint64_t operator()(const Point &p) const noexcept
+        {
+#ifdef COORD_64B
+            return ankerl::unordered_dense::detail::wyhash::hash(p.x()) 
+                + ankerl::unordered_dense::detail::wyhash::hash(p.y());
+#else
             uint64_t h;
             static_assert(sizeof(h) == sizeof(p));
             memcpy(&h, &p, sizeof(p));
             return ankerl::unordered_dense::detail::wyhash::hash(h);
+#endif
         }
     };
     ankerl::unordered_dense::set<Point, PointHash> allpts;
@@ -472,6 +549,107 @@ bool has_duplicate_points(const ExPolygons &expolys)
     return false;
 #endif
 }
+
+void ensure_valid(ExPolygons &expolygons, coord_t resolution /*= SCALED_EPSILON*/) {
+    expolygons_simplify(expolygons, resolution);
+}
+
+
+void expolygons_simplify(ExPolygons &expolygons, coord_t resolution) {
+    for (ExPolygon &poly : expolygons)
+        for (auto &hole : poly.holes)
+            assert(hole.is_clockwise());
+    bool need_union = false;
+    for (size_t i = 0; i < expolygons.size(); ++i) {
+        assert(expolygons[i].contour.size() < 3 || expolygons[i].contour.is_counter_clockwise());
+        for (auto &hole : expolygons[i].holes)
+            assert(hole.is_clockwise());
+        expolygons[i].contour.douglas_peucker(resolution);
+        for (auto &hole : expolygons[i].holes)
+            assert(hole.is_clockwise());
+        if (expolygons[i].contour.size() < 3) {
+            expolygons.erase(expolygons.begin() + i);
+            --i;
+        } else {
+            if (!expolygons[i].contour.is_counter_clockwise()) {
+                expolygons[i].contour.reverse();
+                need_union = true;
+            }
+            for (auto &hole : expolygons[i].holes)
+                assert(hole.is_clockwise());
+            for (size_t i_hole = 0; i_hole < expolygons[i].holes.size(); ++i_hole) {
+                assert(expolygons[i].holes[i_hole].size() < 3 || expolygons[i].holes[i_hole].is_clockwise());
+                expolygons[i].holes[i_hole].douglas_peucker(resolution);
+                if (expolygons[i].holes[i_hole].size() < 3) {
+                    expolygons[i].holes.erase(expolygons[i].holes.begin() + i_hole);
+                    --i_hole;
+                } else {
+                    if (!expolygons[i].holes[i_hole].is_clockwise()) {
+                        expolygons[i].holes[i_hole].reverse();
+                        need_union = true;
+                    }
+                }
+            }
+        }
+        // do we need to do an union_ex() here? -> it's possible that the new holes cut into the new perimeter, so
+        // yes... even if unlikely
+    }
+    // assert_valid(expolygons);
+    for (size_t i = 0; i < expolygons.size(); ++i) {
+        for (size_t i_pt = 1; i_pt < expolygons[i].contour.size(); ++i_pt) {
+            if (expolygons[i].contour.points[i_pt - 1].coincides_with_epsilon(expolygons[i].contour.points[i_pt])) {
+                expolygons[i].contour.douglas_peucker(resolution);
+                //auto it_end = douglas_peucker_old<coord_t>(expolygons[i].contour.points.begin(),
+                //                                                   expolygons[i].contour.points.end(),
+                //                                                   expolygons[i].contour.points.begin(),
+                //                                                   double(resolution),
+                //                                           [](const Point &p) { return p; });
+                //expolygons[i].contour.points.resize(std::distance(expolygons[i].contour.points.begin(), it_end));
+            }
+        }
+    }
+    if (need_union) {
+        expolygons = union_ex(expolygons);
+        ensure_valid(expolygons, resolution);
+    }
+    assert_valid(expolygons);
+}
+
+ExPolygons ensure_valid(ExPolygons &&expolygons, coord_t resolution /*= SCALED_EPSILON*/)
+{
+    ensure_valid(expolygons, resolution);
+    return std::move(expolygons);
+}
+
+
+
+ExPolygons ensure_valid(coord_t resolution, ExPolygons &&expolygons) {
+    return ensure_valid(std::move(expolygons), resolution);
+}
+
+void remove_point_too_close(ExPolygons &expolygons, coord_t resolution) {
+    for (ExPolygon &expoly : expolygons) {
+        expoly.remove_point_too_close(resolution);
+    }
+}
+
+//note: test if a ExPolygons remove_point_too_close(ExPolygons expolygons) isn't more efficient, if the copy elision can be performed.
+// ie test if b = remove_point_too_close(offset(a, 1)) (by rvalue and by value) copies more/less than
+// b = offset(a, 1); remove_point_too_close(b)
+ExPolygons remove_point_too_close(ExPolygons &&expolygons, coord_t resolution) {
+    for (ExPolygon &expoly : expolygons) {
+        expoly.remove_point_too_close(resolution);
+    }
+    return std::move(expolygons);
+}
+
+#ifdef _DEBUGINFO
+void assert_valid(const ExPolygons &expolygons) {
+    for (const ExPolygon &expolygon : expolygons) {
+        expolygon.assert_valid();
+    }
+}
+#endif
 
 bool remove_same_neighbor(ExPolygons &expolygons)
 {

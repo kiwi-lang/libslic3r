@@ -5,24 +5,22 @@
 #ifndef slic3r_SupportParameters_hpp_
 #define slic3r_SupportParameters_hpp_
 
-#include <math.h>
-#include <stddef.h>
-#include <cmath>
-#include <cstddef>
-
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Flow.hpp"
+#include "../libslic3r.h"
+#include "../Flow.hpp"
+#include "../PrintConfig.hpp"
 
 namespace Slic3r {
 
 class PrintObject;
-
-enum InfillPattern : int;
+enum InfillPattern : uint8_t;
 
 namespace FFFSupport {
 
 struct SupportParameters {
 	SupportParameters(const PrintObject &object);
+
+    //PrintRegionConfig for filling.
+    PrintRegionConfig      default_region_config;
 
     // Both top / bottom contacts and interfaces are soluble.
     bool                    soluble_interface;
@@ -57,18 +55,27 @@ struct SupportParameters {
 	Flow 					support_material_interface_flow;
 	// Flow at the bottom interfaces and contacts.
 	Flow 					support_material_bottom_interface_flow;
+	// Flow at raft layers.
+	Flow    				raft_flow;
 	// Flow at raft inteface & contact layers.
 	Flow    				raft_interface_flow;
+	// ratio for raft bridges flow.
+	float    				raft_bridge_flow_ratio;
 	// Is merging of regions allowed? Could the interface & base support regions be printed with the same extruder?
 	bool 					can_merge_support_regions;
 
-    coordf_t 				support_layer_height_min;
+    double                  support_layer_height_min; //unscaled
 //	coordf_t				support_layer_height_max;
 
 	coordf_t				gap_xy;
 
+    //scaled, resolution for supports
+    coord_t                 resolution = SCALED_EPSILON;
+
     float    				base_angle;
-    float    				interface_angle;
+	double                  base_angle_height; // unscaled
+    float                   interface_angle;
+    float                   interface_angle_incr;
 
     // Density of the top / bottom interface and contact layers.
     coordf_t 				interface_density;
@@ -84,7 +91,8 @@ struct SupportParameters {
     // Pattern of the raft interface and contact layers.
     InfillPattern           raft_interface_fill_pattern;
     // Pattern of the contact layers.
-    InfillPattern 			contact_fill_pattern;
+    InfillPattern 			contact_top_fill_pattern;
+    InfillPattern 			contact_bottom_fill_pattern;
     // Shall the sparse (base) layers be printed with a single perimeter line (sheath) for robustness?
     bool                    with_sheath;
     // Branches of organic supports with area larger than this threshold will be extruded with double lines.
@@ -93,9 +101,6 @@ struct SupportParameters {
     float 					raft_angle_1st_layer;
     float 					raft_angle_base;
     float 					raft_angle_interface;
-
-    // Print closed loop clockwise when it is equal to true.
-    bool                    prefer_clockwise_movements;
 
     // Produce a raft interface angle for a given SupportLayer::interface_id()
     float 					raft_interface_angle(size_t interface_id) const 

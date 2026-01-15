@@ -5,11 +5,8 @@
 #ifndef slic3r_NormalUtils_hpp_
 #define slic3r_NormalUtils_hpp_
 
-#include <vector>
-
 #include "Point.hpp"
 #include "Model.hpp"
-#include "admesh/stl.h"
 
 namespace Slic3r {
 
@@ -68,7 +65,7 @@ public:
     /// <param name="vertices">vertices data</param>
     /// <returns>Angle [in radian]</returns>
     static float indice_angle(int                            i,
-                              const Vec3crd &                indice,
+                              const Vec3i32                 &indice,
                               const std::vector<stl_vertex> &vertices);
 };
 

@@ -2,9 +2,6 @@
 #define slic3r_GCode_SmoothPath_hpp_
 
 #include <ankerl/unordered_dense.h>
-#include <optional>
-#include <vector>
-#include <tcbspan/span.hpp>
 
 #include "../ExtrusionEntity.hpp"
 #include "../Geometry/ArcWelder.hpp"
@@ -12,8 +9,6 @@
 namespace Slic3r {
 
 class ExtrusionEntityCollection;
-class Point;
-class Polyline;
 
 namespace GCode {
 
@@ -38,8 +33,6 @@ std::optional<Point> sample_path_point_at_distance_from_end(const SmoothPath &pa
 // rather discard such a degenerate segment.
 double clip_end(SmoothPath &path, double distance, double min_point_distance_threshold);
 
-void reverse(SmoothPath &path);
-
 class SmoothPathCache
 {
 public:
@@ -60,7 +53,7 @@ public:
     Geometry::ArcWelder::Path        resolve_or_fit(const ExtrusionPath &path, bool reverse, double resolution) const;
 
     // Look-up a smooth representation of path in the cache. If it does not exist, produce a simplified polyline.
-    SmoothPath                       resolve_or_fit(tcb::span<const ExtrusionPath> paths, bool reverse, double resolution) const;
+    SmoothPath                       resolve_or_fit(const ExtrusionPaths &paths, bool reverse, double resolution) const;
     SmoothPath                       resolve_or_fit(const ExtrusionMultiPath &path, bool reverse, double resolution) const;
 
     // Look-up a smooth representation of path in the cache. If it does not exist, produce a simplified polyline.
@@ -79,7 +72,7 @@ public:
     SmoothPathCaches() = delete;
     SmoothPathCaches(const SmoothPathCache &global, const SmoothPathCache &layer_local) : 
         m_global(&global), m_layer_local(&layer_local) {}
-    SmoothPathCaches& operator=(const SmoothPathCaches &rhs)
+    SmoothPathCaches operator=(const SmoothPathCaches &rhs)
         { m_global = rhs.m_global; m_layer_local = rhs.m_layer_local; return *this; }
 
     const SmoothPathCache& global() const { return *m_global; }

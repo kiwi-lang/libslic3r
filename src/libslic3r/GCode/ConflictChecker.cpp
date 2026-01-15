@@ -5,23 +5,12 @@
 ///|/
 #include "ConflictChecker.hpp"
 
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/concurrent_vector.h>
 #include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/concurrent_vector.h>
+
 #include <map>
 #include <functional>
-#include <cmath>
-#include <cstdint>
-#include <algorithm>
-#include <cassert>
-#include <cfloat>
-#include <cstdlib>
-
-#include "libslic3r/ExtrusionEntityCollection.hpp"
-#include "libslic3r/GCode/WipeTower.hpp"
-#include "libslic3r/Geometry.hpp"
-#include "libslic3r/LayerRegion.hpp"
-#include "libslic3r/libslic3r.h"
+#include <atomic>
 
 namespace Slic3r {
 
@@ -133,38 +122,53 @@ static std::vector<ExtrusionPaths> getFakeExtrusionPathsFromWipeTower(const Wipe
                 if (hh >= z_and_depth_pairs[i].first && hh < z_and_depth_pairs[i+1].first)
                     break;
             d = scale_(z_and_depth_pairs[i].second);
-            minCorner = {0.f, -d/2 + scale_(z_and_depth_pairs.front().second/2.f)};
+            minCorner = {0, -d/2 + scale_t(z_and_depth_pairs.front().second/2.f)};
             maxCorner = { minCorner.x() + w, minCorner.y() + d };
         }
 
 
-        ExtrusionPath path({ minCorner, {maxCorner.x(), minCorner.y()}, maxCorner, {minCorner.x(), maxCorner.y()}, minCorner },
+        ExtrusionPath path(ArcPolyline(Points{minCorner, {maxCorner.x(), minCorner.y()}, maxCorner, {minCorner.x(), maxCorner.y()}, minCorner }),
             ExtrusionAttributes{ ExtrusionRole::WipeTower, ExtrusionFlow{ 0.0, 0.0, lh } });
         paths.push_back({ path });
 
         // We added the border, now add several parallel lines so we can detect an object that is fully inside the tower.
         // For now, simply use fixed spacing of 3mm.
         for (coord_t y=minCorner.y()+scale_(3.); y<maxCorner.y(); y+=scale_(3.)) {
-            path.polyline = { {minCorner.x(), y}, {maxCorner.x(), y} };
+            path.polyline = ArcPolyline(Points{ {minCorner.x(), y}, {maxCorner.x(), y} });
+            assert(path.polyline.is_valid());
             paths.back().emplace_back(path);
         }
 
         // And of course the stabilization cone and its base...
         if (cone_base_R > 0.) {
             path.polyline.clear();
-            double r = cone_base_R * (1 - hh/height);
-            for (double alpha=0; alpha<2.01*M_PI; alpha+=2*M_PI/20.)
-                path.polyline.points.emplace_back(Point::new_scale(width/2. + r * std::cos(alpha)/cone_scale_x, depth/2. + r * std::sin(alpha)));
-            paths.back().emplace_back(path);
+            double r = cone_base_R * (1 - hh / height);
+            for (double alpha = 0; alpha < 2.01 * M_PI; alpha += 2 * M_PI / 20.) {
+                Point point = Point::new_scale(width / 2. + r * std::cos(alpha) / cone_scale_x,
+                                               depth / 2. + r * std::sin(alpha));
+                if (path.polyline.empty() || !point.coincides_with_epsilon(path.polyline.front())) {
+                    path.polyline.append(std::move(point));
+                }
+            }
+            if (path.size() > 1) {
+                assert(path.polyline.is_valid());
+                paths.back().emplace_back(path);
+            }
             if (hh == 0.f) { // Cone brim.
-                for (float bw=wtd.brim_width; bw>0.f; bw-=3.f) {
+                for (float bw = wtd.brim_width; bw > 0.f; bw -= 3.f) {
                     path.polyline.clear();
-                    for (double alpha=0; alpha<2.01*M_PI; alpha+=2*M_PI/20.) // see load_wipe_tower_preview, where the same is a bit clearer
-                        path.polyline.points.emplace_back(Point::new_scale(
-                            width/2. + cone_base_R * std::cos(alpha)/cone_scale_x * (1. + cone_scale_x*bw/cone_base_R),
-                            depth/2. + cone_base_R * std::sin(alpha) * (1. + bw/cone_base_R))
-                        );
-                    paths.back().emplace_back(path);
+                    for (double alpha = 0; alpha < 2.01 * M_PI; alpha += 2 * M_PI / 20.) {
+                        // see load_wipe_tower_preview, where the same is a bit clearer
+                        Point point = Point::new_scale(width / 2. + cone_base_R * std::cos(alpha) / cone_scale_x * (1. + cone_scale_x * bw / cone_base_R),
+                                                       depth / 2. + cone_base_R * std::sin(alpha) * (1. + bw / cone_base_R));
+                        if (path.polyline.empty() || !point.coincides_with_epsilon(path.polyline.front())) {
+                            path.polyline.append(std::move(point));
+                        }
+                    }
+                    if (path.size() > 1) {
+                        assert(path.polyline.is_valid());
+                        paths.back().emplace_back(path);
+                    }
                 }
             }
         }
@@ -180,7 +184,7 @@ static std::vector<ExtrusionPaths> getFakeExtrusionPathsFromWipeTower(const Wipe
     for (ExtrusionPaths& ps : paths) {
         for (ExtrusionPath& p : ps) {
             p.polyline.rotate(Geometry::deg2rad(wtd.rotation_angle));
-            p.polyline.translate(scale_(wtd.position.x()), scale_(wtd.position.y()));
+            p.polyline.translate(Vector(scale_t(wtd.position.x()), scale_t(wtd.position.y())));
         }
     }
 
@@ -240,7 +244,7 @@ LineWithIDs LinesBucketQueue::getCurLines() const
 void getExtrusionPathsFromEntity(const ExtrusionEntityCollection *entity, ExtrusionPaths &paths)
 {
     std::function<void(const ExtrusionEntityCollection *, ExtrusionPaths &)> getExtrusionPathImpl = [&](const ExtrusionEntityCollection *entity, ExtrusionPaths &paths) {
-        for (auto entityPtr : entity->entities) {
+        for (auto entityPtr : entity->entities()) {
             if (const ExtrusionEntityCollection *collection = dynamic_cast<ExtrusionEntityCollection *>(entityPtr)) {
                 getExtrusionPathImpl(collection, paths);
             } else if (const ExtrusionPath *path = dynamic_cast<ExtrusionPath *>(entityPtr)) {
@@ -306,12 +310,7 @@ ConflictComputeOpt ConflictChecker::find_inter_of_lines(const LineWithIDs &lines
 ConflictResultOpt ConflictChecker::find_inter_of_lines_in_diff_objs(SpanOfConstPtrs<PrintObject> objs,
                                                                     const WipeTowerData& wipe_tower_data) // find the first intersection point of lines in different objects
 {
-    // There is no conflict when there are no objects,
-    // or when there is only one object with a single instance and the wipe tower is disabled.
-    if (objs.empty()
-     || (objs.size() == 1 && objs.front()->instances().size() == 1 && wipe_tower_data.z_and_depth_pairs.empty())) {
-        return {};
-    }
+    if (objs.empty() || (objs.size() == 1 && objs.front()->instances().size() == 1 && wipe_tower_data.number_of_toolchanges == 0)) { return {}; }
 
     // The code ported from BS uses void* to identify objects...
     // Let's use the address of this variable to represent the wipe tower.
@@ -346,36 +345,38 @@ ConflictResultOpt ConflictChecker::find_inter_of_lines_in_diff_objs(SpanOfConstP
     }
 
     bool                                   find = false;
-    tbb::concurrent_vector<std::pair<ConflictComputeResult,double>> conflict;
+    tbb::concurrent_vector<std::tuple<ConflictComputeResult, double, int>> conflict;
 
     tbb::parallel_for(tbb::blocked_range<size_t>(0, layersLines.size()), [&](tbb::blocked_range<size_t> range) {
         for (size_t i = range.begin(); i < range.end(); i++) {
             auto interRes = find_inter_of_lines(layersLines[i]);
             if (interRes.has_value()) {
                 find = true;
-                conflict.emplace_back(*interRes, heights[i]);
+                conflict.emplace_back(*interRes, heights[i], i);
                 break;
             }
         }
     });
 
     if (find) {
-        std::sort(conflict.begin(), conflict.end(), [](const std::pair<ConflictComputeResult, double>& i1, const std::pair<ConflictComputeResult, double>& i2) {
-            return i1.second < i2.second;
+        std::sort(conflict.begin(), conflict.end(), [](const std::tuple<ConflictComputeResult, double, int>& i1, const std::tuple<ConflictComputeResult, double, int>& i2) {
+            return std::get<1>(i1) < std::get<1>(i2);
         });
 
-        const void *ptr1           = conflictQueue.idToObjsPtr(conflict[0].first._obj1);
-        const void *ptr2           = conflictQueue.idToObjsPtr(conflict[0].first._obj2);
-        double      conflictHeight = conflict[0].second;
+        auto &[ccr, conflict_height, conflict_layer_id] = conflict[0];
+        const void *ptr1           = conflictQueue.idToObjsPtr(ccr._obj1);
+        const void *ptr2           = conflictQueue.idToObjsPtr(ccr._obj2);
         if (ptr1 == &wtptr || ptr2 == &wtptr) {
             assert(! wipe_tower_data.z_and_depth_pairs.empty());
             if (ptr2 == &wtptr) { std::swap(ptr1, ptr2); }
+            assert(ptr2 != &wtptr);
+            if (ptr2 == &wtptr) { return {}; }
             const PrintObject *obj2 = reinterpret_cast<const PrintObject *>(ptr2);
-            return std::make_optional<ConflictResult>("WipeTower", obj2->model_object()->name, conflictHeight, nullptr, ptr2);
+            return std::make_optional<ConflictResult>("WipeTower", obj2->model_object()->name, conflict_height, nullptr, ptr2, conflict_layer_id);
         }
         const PrintObject *obj1 = reinterpret_cast<const PrintObject *>(ptr1);
         const PrintObject *obj2 = reinterpret_cast<const PrintObject *>(ptr2);
-        return std::make_optional<ConflictResult>(obj1->model_object()->name, obj2->model_object()->name, conflictHeight, ptr1, ptr2);
+        return std::make_optional<ConflictResult>(obj1->model_object()->name, obj2->model_object()->name, conflict_height, ptr1, ptr2, conflict_layer_id);
     } else
         return {};
 }

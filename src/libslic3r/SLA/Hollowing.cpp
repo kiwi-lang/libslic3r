@@ -2,6 +2,12 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
+#include <functional>
+#include <optional>
+#include <numeric>
+#include <unordered_set>
+#include <random>
+
 #include <libslic3r/OpenVDBUtils.hpp>
 #include <libslic3r/TriangleMesh.hpp>
 #include <libslic3r/TriangleMeshSlicer.hpp>
@@ -9,32 +15,19 @@
 #include <libslic3r/AABBTreeIndirect.hpp>
 #include <libslic3r/AABBMesh.hpp>
 #include <libslic3r/ClipperUtils.hpp>
+#include <libslic3r/QuadricEdgeCollapse.hpp>
+#include <libslic3r/SLA/SupportTreeMesher.hpp>
 #include <libslic3r/Execution/ExecutionSeq.hpp>
 #include <libslic3r/Model.hpp>
-#include <libslic3r/MeshBoolean.hpp>
-#include <boost/log/trivial.hpp>
-#include <libslic3r/I18N.hpp>
-#include <functional>
-#include <numeric>
-#include <unordered_set>
-#include <random>
-#include <cmath>
-#include <mutex>
-#include <string>
-#include <cassert>
-#include <cinttypes>
 
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Execution/Execution.hpp"
-#include "libslic3r/Geometry.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/SLA/JobController.hpp"
-#include "libslic3r/SLA/Pad.hpp"
+#include <libslic3r/MeshBoolean.hpp>
+
+#include <boost/log/trivial.hpp>
+
+#include <libslic3r/MTUtils.hpp>
+#include <libslic3r/I18N.hpp>
 
 namespace Slic3r {
-struct VoxelGrid;
-
 namespace sla {
 
 struct Interior {
@@ -358,7 +351,7 @@ FloatingOnly<T> get_distance(const Vec<3, T> &p, const Interior &interior)
 // part of that mesh and the vertices it consists of.
 enum { NEW_FACE = -1};
 struct DivFace {
-    Vec3i indx;
+    Vec3i32 indx;
     std::array<Vec3f, 3> verts;
     long faceid = NEW_FACE;
     long parent = NEW_FACE;
@@ -506,7 +499,7 @@ void remove_inside_triangles(indexed_triangle_set &mesh, const Interior &interio
     execution::for_each(
         exec_policy, size_t(0), faces.size(),
         [&](size_t face_idx) {
-            const Vec3i &face = faces[face_idx];
+            const Vec3i32 &face = faces[face_idx];
 
             // If the triangle is excluded, we need to keep it.
             if (is_excluded(face_idx))
@@ -528,7 +521,7 @@ void remove_inside_triangles(indexed_triangle_set &mesh, const Interior &interio
         execution::max_concurrency(exec_policy)
     );
 
-    auto new_faces = reserve_vector<Vec3i>(faces.size() +
+    auto new_faces = reserve_vector<Vec3i32>(faces.size() +
                                            mesh_mods.new_triangles.size());
 
     for (size_t face_idx = 0; face_idx < faces.size(); ++face_idx) {
@@ -602,7 +595,7 @@ struct FaceHash {
         return ret;
     }
 
-    static std::string facekey(const Vec3i &face, const std::vector<Vec3f> &vertices)
+    static std::string facekey(const Vec3i32 &face, const std::vector<Vec3f> &vertices)
     {
         // Scale to integer to avoid floating points
         std::array<Vec<3, int64_t>, 3> pts = {
@@ -623,7 +616,7 @@ struct FaceHash {
 
     FaceHash (const indexed_triangle_set &its): facehash(its.indices.size())
     {
-        for (Vec3i face : its.indices) {
+        for (Vec3i32 face : its.indices) {
             std::swap(face(0), face(2));
             facehash.insert(facekey(face, its.vertices));
         }
@@ -637,7 +630,7 @@ struct FaceHash {
 };
 
 
-static void exclude_neighbors(const Vec3i                &face,
+static void exclude_neighbors(const Vec3i32              &face,
                               std::vector<bool>          &mask,
                               const indexed_triangle_set &its,
                               const VertexFaceIndex      &index,

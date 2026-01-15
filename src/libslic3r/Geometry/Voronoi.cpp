@@ -1,13 +1,11 @@
 #include "Voronoi.hpp"
 
-#include <boost/log/trivial.hpp>
-#include <cassert>
-
 #include "libslic3r/Arachne/utils/PolygonsSegmentIndex.hpp"
 #include "libslic3r/Geometry/VoronoiUtils.hpp"
 #include "libslic3r/Geometry/VoronoiUtilsCgal.hpp"
 #include "libslic3r/MultiMaterialSegmentation.hpp"
-#include "libslic3r/Line.hpp"
+
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r::Geometry {
 
@@ -37,25 +35,21 @@ VoronoiDiagram::construct_voronoi(const SegmentIterator segment_begin, const Seg
                 BOOST_LOG_TRIVIAL(warning) << "Detected Voronoi edge intersecting input segment, input polygons will be rotated back and forth.";
             } else if (m_issue_type == IssueType::FINITE_EDGE_WITH_NON_FINITE_VERTEX) {
                 BOOST_LOG_TRIVIAL(warning) << "Detected finite Voronoi vertex with non finite vertex, input polygons will be rotated back and forth.";
-            } else if (m_issue_type == IssueType::PARABOLIC_VORONOI_EDGE_WITHOUT_FOCUS_POINT) {
-                BOOST_LOG_TRIVIAL(warning) << "Detected parabolic Voronoi edges without focus point, input polygons will be rotated back and forth.";
             } else {
                 BOOST_LOG_TRIVIAL(error) << "Detected unknown Voronoi diagram issue, input polygons will be rotated back and forth.";
             }
-
+            //note: warning, not error as there is a repair possible done by the caller.
             if (m_issue_type = try_to_repair_degenerated_voronoi_diagram(segment_begin, segment_end); m_issue_type != IssueType::NO_ISSUE_DETECTED) {
                 if (m_issue_type == IssueType::MISSING_VORONOI_VERTEX) {
-                    BOOST_LOG_TRIVIAL(error) << "Detected missing Voronoi vertex even after the rotation of input.";
+                    BOOST_LOG_TRIVIAL(warning) << "Detected missing Voronoi vertex even after the rotation of input.";
                 } else if (m_issue_type == IssueType::NON_PLANAR_VORONOI_DIAGRAM) {
-                    BOOST_LOG_TRIVIAL(error) << "Detected non-planar Voronoi diagram even after the rotation of input.";
+                    BOOST_LOG_TRIVIAL(warning) << "Detected non-planar Voronoi diagram even after the rotation of input.";
                 } else if (m_issue_type == IssueType::VORONOI_EDGE_INTERSECTING_INPUT_SEGMENT) {
-                    BOOST_LOG_TRIVIAL(error) << "Detected Voronoi edge intersecting input segment even after the rotation of input.";
+                    BOOST_LOG_TRIVIAL(warning) << "Detected Voronoi edge intersecting input segment even after the rotation of input.";
                 } else if (m_issue_type == IssueType::FINITE_EDGE_WITH_NON_FINITE_VERTEX) {
-                    BOOST_LOG_TRIVIAL(error) << "Detected finite Voronoi vertex with non finite vertex even after the rotation of input.";
-                } else if (m_issue_type == IssueType::PARABOLIC_VORONOI_EDGE_WITHOUT_FOCUS_POINT) {
-                    BOOST_LOG_TRIVIAL(error) << "Detected parabolic Voronoi edges without focus point even after the rotation of input.";
+                    BOOST_LOG_TRIVIAL(warning) << "Detected finite Voronoi vertex with non finite vertex even after the rotation of input.";
                 } else {
-                    BOOST_LOG_TRIVIAL(error) << "Detected unknown Voronoi diagram issue even after the rotation of input.";
+                    BOOST_LOG_TRIVIAL(warning) << "Detected unknown Voronoi diagram issue even after the rotation of input.";
                 }
 
                 m_state = State::REPAIR_UNSUCCESSFUL;
@@ -153,9 +147,6 @@ void VoronoiDiagram::copy_to_local(voronoi_diagram_type &voronoi_diagram) {
             new_edge.prev(&m_edges[prev_edge_idx]);
         }
     }
-
-    m_voronoi_diagram.clear();
-    m_is_modified = true;
 }
 
 template<typename SegmentIterator>
@@ -165,13 +156,19 @@ typename boost::polygon::enable_if<
     VoronoiDiagram::IssueType>::type
 VoronoiDiagram::detect_known_issues(const VoronoiDiagram &voronoi_diagram, SegmentIterator segment_begin, SegmentIterator segment_end)
 {
-    if (const IssueType edge_issue_type = detect_known_voronoi_edge_issues(voronoi_diagram); edge_issue_type != IssueType::NO_ISSUE_DETECTED) {
-        return edge_issue_type;
-    } else if (const IssueType cell_issue_type = detect_known_voronoi_cell_issues(voronoi_diagram, segment_begin, segment_end); cell_issue_type != IssueType::NO_ISSUE_DETECTED) {
-        return cell_issue_type;
-    } else if (!VoronoiUtilsCgal::is_voronoi_diagram_planar_angle(voronoi_diagram, segment_begin, segment_end)) {
-        // Detection of non-planar Voronoi diagram detects at least GH issues #8474, #8514 and #8446.
-        return IssueType::NON_PLANAR_VORONOI_DIAGRAM;
+    try {
+        if (has_finite_edge_with_non_finite_vertex(voronoi_diagram)) {
+            return IssueType::FINITE_EDGE_WITH_NON_FINITE_VERTEX;
+        } else if (const IssueType cell_issue_type = detect_known_voronoi_cell_issues(voronoi_diagram, segment_begin,
+                                                                                      segment_end);
+                   cell_issue_type != IssueType::NO_ISSUE_DETECTED) {
+            return cell_issue_type;
+        } else if (!VoronoiUtilsCgal::is_voronoi_diagram_planar_angle(voronoi_diagram, segment_begin, segment_end)) {
+            // Detection of non-planar Voronoi diagram detects at least GH issues #8474, #8514 and #8446.
+            return IssueType::NON_PLANAR_VORONOI_DIAGRAM;
+        }
+    } catch (std::exception) {
+        return IssueType::UNKNOWN;
     }
 
     return IssueType::NO_ISSUE_DETECTED;
@@ -224,20 +221,16 @@ VoronoiDiagram::detect_known_voronoi_cell_issues(const VoronoiDiagram &voronoi_d
     return IssueType::NO_ISSUE_DETECTED;
 }
 
-VoronoiDiagram::IssueType VoronoiDiagram::detect_known_voronoi_edge_issues(const VoronoiDiagram &voronoi_diagram)
+bool VoronoiDiagram::has_finite_edge_with_non_finite_vertex(const VoronoiDiagram &voronoi_diagram)
 {
     for (const voronoi_diagram_type::edge_type &edge : voronoi_diagram.edges()) {
         if (edge.is_finite()) {
             assert(edge.vertex0() != nullptr && edge.vertex1() != nullptr);
             if (edge.vertex0() == nullptr || edge.vertex1() == nullptr || !VoronoiUtils::is_finite(*edge.vertex0()) || !VoronoiUtils::is_finite(*edge.vertex1()))
-                return IssueType::FINITE_EDGE_WITH_NON_FINITE_VERTEX;
-
-            if (edge.is_curved() && !edge.cell()->contains_point() && !edge.twin()->cell()->contains_point())
-                return IssueType::PARABOLIC_VORONOI_EDGE_WITHOUT_FOCUS_POINT;
+                return true;
         }
     }
-
-    return IssueType::NO_ISSUE_DETECTED;
+    return false;
 }
 
 template<typename SegmentIterator>
@@ -331,7 +324,7 @@ VoronoiDiagram::try_to_repair_degenerated_voronoi_diagram_by_rotation(const Segm
                 }
             } else {
                 // This could happen when there is a missing Voronoi vertex even after rotation.
-                assert(cell_range.is_valid());
+                //assert(cell_range.is_valid());
             }
         }
 
@@ -357,6 +350,9 @@ VoronoiDiagram::try_to_repair_degenerated_voronoi_diagram_by_rotation(const Segm
     // We have to clear all marked vertices because some algorithms expect that all vertices have a color equal to 0.
     for (vertex_type &vertex : m_vertices)
         vertex.color(0);
+
+    m_voronoi_diagram.clear();
+    m_is_modified = true;
 
     return issue_type;
 }

@@ -4,23 +4,14 @@
 #ifndef CURAENGINE_WALLTOOLPATHS_H
 #define CURAENGINE_WALLTOOLPATHS_H
 
-#include <ankerl/unordered_dense.h>
-#include <stddef.h>
 #include <memory>
-#include <utility>
-#include <vector>
-#include <cstddef>
+
+#include <ankerl/unordered_dense.h>
 
 #include "BeadingStrategy/BeadingStrategyFactory.hpp"
 #include "utils/ExtrusionLine.hpp"
 #include "../Polygon.hpp"
 #include "../PrintConfig.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/libslic3r.h"
-
-namespace boost {
-template <class T> struct hash;
-}  // namespace boost
 
 namespace Slic3r::Arachne
 {
@@ -41,7 +32,12 @@ public:
      * \param inset_count The maximum number of parallel extrusion lines that make up the wall
      * \param wall_0_inset How far to inset the outer wall, to make it adhere better to other walls.
      */
-    WallToolPaths(const Polygons& outline, coord_t bead_width_0, coord_t bead_width_x, size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const PrintObjectConfig &print_object_config, const PrintConfig &print_config);
+    WallToolPaths(const Polygons& outline,
+        coord_t bead_spacing_0,
+        coord_t bead_width_0,
+        coord_t bead_spacing_x,
+        coord_t bead_width_x,
+        size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const PrintRegionConfig &print_region_config, const PrintConfig &print_config);
 
     /*!
      * Generates the Toolpaths
@@ -84,6 +80,15 @@ public:
     static bool removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpaths);
 
     using ExtrusionLineSet = ankerl::unordered_dense::set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>>;
+    /*!
+     * Get the order constraints of the insets when printing walls per region / hole.
+     * Each returned pair consists of adjacent wall lines where the left has an inset_idx one lower than the right.
+     *
+     * Odd walls should always go after their enclosing wall polygons.
+     *
+     * \param outer_to_inner Whether the wall polygons with a lower inset_idx should go before those with a higher one.
+     */
+    static ExtrusionLineSet getRegionOrder(const std::vector<ExtrusionLine *> &input, bool outer_to_inner);
 
 protected:
     /*!
@@ -108,8 +113,10 @@ protected:
 
 private:
     const Polygons& outline; //<! A reference to the outline polygon that is the designated area
-    coord_t bead_width_0; //<! The nominal or first extrusion line width with which libArachne generates its walls
-    coord_t bead_width_x; //<! The subsequently extrusion line width with which libArachne generates its walls if WallToolPaths was called with the nominal_bead_width Constructor this is the same as bead_width_0
+    coord_t perimeter_width_0; //<! The nominal or first extrusion line width
+    coord_t perimeter_width_x; //<! The subsequently extrusion line width
+    coord_t bead_spacing_0; //<! The nominal or first extrusion line spacing with which libArachne generates its walls
+    coord_t bead_spacing_x; //<! The subsequently extrusion line spacing with which libArachne generates its walls if WallToolPaths was called with the nominal_bead_width Constructor this is the same as bead_width_0
     size_t inset_count; //<! The maximum number of walls to generate
     coord_t wall_0_inset; //<! How far to inset the outer wall. Should only be applied when printing the actual walls, not extra infill/skin/support walls.
     coordf_t layer_height;
@@ -123,7 +130,7 @@ private:
     bool toolpaths_generated; //<! Are the toolpaths generated
     std::vector<VariableWidthLines> toolpaths; //<! The generated toolpaths
     Polygons inner_contour;  //<! The inner contour of the generated toolpaths
-    const PrintObjectConfig &print_object_config;
+    const PrintRegionConfig &print_region_config;
 };
 
 } // namespace Slic3r::Arachne

@@ -3,37 +3,19 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "SL1_SVG.hpp"
-
-#include <LocalesUtils.hpp>
-
-#include "libslic3r/SLA/RasterBase.hpp"
+#include "SLA/RasterBase.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/Format/ZipperArchiveImport.hpp"
-#include "libslic3r/Format/SL1.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/Zipper.hpp"
-#include "libslic3r/libslic3r.h"
 
 #define NANOSVG_IMPLEMENTATION
+#include "nanosvg/nanosvg.h"
+
+#include <limits>
 #include <cstdint>
 #include <algorithm>
 #include <string_view>
-#include <array>
-#include <cmath>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-#include <cstddef>
-
-#include "nanosvg/nanosvg.h"
-
-namespace Slic3r {
-class SLAPrint;
-}  // namespace Slic3r
-
 using namespace std::literals;
 
 namespace Slic3r {
@@ -215,19 +197,19 @@ public:
 
 std::unique_ptr<sla::RasterBase> SL1_SVGArchive::create_raster() const
 {
-    auto w = cfg().display_width.getFloat();
-    auto h = cfg().display_height.getFloat();
+    auto w = cfg().display_width.value;
+    auto h = cfg().display_height.value;
 
-    float precision_nm = scaled<float>(cfg().sla_output_precision.getFloat());
-    auto res_x = size_t(std::round(scaled(w) / precision_nm));
-    auto res_y = size_t(std::round(scaled(h) / precision_nm));
+    coordf_t precision_nm = scale_d(cfg().sla_output_precision.value);
+    auto res_x = size_t(std::round(scale_d(w) / precision_nm));
+    auto res_y = size_t(std::round(scale_d(h) / precision_nm));
 
     std::array<bool, 2> mirror;
 
-    mirror[X] = cfg().display_mirror_x.getBool();
-    mirror[Y] = cfg().display_mirror_y.getBool();
+    mirror[X] = cfg().display_mirror_x.value;
+    mirror[Y] = cfg().display_mirror_y.value;
 
-    auto ro = cfg().display_orientation.getInt();
+    auto ro = cfg().display_orientation.value;
     sla::RasterBase::Orientation orientation =
         ro == sla::RasterBase::roPortrait ? sla::RasterBase::roPortrait :
                                             sla::RasterBase::roLandscape;

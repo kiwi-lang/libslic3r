@@ -3,11 +3,12 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <algorithm>
-#include <vector>
-#include <unordered_map>
-#include <cstdint>
-#include <set>
+#include <cassert>
 #include <cfloat>
+#include <unordered_map>
+#include <vector>
+
+#include <png.h>
 
 #include "libslic3r.h"
 #include "ClipperUtils.hpp"
@@ -15,9 +16,6 @@
 #include "Geometry.hpp"
 #include "SVG.hpp"
 #include "PNGReadWrite.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
 
 // #define EDGE_GRID_DEBUG_OUTPUT
 
@@ -28,7 +26,18 @@
 #undef NDEBUG
 #endif
 
+
 namespace Slic3r {
+
+void EdgeGrid::Grid::create(const Polygon &polygon, coord_t resolution)
+{
+	// Collect the contours.
+	m_contours.clear();
+	if (! polygon.empty())
+		m_contours.emplace_back(polygon.points, false);
+
+	create_from_m_contours(resolution);
+}
 
 void EdgeGrid::Grid::create(const Polygons &polygons, coord_t resolution)
 {
@@ -333,8 +342,8 @@ void EdgeGrid::Grid::create_from_m_contours(coord_t resolution)
 		const Contour &contour = m_contours[visitor.i];
 		for (visitor.j = 0; visitor.j < contour.num_segments(); ++ visitor.j)
 			this->visit_cells_intersecting_line(contour.segment_start(visitor.j), contour.segment_end(visitor.j), visitor);
-	}
-}
+						}
+						}
 
 #if 0
 // Divide, round to a grid coordinate.
@@ -678,6 +687,9 @@ void EdgeGrid::Grid::calculate_sdf()
 	static int iRun = 0;
 	++ iRun;
 #endif
+#ifdef _DEBUG
+    m_signed_distance_field_computed = true;
+#endif
 
 	// 1) Initialize a signum and an unsigned vector to a zero iso surface.
 	size_t nrows = m_rows + 1;
@@ -735,11 +747,11 @@ void EdgeGrid::Grid::calculate_sdf()
 									// Set the signum depending on whether the vertex is convex or reflex.
 									int64_t det = int64_t(v_seg_prev(0)) * int64_t(v_seg(1)) - int64_t(v_seg_prev(1)) * int64_t(v_seg(0));
 									assert(det != 0);
-									d_min = dabs;
+									d_min = float(dabs);
 									// Fill in an unsigned vector towards the zero iso surface.
 									float *l = &L[(corner_r * ncols + corner_c) << 1];
-									l[0] = std::abs(v_pt(0));
-									l[1] = std::abs(v_pt(1));
+									l[0] = float(std::abs(v_pt(0)));
+									l[1] = float(std::abs(v_pt(1)));
 								#ifdef _DEBUG
 									double dabs2 = sqrt(l[0]*l[0]+l[1]*l[1]);
 									assert(std::abs(dabs-dabs2) < 1e-4 * std::max(dabs, dabs2));
@@ -758,7 +770,7 @@ void EdgeGrid::Grid::calculate_sdf()
 							double d = double(d_seg) / sqrt(double(l2_seg));
 							double dabs = std::abs(d);
 							if (dabs < d_min) {
-								d_min = dabs;
+								d_min = float(dabs);
 								// Fill in an unsigned vector towards the zero iso surface.
 								float *l = &L[(corner_r * ncols + corner_c) << 1];
 								float linv = float(d_seg) / float(l2_seg);
@@ -873,22 +885,22 @@ void EdgeGrid::Grid::calculate_sdf()
 	for (size_t r = 0; r < nrows; ++ r) {
 		if (r > 0)
 			for (size_t c = 0; c < ncols; ++ c)
-				danielsson_vstep(r, c, -int(ncols));
+				danielsson_vstep(int(r), int(c), -int(ncols));
 //				PROPAGATE_DANIELSSON_SINGLE_VSTEP3(-int(ncols), c != 0, c + 1 != ncols);
 		for (size_t c = 1; c < ncols; ++ c)
-			danielsson_hstep(r, c, -1);
+			danielsson_hstep(int(r), int(c), -1);
 		for (int c = int(ncols) - 2; c >= 0; -- c)
-			danielsson_hstep(r, c, +1);
+			danielsson_hstep(int(r), int(c), +1);
 	}
 	// Bottom to top propagation.
 	for (int r = int(nrows) - 2; r >= 0; -- r) {
 		for (size_t c = 0; c < ncols; ++ c)
-			danielsson_vstep(r, c, +ncols);
+			danielsson_vstep(int(r), int(c), +int(ncols));
 //			PROPAGATE_DANIELSSON_SINGLE_VSTEP3(+int(ncols), c != 0, c + 1 != ncols);
 		for (size_t c = 1; c < ncols; ++ c)
-			danielsson_hstep(r, c, -1);
+			danielsson_hstep(int(r), int(c), -1);
 		for (int c = int(ncols) - 2; c >= 0; -- c)
-			danielsson_hstep(r, c, +1);
+			danielsson_hstep(int(r), int(c), +1);
 	}
 
 	// Update signed distance field from absolte vectors to the iso-surface.
@@ -984,6 +996,9 @@ void EdgeGrid::Grid::calculate_sdf()
 
 float EdgeGrid::Grid::signed_distance_bilinear(const Point &pt) const
 {
+#ifdef _DEBUG
+    assert(m_signed_distance_field_computed);
+#endif
 	coord_t x = pt(0) - m_bbox.min(0);
 	coord_t y = pt(1) - m_bbox.min(1);
 	coord_t w = m_resolution * m_cols;
@@ -1047,8 +1062,8 @@ float EdgeGrid::Grid::signed_distance_bilinear(const Point &pt) const
 	return f;
 }
 
-EdgeGrid::Grid::ClosestPointResult EdgeGrid::Grid::closest_point_signed_distance(const Point &pt, coord_t search_radius) const 
-{
+EdgeGrid::Grid::ClosestPointResult EdgeGrid::Grid::closest_point_signed_distance(
+    const Point &pt, coord_t search_radius, size_t only_this_contour /* = size_t(-1)*/) const {
 	BoundingBox bbox;
 	bbox.min = bbox.max = Point(pt(0) - m_bbox.min(0), pt(1) - m_bbox.min(1));
 	bbox.defined = true;
@@ -1082,11 +1097,13 @@ EdgeGrid::Grid::ClosestPointResult EdgeGrid::Grid::closest_point_signed_distance
 	// Signum of the distance field at pt.
 	int sign_min = 0;
 	double l2_seg_min = 1.;
-	for (int r = bbox.min(1); r <= bbox.max(1); ++ r) {
-		for (int c = bbox.min(0); c <= bbox.max(0); ++ c) {
+	for (coord_t r = bbox.min.y(); r <= bbox.max.y(); ++ r) {
+		for (coord_t c = bbox.min.x(); c <= bbox.max.x(); ++ c) {
 			const Cell &cell = m_cells[r * m_cols + c];
 			for (size_t i = cell.begin; i < cell.end; ++ i) {
 				const size_t   contour_idx = m_cell_data[i].first;
+                if (only_this_contour != size_t(-1) && only_this_contour != contour_idx)
+                    continue;
 				const Contour &contour     = m_contours[contour_idx];
 				assert(contour.closed());
 				size_t ipt = m_cell_data[i].second;
@@ -1212,8 +1229,8 @@ bool EdgeGrid::Grid::signed_distance_edges(const Point &pt, coord_t search_radiu
 	// Signum of the distance field at pt.
 	int sign_min = 0;
 	bool on_segment = false;
-	for (int r = bbox.min(1); r <= bbox.max(1); ++ r) {
-		for (int c = bbox.min(0); c <= bbox.max(0); ++ c) {
+	for (coord_t r = bbox.min(1); r <= bbox.max(1); ++ r) {
+		for (coord_t c = bbox.min(0); c <= bbox.max(0); ++ c) {
 			const Cell &cell = m_cells[r * m_cols + c];
 			for (size_t i = cell.begin; i < cell.end; ++ i) {
 				const Contour &contour = m_contours[m_cell_data[i].first];
@@ -1275,6 +1292,9 @@ bool EdgeGrid::Grid::signed_distance_edges(const Point &pt, coord_t search_radiu
 
 bool EdgeGrid::Grid::signed_distance(const Point &pt, coord_t search_radius, coordf_t &result_min_dist) const
 {
+#ifdef _DEBUG
+    assert(m_signed_distance_field_computed);
+#endif
 	if (signed_distance_edges(pt, search_radius, result_min_dist))
 		return true;
 	if (m_signed_distance_field.empty())
@@ -1301,7 +1321,7 @@ Polygons EdgeGrid::Grid::contours_simplified(coord_t offset, bool fill_holes) co
 		std::vector<char> cell_inside2(cell_inside);
 		for (int r = 1; r + 1 < int(cell_rows); ++ r) {
 			for (int c = 1; c + 1 < int(cell_cols); ++ c) {
-				int addr = r * cell_cols + c;
+				int addr = r * int(cell_cols) + c;
 				if ((cell_inside2[addr - 1] && cell_inside2[addr + 1]) ||
 					(cell_inside2[addr - cell_cols] && cell_inside2[addr + cell_cols]))
 					cell_inside[addr] = true;
@@ -1312,9 +1332,9 @@ Polygons EdgeGrid::Grid::contours_simplified(coord_t offset, bool fill_holes) co
 	// 1) Collect the lines.
 	std::vector<Line> lines;
 	EndPointMapType start_point_to_line_idx;
-	for (int r = 0; r <= int(m_rows); ++ r) {
-		for (int c = 0; c <= int(m_cols); ++ c) {
-			int  addr    = (r + 1) * cell_cols + c + 1;
+	for (coord_t r = 0; r <= coord_t(m_rows); ++ r) {
+		for (coord_t c = 0; c <= coord_t(m_cols); ++ c) {
+			size_t  addr    = (r + 1) * cell_cols + c + 1;
 			bool left    = cell_inside[addr - 1];
 			bool top     = cell_inside[addr - cell_cols];
 			bool current = cell_inside[addr];
@@ -1501,7 +1521,7 @@ void EdgeGrid::save_png(const EdgeGrid::Grid &grid, const BoundingBox &bbox, coo
 			#else
 			if (grid.signed_distance(pt, search_radius, min_dist)) {
 			#endif
-				float s = 255 * std::abs(min_dist) / float(display_blend_radius);
+				float s = float(255 * std::abs(min_dist)) / float(display_blend_radius);
 				int is = std::max(0, std::min(255, int(floor(s + 0.5f))));
 				if (min_dist < 0) {
 					if (on_segment) {
@@ -1548,7 +1568,7 @@ void EdgeGrid::save_png(const EdgeGrid::Grid &grid, const BoundingBox &bbox, coo
 				}
 			}
 
-			float dgrid = fabs(min_dist) / float(grid.resolution());
+			float dgrid = fabs(float(min_dist)) / float(grid.resolution());
 			float igrid = floor(dgrid + 0.5f);
 			dgrid = std::abs(dgrid - igrid) * float(grid.resolution()) / float(resolution);
 			if (dgrid < 1.f) {
@@ -1559,7 +1579,7 @@ void EdgeGrid::save_png(const EdgeGrid::Grid &grid, const BoundingBox &bbox, coo
 				pxl[2] = (unsigned char)(t * pxl[2]);
 				if (igrid > 0.f) {
 					// Other than zero iso contour.
-					int g = pxl[1] + 255.f * (1.f - t);
+					int g = int(pxl[1] + 255.f * (1.f - t));
 					pxl[1] = std::min(g, 255);
 				}
 			}
@@ -1569,10 +1589,21 @@ void EdgeGrid::save_png(const EdgeGrid::Grid &grid, const BoundingBox &bbox, coo
 	png::write_rgb_to_file_scaled(path, w, h, pixels, scale);
 }
 
+Polylines EdgeGrid::Grid::get_contours() const {
+    Polylines polylines;
+    for (const EdgeGrid::Contour &contour : m_contours) {
+        polylines.emplace_back();
+        for  (const Slic3r::Point &pt : contour) {
+            polylines.back().points.push_back(pt);
+        }
+    }
+    return polylines;
+}
+
 // Find all pairs of intersectiong edges from the set of polygons.
 std::vector<std::pair<EdgeGrid::Grid::ContourEdge, EdgeGrid::Grid::ContourEdge>> intersecting_edges(const Polygons &polygons)
 {
-	double len = 0;
+	coordf_t len = 0;
 	size_t cnt = 0;
 	BoundingBox bbox;
 	for (const Polygon &poly : polygons) {
@@ -1592,7 +1623,7 @@ std::vector<std::pair<EdgeGrid::Grid::ContourEdge, EdgeGrid::Grid::ContourEdge>>
         bbox.offset(20);
         EdgeGrid::Grid grid;
         grid.set_bbox(bbox);
-        grid.create(polygons, len);
+        grid.create(polygons, coord_t(len));
         out = grid.intersecting_edges();
     }
     return out;
@@ -1612,7 +1643,7 @@ void export_intersections_to_svg(const std::string &filename, const Polygons &po
     	intersecting_contours.insert(ie.second.first);
     }
     // Highlight the contours with intersections.
-    coord_t line_width = coord_t(scale_(0.01));
+    coord_t line_width = scale_t(0.01);
     for (const EdgeGrid::Contour *ic : intersecting_contours) {
 		if (ic->open())
 			svg.draw(Polyline(Points(ic->begin(), ic->end())), "green");

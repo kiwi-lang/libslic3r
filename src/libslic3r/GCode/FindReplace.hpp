@@ -5,18 +5,15 @@
 #ifndef slic3r_FindReplace_hpp_
 #define slic3r_FindReplace_hpp_
 
-#include <boost/regex.hpp>
-#include <boost/regex/v5/regex.hpp>
-#include <string>
-#include <vector>
-
 #include "../PrintConfig.hpp"
+
+#include <boost/regex.hpp>
 
 namespace Slic3r {
 
 class GCodeFindReplace {
 public:
-    GCodeFindReplace(const PrintConfig &print_config) : GCodeFindReplace(print_config.gcode_substitutions.values) {}
+    GCodeFindReplace(const PrintConfig &print_config) : GCodeFindReplace(print_config.gcode_substitutions.get_values()) {}
     GCodeFindReplace(const std::vector<std::string> &gcode_substitutions);
 
 

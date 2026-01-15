@@ -3,23 +3,16 @@
 
 #include "Layer.hpp" //The class we're implementing.
 
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/blocked_range2d.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <mutex>
-#include <algorithm>
-#include <limits>
-#include <utility>
-#include <cassert>
-#include <cstddef>
-
 #include "DistanceField.hpp"
 #include "TreeNode.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Geometry.hpp"
-#include "libslic3r/EdgeGrid.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Polygon.hpp"
+
+#include "../../ClipperUtils.hpp"
+#include "../../Geometry.hpp"
+#include "Utils.hpp"
+
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/blocked_range2d.h>
+#include <mutex>
 
 namespace Slic3r::FillLightning {
 

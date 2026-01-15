@@ -7,8 +7,10 @@
 
 #include <string>
 
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/PrintConfig.hpp"
+#include <boost/filesystem.hpp>
+
+#include "../libslic3r.h"
+#include "../PrintConfig.hpp"
 
 namespace Slic3r {
 

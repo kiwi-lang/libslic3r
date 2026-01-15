@@ -11,8 +11,7 @@
 #include <locale>
 #include <ctime>
 #include <cstdarg>
-#include <stdio.h>
-#include <random>
+#include <cstdio>
 
 #include "Platform.hpp"
 #include "Time.hpp"
@@ -32,17 +31,19 @@
 	#endif
 	#ifdef __APPLE__
         #include <mach/mach.h>
+// for _NSGetExecutablePath
+        #include <mach-o/dyld.h>
     #endif
     #ifdef __linux__
-       	#include <sys/stat.h>
-       	#include <fcntl.h>
-		#include <sys/sendfile.h>
-	#endif
+        #include <sys/stat.h>
+        #include <fcntl.h>
+        #include <sys/sendfile.h>
+    #endif
 #endif
 
 #include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
-#include <boost/log/expressions.hpp> // IWYU pragma: keep
+#include <boost/log/expressions.hpp>
 
 #include <boost/locale.hpp>
 
@@ -77,6 +78,19 @@
 
 #ifdef _MSC_VER 
     #define strcasecmp _stricmp
+#endif
+
+#include <cstdlib>   // getenv()
+#ifdef WIN32
+	// The standard Windows includes.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <shellapi.h>
+#else
+	// POSIX
+#include <sstream>
+#include <boost/process.hpp>
+#include <unistd.h>     //readlink
 #endif
 
 namespace Slic3r {
@@ -163,6 +177,18 @@ std::string var(const std::string &file_name)
     return file.string();
 }
 
+static boost::filesystem::path g_binary_file;
+
+void set_binary_file(const boost::filesystem::path &file)
+{
+    g_binary_file = file;
+}
+
+const boost::filesystem::path& binary_file()
+{
+    return g_binary_file;
+}
+
 static std::string g_resources_dir;
 
 void set_resources_dir(const std::string &dir)
@@ -218,14 +244,18 @@ static std::string g_data_dir;
 
 void set_data_dir(const std::string &dir)
 {
-    g_data_dir = dir;
+    // make sure the path is well formed for the os.
+    boost::filesystem::path fixpath(dir);
+    g_data_dir = fixpath.make_preferred().string();
 }
 
 const std::string& data_dir()
 {
+    assert(!g_data_dir.empty());
     return g_data_dir;
 }
 
+bool has_data_dir() { return !g_data_dir.empty(); }
 std::string custom_shapes_dir()
 {
     return (boost::filesystem::path(g_data_dir) / "shapes").string();
@@ -235,17 +265,42 @@ static std::atomic<bool> debug_out_path_called(false);
 
 std::string debug_out_path(const char *name, ...)
 {
-	static constexpr const char *SLIC3R_DEBUG_OUT_PATH_PREFIX = "out/";
-    if (! debug_out_path_called.exchange(true)) {
-		std::string path = boost::filesystem::system_complete(SLIC3R_DEBUG_OUT_PATH_PREFIX).string();
+    static constexpr const char *SLIC3R_DEBUG_OUT_PATH_PREFIX = "out/";
+    if (!debug_out_path_called.exchange(true)) {
+        std::string path = boost::filesystem::system_complete(SLIC3R_DEBUG_OUT_PATH_PREFIX).string();
         printf("Debugging output files will be written to %s\n", path.c_str());
     }
-	char buffer[2048];
-	va_list args;
-	va_start(args, name);
-	std::vsprintf(buffer, name, args);
-	va_end(args);
-	return std::string(SLIC3R_DEBUG_OUT_PATH_PREFIX) + std::string(buffer);
+    char buffer[2048];
+    va_list args;
+    va_start(args, name);
+    std::vsprintf(buffer, name, args);
+    va_end(args);
+    return std::string(SLIC3R_DEBUG_OUT_PATH_PREFIX) + std::string(buffer);
+}
+std::string debug_out_path_uniqueid(std::string name, ...) {
+    static int uniqueid = 0;
+    //search for .svg
+    size_t dot_pos = name.find_last_of('.');
+    if (dot_pos == std::string::npos) {
+        name += std::string("_");
+        name += std::to_string(uniqueid++);
+        name += std::string(".svg");
+    } else {
+        name = name.substr(0, dot_pos) + std::string("_") + std::to_string(uniqueid++) + name.substr(dot_pos);
+    }
+    
+    static constexpr const char *SLIC3R_DEBUG_OUT_PATH_PREFIX = "out/";
+    if (!debug_out_path_called.exchange(true)) {
+        std::string path = boost::filesystem::system_complete(SLIC3R_DEBUG_OUT_PATH_PREFIX).string();
+        printf("Debugging output files will be written to %s\n", path.c_str());
+    }
+    char buffer[2048];
+    va_list args;
+    va_start(args, name);
+    //name = debug_out_path(name.c_str(), args);
+    std::vsprintf(buffer, name.c_str(), args);
+    va_end(args);
+    return std::string(SLIC3R_DEBUG_OUT_PATH_PREFIX) + std::string(buffer);
 }
 
 #ifdef _WIN32
@@ -390,28 +445,38 @@ namespace WindowsSupport
 		ScopedFileHandle from_handle;
 		// Retry this a few times to defeat badly behaved file system scanners.
 		for (unsigned retry = 0; retry != 200; ++ retry) {
-			if (retry != 0)
-		  		::Sleep(10);
+            if (retry != 0) {
+                BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: retry to open file";
+                ::Sleep(10);
+            }
 			from_handle = ::CreateFileW((LPWSTR)wide_from.data(), GENERIC_READ | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 			if (from_handle)
 		  		break;
-		}
+            BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to open file '" << wide_from << "'";
+        }
 		if (! from_handle)
 			return map_windows_error(GetLastError());
+        BOOST_LOG_TRIVIAL(debug) << "Rename: Succeed to open source file '" << wide_from << "'";
 
 		// We normally expect this loop to succeed after a few iterations. If it
 		// requires more than 200 tries, it's more likely that the failures are due to
 		// a true error, so stop trying.
 		for (unsigned retry = 0; retry != 200; ++ retry) {
+            if (retry != 0) {
+                BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: retry to rename file";
+                ::Sleep(10);
+            }
 			auto errcode = rename_internal(from_handle, wide_to, true);
 
 			if (errcode == std::error_code(ERROR_CALL_NOT_IMPLEMENTED, std::system_category())) {
+                BOOST_LOG_TRIVIAL(debug) << "Rename: No support for SetFileInformationByHandle";
 		  		// Wine doesn't support SetFileInformationByHandle in rename_internal.
 		  		// Fall back to MoveFileEx.
 		  		if (std::error_code errcode2 = real_path_from_handle(from_handle, wide_from))
 		    		return errcode2;
 		  		if (::MoveFileExW((LPCWSTR)wide_from.data(), (LPCWSTR)wide_to.data(), MOVEFILE_REPLACE_EXISTING))
 		    		return std::error_code();
+                BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to move file from '" << wide_from << "' to '" << wide_to << "'";
 		  		return map_windows_error(GetLastError());
 			}
 
@@ -430,20 +495,30 @@ namespace WindowsSupport
 				// Another process might have raced with us and moved the existing file
 				// out of the way before we had a chance to open it. If that happens, try
 				// to rename the source file again.
-				if (errcode == std::errc::no_such_file_or_directory)
-					continue;
+                if (errcode == std::errc::no_such_file_or_directory) {
+                    BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to create/open file '" << wide_to << "'";
+                    continue;
+                }
 				return errcode;
 			}
+            BOOST_LOG_TRIVIAL(debug) << "Rename: Succeed to create/open destination file '" << wide_to << "'";
 
 			BY_HANDLE_FILE_INFORMATION FI;
-			if (! ::GetFileInformationByHandle(to_handle, &FI))
-		  		return map_windows_error(GetLastError());
+            if (! ::GetFileInformationByHandle(to_handle, &FI)) {
+                BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to access file '" << wide_to << "' informations";
+                return map_windows_error(GetLastError());
+            }
 
 			// Try to find a unique new name for the destination file.
 			for (unsigned unique_id = 0; unique_id != 200; ++ unique_id) {
+				if (retry != 0) {
+					BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: retry to create destination file";
+					::Sleep(10);
+				}
 				std::wstring tmp_filename = wide_to + L".tmp" + std::to_wstring(unique_id);
 				std::error_code errcode = rename_internal(to_handle, tmp_filename, false);
 				if (errcode) {
+					BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: error (" << errcode.value() << ") while renaming '" << wide_from << "' to '" << wide_to << "'";
 					if (errcode == std::make_error_code(std::errc::file_exists) || errcode == std::make_error_code(std::errc::permission_denied)) {
 						// Again, another process might have raced with us and moved the file
 						// before we could move it. Check whether this is the case, as it
@@ -454,13 +529,17 @@ namespace WindowsSupport
 							auto errcode = map_windows_error(GetLastError());
 							if (errcode == std::errc::no_such_file_or_directory)
 						  		break;
+							BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: access to '" << wide_to << "' is impossible (" << errcode.value() << ")";
 							return errcode;
 						}
 						BY_HANDLE_FILE_INFORMATION FI2;
-						if (! ::GetFileInformationByHandle(to_handle2, &FI2))
-							return map_windows_error(GetLastError());
+                        if (! ::GetFileInformationByHandle(to_handle2, &FI2)) {
+                            BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to access file '" << wide_to << "' informations";
+                            return map_windows_error(GetLastError());
+                        }
 						if (FI.nFileIndexHigh != FI2.nFileIndexHigh || FI.nFileIndexLow != FI2.nFileIndexLow || FI.dwVolumeSerialNumber != FI2.dwVolumeSerialNumber)
 							break;
+						// retry
 						continue;
 					}
 					return errcode;
@@ -474,11 +553,103 @@ namespace WindowsSupport
 			// file, so we need to keep doing this until we succeed.
 		}
 
+        BOOST_LOG_TRIVIAL(warning) << "Warn: Rename: failed to rename the file, abord operation.";
 		// The most likely root cause.
 		return std::make_error_code(std::errc::permission_denied);
 	}
 } // namespace WindowsSupport
 #endif /* _WIN32 */
+
+
+// Try to find where the file can be.
+// First try without any modification, for absolute apth and relative path fromt he current directory
+// Then try from the slic3r.exe directory
+// Then from the configuration directory
+// Then from the USER directory
+boost::filesystem::path find_full_path(const boost::filesystem::path filename, const boost::filesystem::path return_fail) {
+    if (filename.empty()) return return_fail;
+    boost::filesystem::path ret = filename;
+    if (!boost::filesystem::exists(filename)) {
+        // try from our install directory 
+#ifdef WIN32
+        wchar_t wpath_exe[_MAX_PATH + 1];
+        ::GetModuleFileNameW(nullptr, wpath_exe, _MAX_PATH);
+        boost::filesystem::path local_dir = boost::filesystem::path(wpath_exe).parent_path();
+#else
+        char result[PATH_MAX + 1];
+        boost::filesystem::path local_dir(".");
+#ifdef __APPLE__
+        uint32_t count = uint32_t(PATH_MAX + 1);
+        if (_NSGetExecutablePath(result, &count) == 0) {
+#else
+        int32_t count = readlink("/proc/self/exe", result, sizeof(result) - 1);
+        if (count != -1) {
+#endif
+            local_dir = boost::filesystem::path(std::string(result, (count > 0) ? count : 0)).parent_path();
+        }
+#endif
+        if (!boost::filesystem::exists(local_dir / filename)) {
+            //try with configuration directory
+            local_dir = boost::filesystem::path(Slic3r::data_dir());
+        }
+        if (!boost::filesystem::exists(local_dir / filename)) {
+            //try with configuration directory
+#ifdef WIN32
+            local_dir = boost::filesystem::path(::getenv("USERPROFILE"));
+#else
+            local_dir = boost::filesystem::path(::getenv("HOME"));
+#endif
+        }
+        if (!boost::filesystem::exists(local_dir / filename)) {
+            return return_fail;
+        } else {
+            ret = local_dir / filename;
+        }
+    }
+    return ret;
+}
+
+boost::filesystem::path shorten_path(const boost::filesystem::path filename) {
+    if (filename.empty()) return filename;
+    std::string current_filename = filename.generic_string();
+    // try from our install directory 
+#ifdef WIN32
+    wchar_t wpath_exe[_MAX_PATH + 1];
+    ::GetModuleFileNameW(nullptr, wpath_exe, _MAX_PATH);
+    std::string local_dir = boost::filesystem::path(wpath_exe).parent_path().generic_string();
+#else
+    char result[PATH_MAX + 1];
+    std::string local_dir = ".";
+#ifdef __APPLE__
+    uint32_t count = uint32_t(PATH_MAX + 1);
+    if (_NSGetExecutablePath(result, &count) == 0) {
+#else
+    int32_t count = readlink("/proc/self/exe", result, sizeof(result) - 1);
+    if (count != -1) {
+#endif
+        local_dir = boost::filesystem::path(std::string(result, (count > 0) ? count : 0)).parent_path().generic_string();
+    }
+#endif
+    if (boost::starts_with(current_filename, local_dir)) {
+        return boost::filesystem::path(current_filename.substr(local_dir.size() + 1));
+    }
+    //try with configuration directory
+    local_dir = Slic3r::data_dir();
+    if (boost::starts_with(current_filename, local_dir)) {
+        return boost::filesystem::path(current_filename.substr(local_dir.size() + 1));
+    }
+    //try with configuration directory
+#ifdef WIN32
+    local_dir = boost::filesystem::path(::getenv("USERPROFILE")).generic_string();
+#else
+    local_dir = boost::filesystem::path(::getenv("HOME")).generic_string();
+#endif
+    if (boost::starts_with(current_filename, local_dir)) {
+        return boost::filesystem::path(current_filename.substr(local_dir.size() + 1));
+    }
+    return filename;
+}
+
 
 // borrowed from LVVM lib/Support/Windows/Path.inc
 std::error_code rename_file(const std::string &from, const std::string &to)
@@ -689,6 +860,11 @@ CopyFileResult copy_file_inner(const std::string& from, const std::string& to, s
 {
 	const boost::filesystem::path source(from);
 	const boost::filesystem::path target(to);
+	return copy_file_inner(source, target, error_message);
+}
+
+CopyFileResult copy_file_inner(const boost::filesystem::path& source, const boost::filesystem::path& target, std::string& error_message)
+{
 	static const auto perms = boost::filesystem::owner_read | boost::filesystem::owner_write | boost::filesystem::group_read | boost::filesystem::others_read;   // aka 644
 
 	// Make sure the file has correct permission both before and after we copy over it.
@@ -769,7 +945,7 @@ CopyFileResult check_copy(const std::string &origin, const std::string &copy)
     } while (f1.good() && f2.good());
 
     // All data has been read and compared equal.
-    return (f1.eof() && f2.eof() && fsize == 0) ? SUCCESS : FAIL_FILES_DIFFERENT;
+    return (f1.eof() && f2.eof() && size_t(fsize) == 0) ? SUCCESS : FAIL_FILES_DIFFERENT;
 }
 
 // Ignore system and hidden files, which may be created by the DropBox synchronisation process.
@@ -798,7 +974,7 @@ bool is_idx_file(const boost::filesystem::directory_entry &dir_entry)
 
 bool is_gcode_file(const std::string &path)
 {
-		return boost::iends_with(path, ".gcode") || boost::iends_with(path, ".gco") ||
+	return boost::iends_with(path, ".gcode") || boost::iends_with(path, ".gco") ||
 					 boost::iends_with(path, ".g") || boost::iends_with(path, ".ngc") ||
 					 boost::iends_with(path, ".bgcode") || boost::iends_with(path, ".bgc");
 }
@@ -833,6 +1009,49 @@ bool is_shapes_dir(const std::string& dir)
 #endif /* WIN32 */
 
 namespace Slic3r {
+
+// Encode an UTF-8 string to the local code page.
+std::string encode_path(const char *src)
+{    
+#ifdef WIN32
+    // Convert the source utf8 encoded string to a wide string.
+    std::wstring wstr_src = boost::nowide::widen(src);
+    if (wstr_src.length() == 0)
+        return std::string();
+    // Convert a wide string to a local code page.
+    int size_needed = ::WideCharToMultiByte(0, 0, wstr_src.data(), (int)wstr_src.size(), nullptr, 0, nullptr, nullptr);
+    std::string str_dst(size_needed, 0);
+    ::WideCharToMultiByte(0, 0, wstr_src.data(), (int)wstr_src.size(), str_dst.data(), size_needed, nullptr, nullptr);
+    return str_dst;
+#else /* WIN32 */
+    return src;
+#endif /* WIN32 */
+}
+
+// Encode an 8-bit string from a local code page to UTF-8.
+// Multibyte to utf8
+std::string decode_path(const char *src)
+{  
+#ifdef WIN32
+    int len = int(strlen(src));
+    if (len == 0)
+        return std::string();
+    // Convert the string encoded using the local code page to a wide string.
+    int size_needed = ::MultiByteToWideChar(0, 0, src, len, nullptr, 0);
+    std::wstring wstr_dst(size_needed, 0);
+    ::MultiByteToWideChar(0, 0, src, len, wstr_dst.data(), size_needed);
+    // Convert a wide string to utf8.
+    return boost::nowide::narrow(wstr_dst.c_str());
+#else /* WIN32 */
+    return src;
+#endif /* WIN32 */
+}
+
+std::string normalize_utf8_nfc(const char *src)
+{
+    static std::locale locale_utf8(boost::locale::generator().generate(""));
+    return boost::locale::normalize(src, boost::locale::norm_nfc, locale_utf8);
+}
 
 size_t get_utf8_sequence_length(const std::string& text, size_t pos)
 {
@@ -928,39 +1147,36 @@ std::string string_printf(const char *format, ...)
     return buffer;
 }
 
+
+bool config_file_header_with_date = true;
+
+void set_header_generate_with_date(bool with_date)
+{
+    config_file_header_with_date = with_date;
+}
+
 std::string header_slic3r_generated()
 {
-	return std::string("generated by PrusaSlicer " SLIC3R_VERSION " on " ) + Utils::utc_timestamp();
+    if (config_file_header_with_date)
+        return std::string("generated by " SLIC3R_APP_KEY " " SLIC3R_VERSION_FULL " on ") + Utils::utc_timestamp();
+    else
+        return std::string("generated by " SLIC3R_APP_KEY " " SLIC3R_VERSION " on");
 }
 
 std::string header_gcodeviewer_generated()
 {
-	return std::string("generated by " GCODEVIEWER_APP_NAME " " SLIC3R_VERSION " on ") + Utils::utc_timestamp();
+    if (config_file_header_with_date)
+        return std::string("generated by " GCODEVIEWER_APP_KEY " " SLIC3R_VERSION_FULL " on ") + Utils::utc_timestamp();
+    else
+        return std::string("generated by " GCODEVIEWER_APP_KEY " " SLIC3R_VERSION " on");
 }
 
 unsigned get_current_pid()
 {
 #ifdef WIN32
     return GetCurrentProcessId();
-#elif __APPLE__
-    return ::getpid();
 #else
-    // On flatpak getpid() might return same number for each concurent instances.
-    static std::atomic<unsigned> instance_uuid{0};
-    if (instance_uuid == 0) {
-        unsigned generated_value;
-        {
-            // Use a thread-local random engine
-            thread_local std::random_device rd;
-            thread_local std::mt19937 generator(rd());
-            std::uniform_int_distribution<unsigned> distribution;
-            generated_value = distribution(generator);
-        }
-        unsigned expected = 0;
-        // Atomically initialize the instance_uuid if it has not been set
-        instance_uuid.compare_exchange_strong(expected, generated_value);
-    }
-    return instance_uuid.load();
+    return ::getpid();
 #endif
 }
 
@@ -1101,42 +1317,6 @@ std::string format_memsize_MB(size_t n)
     return out + "MB";
 }
 
-std::string format_memsize(size_t bytes, unsigned int decimals)
-{
-		static constexpr const float kb = 1024.0f;
-		static constexpr const float mb = 1024.0f * kb;
-		static constexpr const float gb = 1024.0f * mb;
-		static constexpr const float tb = 1024.0f * gb;
-
-		const float f_bytes = static_cast<float>(bytes);
-		if (f_bytes < kb)
-				return std::to_string(bytes) + " bytes";
-		else if (f_bytes < mb) {
-				const float f_kb = f_bytes / kb;
-				char buf[64];
-				sprintf(buf, "%.*f", decimals, f_kb);
-				return std::to_string(bytes) + " bytes (" + std::string(buf) + "KB)";
-		}
-		else if (f_bytes < gb) {
-				const float f_mb = f_bytes / mb;
-				char buf[64];
-				sprintf(buf, "%.*f", decimals, f_mb);
-				return std::to_string(bytes) + " bytes (" + std::string(buf) + "MB)";
-		}
-		else if (f_bytes < tb) {
-				const float f_gb = f_bytes / gb;
-				char buf[64];
-				sprintf(buf, "%.*f", decimals, f_gb);
-				return std::to_string(bytes) + " bytes (" + std::string(buf) + "GB)";
-		}
-		else {
-				const float f_tb = f_bytes / tb;
-				char buf[64];
-				sprintf(buf, "%.*f", decimals, f_tb);
-				return std::to_string(bytes) + " bytes (" + std::string(buf) + "TB)";
-		}
-}
-
 // Returns platform-specific string to be used as log output or parsed in SysInfoDialog.
 // The latter parses the string with (semi)colons as separators, it should look about as
 // "desc1: value1; desc2: value2" or similar (spaces should not matter).
@@ -1179,7 +1359,7 @@ std::string log_memory_info(bool ignore_loglevel)
             out += "N/A";
     #else // i.e. __linux__
         size_t tSize = 0, resident = 0, share = 0;
-        boost::nowide::ifstream buffer("/proc/self/statm");
+        std::ifstream buffer("/proc/self/statm");
         if (buffer && (buffer >> tSize >> resident >> share)) {
             size_t page_size = (size_t)sysconf(_SC_PAGE_SIZE); // in case x86-64 is configured to use 2MB pages
             size_t rss = resident * page_size;

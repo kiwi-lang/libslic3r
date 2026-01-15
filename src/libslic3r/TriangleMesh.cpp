@@ -13,29 +13,7 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <libqhullcpp/Qhull.h>
-#include <libqhullcpp/QhullFacetList.h>
-#include <libqhullcpp/QhullVertexSet.h>
-#include <boost/log/trivial.hpp>
-#include <boost/nowide/cstdio.hpp>
-#include <boost/predef/other/endian.h>
-#include <libqhull_r/user_r.h>
-#include <libqhullcpp/QhullFacet.h>
-#include <libqhullcpp/QhullPoint.h>
-#include <libqhullcpp/QhullVertex.h>
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/concurrent_vector.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <cmath>
-#include <vector>
-#include <utility>
-#include <algorithm>
-#include <iterator>
-#include <map>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
+#include "Exception.hpp"
 #include "TriangleMesh.hpp"
 #include "TriangleMeshSlicer.hpp"
 #include "MeshSplitImpl.hpp"
@@ -46,10 +24,29 @@
 #include "Execution/ExecutionTBB.hpp"
 #include "Execution/ExecutionSeq.hpp"
 #include "Utils.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include <libqhullcpp/Qhull.h>
+#include <libqhullcpp/QhullFacetList.h>
+#include <libqhullcpp/QhullVertexSet.h>
+
+#include <cassert>
+#include <cmath>
+#include <deque>
+#include <queue>
+#include <vector>
+#include <utility>
+#include <algorithm>
+#include <type_traits>
+
+#include <boost/log/trivial.hpp>
+#include <boost/nowide/cstdio.hpp>
+#include <boost/predef/other/endian.h>
+
+#include <oneapi/tbb/concurrent_vector.h>
+
+#include <Eigen/Core>
+#include <Eigen/Dense>
+
 
 namespace Slic3r {
 
@@ -67,17 +64,17 @@ static void fill_initial_stats(const indexed_triangle_set &its, TriangleMeshStat
     out.volume              = its_volume(its);
     update_bounding_box(its, out);
 
-    const std::vector<Vec3i> face_neighbors = its_face_neighbors(its);
+    const std::vector<Vec3i32> face_neighbors = its_face_neighbors(its);
     out.number_of_parts = its_number_of_patches(its, face_neighbors);
     out.open_edges      = its_num_open_edges(face_neighbors);
 }
 
-TriangleMesh::TriangleMesh(const std::vector<Vec3f> &vertices, const std::vector<Vec3i> &faces) : its { faces, vertices }
+TriangleMesh::TriangleMesh(const std::vector<Vec3f> &vertices, const std::vector<Vec3i32> &faces) : its { faces, vertices }
 {
     fill_initial_stats(this->its, m_stats);
 }
 
-TriangleMesh::TriangleMesh(std::vector<Vec3f> &&vertices, const std::vector<Vec3i> &&faces) : its { std::move(faces), std::move(vertices) }
+TriangleMesh::TriangleMesh(std::vector<Vec3f> &&vertices, const std::vector<Vec3i32> &&faces) : its { std::move(faces), std::move(vertices) }
 {
     fill_initial_stats(this->its, m_stats);
 }
@@ -543,6 +540,7 @@ TriangleMesh TriangleMesh::convex_hull_3d() const
 
 std::vector<ExPolygons> TriangleMesh::slice(const std::vector<double> &z) const
 {
+    throw Exception("not using config");
     // convert doubles to floats
     std::vector<float> z_f(z.begin(), z.end());
     return slice_mesh_ex(this->its, z_f, 0.0004f);
@@ -568,10 +566,9 @@ struct EdgeToFace {
     bool operator<(const EdgeToFace &other) const { return vertex_low < other.vertex_low || (vertex_low == other.vertex_low && vertex_high < other.vertex_high); }
 };
 
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None, typename FaceFilter, typename ThrowOnCancelCallback>
-static std::vector<EdgeToFace> create_edge_map(const typename IndexedTriangleSetType<mesh_info>::type &its,
-                                               FaceFilter                                              face_filter,
-                                               ThrowOnCancelCallback                                   throw_on_cancel)
+template<typename FaceFilter, typename ThrowOnCancelCallback>
+static std::vector<EdgeToFace> create_edge_map(
+    const indexed_triangle_set &its, FaceFilter face_filter, ThrowOnCancelCallback throw_on_cancel)
 {
     std::vector<EdgeToFace> edges_map;
     edges_map.reserve(its.indices.size() * 3);
@@ -600,14 +597,12 @@ static std::vector<EdgeToFace> create_edge_map(const typename IndexedTriangleSet
 
 // Map from a face edge to a unique edge identifier or -1 if no neighbor exists.
 // Two neighbor faces share a unique edge identifier even if they are flipped.
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None, typename FaceFilter, typename ThrowOnCancelCallback>
-static inline std::vector<Vec3i> its_face_edge_ids_impl(const typename IndexedTriangleSetType<mesh_info>::type &its,
-                                                        FaceFilter                                              face_filter,
-                                                        ThrowOnCancelCallback                                   throw_on_cancel)
+template<typename FaceFilter, typename ThrowOnCancelCallback>
+static inline std::vector<Vec3i32> its_face_edge_ids_impl(const indexed_triangle_set &its, FaceFilter face_filter, ThrowOnCancelCallback throw_on_cancel)
 {
-    std::vector<Vec3i> out(its.indices.size(), Vec3i(-1, -1, -1));
+    std::vector<Vec3i32> out(its.indices.size(), Vec3i32(-1, -1, -1));
 
-    std::vector<EdgeToFace> edges_map = create_edge_map<mesh_info>(its, face_filter, throw_on_cancel);
+    std::vector<EdgeToFace> edges_map = create_edge_map(its, face_filter, throw_on_cancel);
 
     // Assign a unique common edge id to touching triangle edges.
     int num_edges = 0;
@@ -627,8 +622,8 @@ static inline std::vector<Vec3i> its_face_edge_ids_impl(const typename IndexedTr
             }
         if (! found) {
             //FIXME Vojtech: Trying to find an edge with equal orientation. This smells.
-            // admesh can assign the same edge ID to more than two facets (which is
-            // still topologically correct), so we have to search for a duplicate of
+            // admesh can assign the same edge ID to more than two facets (which is 
+            // still topologically correct), so we have to search for a duplicate of 
             // this edge too in case it was already seen in this orientation
             for (j = i + 1; j < edges_map.size() && edge_i == edges_map[j]; ++ j)
                 if (edges_map[j].face != -1) {
@@ -653,44 +648,36 @@ static inline std::vector<Vec3i> its_face_edge_ids_impl(const typename IndexedTr
     return out;
 }
 
-// Explicit template instantiation.
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::None>(const IndexedTriangleSetType<AdditionalMeshInfo::None>::type &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::Color>(const IndexedTriangleSetType<AdditionalMeshInfo::Color>::type &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::None>(const IndexedTriangleSetType<AdditionalMeshInfo::None>::type &, const std::vector<char> &);
-template std::vector<Vec3i> its_face_edge_ids<AdditionalMeshInfo::Color>(const IndexedTriangleSetType<AdditionalMeshInfo::Color>::type &, const std::vector<char> &);
-
-template<AdditionalMeshInfo mesh_info>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its)
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its)
 {
-    return its_face_edge_ids_impl<mesh_info>(its, [](const uint32_t){ return true; }, [](){});
+    return its_face_edge_ids_impl(its, [](const uint32_t){ return true; }, [](){});
 }
 
-std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback)
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback)
 {
     return its_face_edge_ids_impl(its, [](const uint32_t){ return true; }, throw_on_cancel_callback);
 }
 
-template<AdditionalMeshInfo mesh_info>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its, const std::vector<char> &face_mask)
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, const std::vector<char> &face_mask)
 {
-    return its_face_edge_ids_impl<mesh_info>(its, [&face_mask](const uint32_t idx){ return face_mask[idx]; }, [](){});
+    return its_face_edge_ids_impl(its, [&face_mask](const uint32_t idx){ return face_mask[idx]; }, [](){});
 }
 
 // Having the face neighbors available, assign unique edge IDs to face edges for chaining of polygons over slices.
-std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::vector<Vec3i> &face_neighbors, bool assign_unbound_edges, int *num_edges)
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::vector<Vec3i32> &face_neighbors, bool assign_unbound_edges, int *num_edges)
 {
     // out elements are not initialized!
-    std::vector<Vec3i> out(face_neighbors.size());
+    std::vector<Vec3i32> out(face_neighbors.size());
     int last_edge_id = 0;
     for (int i = 0; i < int(face_neighbors.size()); ++ i) {
         const stl_triangle_vertex_indices   &triangle  = its.indices[i];
-        const Vec3i                         &neighbors = face_neighbors[i];
+        const Vec3i32                       &neighbors = face_neighbors[i];
         for (int j = 0; j < 3; ++ j) {
             int n = neighbors[j];
             if (n > i) {
                 const stl_triangle_vertex_indices &triangle2 = its.indices[n];
                 int   edge_id = last_edge_id ++;
-                Vec2i edge    = its_triangle_edge(triangle, j);
+                Vec2i32 edge    = its_triangle_edge(triangle, j);
                 // First find an edge with opposite orientation.
                 std::swap(edge(0), edge(1));
                 int   k       = its_triangle_edge_index(triangle2, edge);
@@ -841,10 +828,10 @@ int its_compactify_vertices(indexed_triangle_set &its, bool shrink_to_fit)
 
 bool its_store_triangle_to_obj(const indexed_triangle_set &its,
                                const char                 *obj_filename,
-                               size_t                      triangle_index)
+                        size_t                      triangle_index)
 {
     if (its.indices.size() <= triangle_index) return false;
-    Vec3i                t = its.indices[triangle_index];
+    Vec3i32              t = its.indices[triangle_index];
     indexed_triangle_set its2;
     its2.indices  = {{0, 1, 2}};
     its2.vertices = {its.vertices[t[0]], its.vertices[t[1]],
@@ -862,8 +849,8 @@ bool its_store_triangles_to_obj(const indexed_triangle_set &its,
     std::map<size_t, size_t> vertex_map;
     for (auto ti : triangles) {
         if (its.indices.size() <= ti) return false;
-        Vec3i t = its.indices[ti];
-        Vec3i new_t;
+        Vec3i32 t = its.indices[ti];
+        Vec3i32 new_t;
         for (size_t i = 0; i < 3; ++i) {
             size_t vi = t[i];
             auto   it = vertex_map.find(vi);
@@ -942,12 +929,24 @@ Polygon its_convex_hull_2d_above(const indexed_triangle_set& its, const Transfor
                 iprev = iedge;
             }
         }
-        return Geometry::convex_hull(std::move(pts));
+        if (pts.size() > 2) {
+            Polygon polygon = Geometry::convex_hull(std::move(pts));
+            while (polygon.size() > 2 && polygon.points.front().coincides_with_epsilon(polygon.points.back())) {
+                polygon.points.pop_back();
+            }
+            if (polygon.size() > 2) {
+                return std::move(polygon);
+            }
+        }
+        return Polygon();
     };
 
     tbb::concurrent_vector<Polygon> chs;
     tbb::parallel_for(tbb::blocked_range<size_t>(0, its.indices.size()), [&](const tbb::blocked_range<size_t>& range) {
-        chs.push_back(collect_mesh_projection_points_above(range));
+        Polygon poly = collect_mesh_projection_points_above(range);
+        if (!poly.empty()) {
+            chs.push_back(poly);
+        }
     });
 
     const Polygons polygons(std::make_move_iterator(chs.begin()), std::make_move_iterator(chs.end()));
@@ -1141,8 +1140,8 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
     // First build an icosahedron (taken from http://www.songho.ca/opengl/gl_sphere.html)
     indexed_triangle_set mesh;
 
-    const float PI = 3.1415926f;
-    const float H_ANGLE = PI / 180 * 72;    // 72 degree = 360 / 5
+    //const float PI = 3.1415926f;
+    const float H_ANGLE = float(PI) / 180 * 72;    // 72 degree = 360 / 5
     const float V_ANGLE = atanf(1.0f / 2);  // elevation = 26.565 degree
 
     auto& vertices = mesh.vertices;
@@ -1151,7 +1150,7 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
     indices.reserve(20);
 
     float z, xy;
-    float hAngle1 = -PI / 2 - H_ANGLE / 2;
+    float hAngle1 = -float(PI) / 2 - H_ANGLE / 2;
 
     vertices[0] = stl_vertex(0, 0, radius); // the first top vertex at (0, 0, r)
 
@@ -1171,7 +1170,7 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
 
     
     // We have a beautiful icosahedron. Now subdivide the triangles.
-    std::vector<Vec3i> neighbors = its_face_neighbors(mesh); // This is cheap, the mesh is small.
+    std::vector<Vec3i32> neighbors = its_face_neighbors(mesh); // This is cheap, the mesh is small.
 
     const double side_len_limit = radius * fa;
     const double side_len = (vertices[1] - vertices[0]).norm();
@@ -1188,7 +1187,7 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
 
     for (int iter=0; iter<iterations; ++iter) {
         std::vector<std::array<DividedEdge, 3>> divided_triangles(indices.size());
-        std::vector<Vec3i> new_neighbors(4*indices.size());
+        std::vector<Vec3i32> new_neighbors(4*indices.size());
 
         int orig_indices_size = int(indices.size());
         for (int i=0; i<orig_indices_size; ++i) { // iterate over all old triangles
@@ -1236,17 +1235,17 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
             // Add three new triangles, reindex the old one.
             const int last_index = indices.size() - 1;
             indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[0], middle_vertices_idxs[1], middle_vertices_idxs[2]));
-            new_neighbors[indices.size()-1] = Vec3i(last_index+2, last_index+3, i);
+            new_neighbors[indices.size()-1] = Vec3i32(last_index+2, last_index+3, i);
 
             indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[0], indices[i][1], middle_vertices_idxs[1]));
-            new_neighbors[indices.size()-1] = Vec3i(new_neighbors_per_edge[0].second, new_neighbors_per_edge[1].first, last_index+1);
+            new_neighbors[indices.size()-1] = Vec3i32(new_neighbors_per_edge[0].second, new_neighbors_per_edge[1].first, last_index+1);
 
             indices.emplace_back(stl_triangle_vertex_indices(middle_vertices_idxs[2], middle_vertices_idxs[1], indices[i][2]));
-            new_neighbors[indices.size()-1] = Vec3i(last_index+1, new_neighbors_per_edge[1].second, new_neighbors_per_edge[2].first);
+            new_neighbors[indices.size()-1] = Vec3i32(last_index+1, new_neighbors_per_edge[1].second, new_neighbors_per_edge[2].first);
 
             indices[i][1] = middle_vertices_idxs[0];
             indices[i][2] = middle_vertices_idxs[2];
-            new_neighbors[i] = Vec3i(new_neighbors_per_edge[0].first, last_index+1, new_neighbors_per_edge[2].second);
+            new_neighbors[i] = Vec3i32(new_neighbors_per_edge[0].first, last_index+1, new_neighbors_per_edge[2].second);
 
         }
         neighbors = std::move(new_neighbors);
@@ -1259,8 +1258,8 @@ indexed_triangle_set its_make_sphere(double radius, double fa)
 indexed_triangle_set its_make_frustum_dowel(double radius, double h, int sectorCount)
 {
     int   stackCount = 2;
-    float sectorStep = float(2. * M_PI / sectorCount);
-    float stackStep = float(M_PI / stackCount);
+    float sectorStep  = float(2. * M_PI / sectorCount);
+    float stackStep   = float(M_PI / stackCount);
 
     indexed_triangle_set mesh;
     auto& vertices = mesh.vertices;
@@ -1269,7 +1268,7 @@ indexed_triangle_set its_make_frustum_dowel(double radius, double h, int sectorC
         // from pi/2 to -pi/2
         double stackAngle = 0.5 * M_PI - stackStep * i;
         double xy = radius * cos(stackAngle);
-        double z = radius * sin(stackAngle);
+        double z  = radius * sin(stackAngle);
         if (i == 0 || i == stackCount)
             vertices.emplace_back(Vec3f(float(xy), 0.f, float(h * sin(stackAngle))));
         else
@@ -1433,7 +1432,7 @@ indexed_triangle_set its_make_snap(double r, double h, float space_proportion, f
 indexed_triangle_set its_convex_hull(const std::vector<Vec3f> &pts)
 {
     std::vector<Vec3f>  dst_vertices;
-    std::vector<Vec3i>  dst_facets;
+    std::vector<Vec3i32>  dst_facets;
 
     if (! pts.empty()) {
         // The qhull call:
@@ -1469,8 +1468,8 @@ indexed_triangle_set its_convex_hull(const std::vector<Vec3f> &pts)
     #endif // NDEBUG
         for (const orgQhull::QhullFacet &facet : qhull.facetList()) {
             // Collect face vertices first, allocate unique vertices in dst_vertices based on QHull's vertex ID.
-            Vec3i  indices;
-            int    cnt = 0;
+            Vec3i32 indices;
+            int     cnt = 0;
             for (const orgQhull::QhullVertex vertex : facet.vertices()) {
                 int id = vertex.id();
                 assert(id >= 0);
@@ -1546,7 +1545,7 @@ void its_merge(indexed_triangle_set &A, const indexed_triangle_set &B)
     A.indices.insert(A.indices.end(), B.indices.begin(), B.indices.end());
 
     for(size_t n = N_f; n < A.indices.size(); n++)
-        A.indices[n] += Vec3i{N, N, N};
+        A.indices[n] += Vec3i32{N, N, N};
 }
 
 void its_merge(indexed_triangle_set &A, const std::vector<Vec3f> &triangles)
@@ -1615,7 +1614,7 @@ size_t its_number_of_patches(const indexed_triangle_set &its)
 {
     return its_number_of_patches<>(its);
 }
-size_t its_number_of_patches(const indexed_triangle_set &its, const std::vector<Vec3i> &face_neighbors)
+size_t its_number_of_patches(const indexed_triangle_set &its, const std::vector<Vec3i32> &face_neighbors)
 {
     return its_number_of_patches<>(ItsNeighborsWrapper{ its, face_neighbors });
 }
@@ -1625,15 +1624,15 @@ bool its_is_splittable(const indexed_triangle_set &its)
 {
     return its_is_splittable<>(its);
 }
-bool its_is_splittable(const indexed_triangle_set &its, const std::vector<Vec3i> &face_neighbors)
+bool its_is_splittable(const indexed_triangle_set &its, const std::vector<Vec3i32> &face_neighbors)
 {
     return its_is_splittable<>(ItsNeighborsWrapper{ its, face_neighbors });
 }
 
-size_t its_num_open_edges(const std::vector<Vec3i> &face_neighbors)
+size_t its_num_open_edges(const std::vector<Vec3i32> &face_neighbors)
 {
     size_t num_open_edges = 0;
-    for (const Vec3i& neighbors : face_neighbors)
+    for (const Vec3i32& neighbors : face_neighbors)
         for (int n : neighbors)
             if (n < 0)
                 ++ num_open_edges;
@@ -1643,11 +1642,11 @@ size_t its_num_open_edges(const std::vector<Vec3i> &face_neighbors)
 std::vector<std::pair<int, int>> its_get_open_edges(const indexed_triangle_set& its)
 {
     std::vector<std::pair<int, int>> ret;
-    std::vector<Vec3i> face_neighbors = its_face_neighbors(its);
+    std::vector<Vec3i32> face_neighbors = its_face_neighbors(its);
     for (size_t i = 0; i < face_neighbors.size(); ++i) {
         for (size_t j = 0; j < 3; ++j) {
             if (face_neighbors[i][j] < 0) {
-                const Vec2i edge_indices = its_triangle_edge(its.indices[i], j);
+                const Vec2i32 edge_indices = its_triangle_edge(its.indices[i], j);
                 ret.emplace_back(edge_indices[0], edge_indices[1]);
             }
         }
@@ -1685,12 +1684,12 @@ void VertexFaceIndex::create(const indexed_triangle_set &its)
     m_vertex_to_face_start.front() = 0;
 }
 
-std::vector<Vec3i> its_face_neighbors(const indexed_triangle_set &its)
+std::vector<Vec3i32> its_face_neighbors(const indexed_triangle_set &its)
 {
     return create_face_neighbors_index(ex_seq, its);
 }
 
-std::vector<Vec3i> its_face_neighbors_par(const indexed_triangle_set &its)
+std::vector<Vec3i32> its_face_neighbors_par(const indexed_triangle_set &its)
 {
     return create_face_neighbors_index(ex_tbb, its);
 }

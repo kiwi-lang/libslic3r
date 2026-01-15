@@ -13,31 +13,11 @@
 #ifndef slic3r_TreeSupportCommon_hpp
 #define slic3r_TreeSupportCommon_hpp
 
-#include <assert.h>
-#include <math.h>
-#include <oneapi/tbb/scalable_allocator.h>
-#include <stddef.h>
-#include <string_view>
-#include <algorithm>
-#include <mutex>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cmath>
-#include <cstddef>
-
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Polygon.hpp"
+#include "../libslic3r.h"
+#include "../Polygon.hpp"
 #include "SupportCommon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/Slicing.hpp"
-#include "libslic3r/Support/SupportLayer.hpp"
-#include "libslic3r/Support/SupportParameters.hpp"
 
-namespace Slic3r {
-class PrintObject;
-}  // namespace Slic3r
+#include <string_view>
 
 using namespace Slic3r::FFFSupport;
 
@@ -136,7 +116,7 @@ struct TreeSupportMeshGroupSettings {
     std::vector<double>             support_roof_angles                     {};
     // Support Roof Pattern (aka top interface)
     // The pattern with which the roofs of the support are printed.
-    SupportMaterialInterfacePattern support_roof_pattern                    { smipAuto };
+    InfillPattern                   support_roof_pattern                    { ipAuto };
     // Support Pattern
     // The pattern of the support structures of the print. The different options available result in sturdy or easy to remove support.
     SupportMaterialPattern          support_pattern                         { smpRectilinear };
@@ -334,7 +314,7 @@ public:
     /*!
      * \brief Pattern used in the support roof. May contain non relevant data if support roof is disabled.
      */
-    SupportMaterialInterfacePattern roof_pattern;
+    InfillPattern roof_pattern;
     /*!
      * \brief Pattern used in the support infill.
      */

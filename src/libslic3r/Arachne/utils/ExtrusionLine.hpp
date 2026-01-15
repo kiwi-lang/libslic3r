@@ -5,29 +5,15 @@
 #ifndef UTILS_EXTRUSION_LINE_H
 #define UTILS_EXTRUSION_LINE_H
 
-#include <clipper/clipper_z.hpp>
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <algorithm>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstddef>
-
 #include "ExtrusionJunction.hpp"
 #include "../../Polyline.hpp"
 #include "../../Polygon.hpp"
 #include "../../BoundingBox.hpp"
 #include "../../ExtrusionEntity.hpp"
-#include "../../Flow.hpp"
-#include "libslic3r/ExtrusionRole.hpp"
-#include "libslic3r/Point.hpp"
+#include "../../../clipper/clipper_z.hpp"
 
 namespace Slic3r {
-struct ThickPolyline;
-class Flow;
+class ThickPolyline;
 }
 
 namespace Slic3r::Arachne
@@ -81,8 +67,7 @@ struct ExtrusionLine
      */
     std::vector<ExtrusionJunction> junctions;
 
-    ExtrusionLine(size_t inset_idx, bool is_odd);
-    ExtrusionLine(size_t inset_idx, bool is_odd, bool is_closed);
+    ExtrusionLine(const size_t inset_idx, const bool is_odd);
     ExtrusionLine() : inset_idx(-1), is_odd(true), is_closed(false) {}
     ExtrusionLine(const ExtrusionLine &other) : inset_idx(other.inset_idx), is_odd(other.is_odd), is_closed(other.is_closed), junctions(other.junctions) {}
 
@@ -134,6 +119,7 @@ struct ExtrusionLine
      * Sum the total length of this path.
      */
     int64_t getLength() const;
+    bool    is_zero_length() const;
     int64_t polylineLength() const { return getLength(); }
 
     /*!
@@ -143,12 +129,57 @@ struct ExtrusionLine
      */
     Polygon toPolygon() const
     {
+        assert(this->is_closed);
         Polygon ret;
-        for (const ExtrusionJunction &j : junctions)
-            ret.points.emplace_back(j.p);
+        for (const ExtrusionJunction &j : junctions) {
+            // only copy a point if it's far enough
+            if (ret.points.empty() || !j.p.coincides_with_epsilon(ret.points.back())) {
+                ret.points.emplace_back(j.p);
+            }
+        }
+        // be sure the last point is the one that is kept
+        if (ret.points.back() != junctions.back().p) {
+            ret.points.back() = junctions.back().p;
+        }
+        // a polygon doesn't repeat the last point
+        if (ret.points.back().coincides_with_epsilon(ret.points.front())) {
+            ret.points.pop_back();
+        }
 
         return ret;
     }
+
+    /*!
+     * Put all junction locations into a polygon object.
+     *
+     * When this path is not closed the returned Polygon should be handled as a polyline, rather than a polygon.
+     */
+    Polyline toPolyline() const
+    {
+        Polyline ret;
+        for (const ExtrusionJunction &j : junctions) {
+            // only copy a point if it's far enough
+            if (ret.points.empty() || !j.p.coincides_with_epsilon(ret.points.back())) {
+                ret.points.emplace_back(j.p);
+            }
+        }
+        // be sure the last point is the one that is kept
+        if (ret.points.back() != junctions.back().p) {
+            ret.points.back() = junctions.back().p;
+        }
+        // if loop, be sure to have the exact same point in front & back.
+        if (ret.points.back().coincides_with_epsilon(ret.points.front())) {
+            assert(this->is_closed);
+            ret.points.back() = ret.points.front();
+        }
+
+        return ret;
+    }
+
+    /*!
+     * Get the minimal width of this path
+     */
+    coord_t getMinimalWidth() const;
 
     /*!
      * Removes vertices of the ExtrusionLines to make sure that they are not too high
@@ -201,8 +232,6 @@ struct ExtrusionLine
     bool is_contour() const;
 
     double area() const;
-
-    bool is_external_perimeter() const { return this->inset_idx == 0; }
 };
 
 static inline Slic3r::ThickPolyline to_thick_polyline(const Arachne::ExtrusionLine &line_junctions)
@@ -210,18 +239,14 @@ static inline Slic3r::ThickPolyline to_thick_polyline(const Arachne::ExtrusionLi
     assert(line_junctions.size() >= 2);
     Slic3r::ThickPolyline out;
     out.points.emplace_back(line_junctions.front().p);
-    out.width.emplace_back(line_junctions.front().w);
-    out.points.emplace_back(line_junctions[1].p);
-    out.width.emplace_back(line_junctions[1].w);
+    out.points_width.emplace_back(line_junctions.front().w);
 
-    auto it_prev = line_junctions.begin() + 1;
-    for (auto it = line_junctions.begin() + 2; it != line_junctions.end(); ++it) {
-        out.points.emplace_back(it->p);
-        out.width.emplace_back(it_prev->w);
-        out.width.emplace_back(it->w);
-        it_prev = it;
+    for (auto it = line_junctions.begin() + 1; it != line_junctions.end(); ++it) {
+        if (!it->p.coincides_with_epsilon(out.points.back())) {
+            out.points.emplace_back(it->p);
+            out.points_width.emplace_back(it->w);
+        }
     }
-
     return out;
 }
 
@@ -230,25 +255,31 @@ static inline Slic3r::ThickPolyline to_thick_polyline(const ClipperLib_Z::Path &
     assert(path.size() >= 2);
     Slic3r::ThickPolyline out;
     out.points.emplace_back(path.front().x(), path.front().y());
-    out.width.emplace_back(path.front().z());
-    out.points.emplace_back(path[1].x(), path[1].y());
-    out.width.emplace_back(path[1].z());
+    out.points_width.emplace_back(path.front().z());
 
-    auto it_prev = path.begin() + 1;
-    for (auto it = path.begin() + 2; it != path.end(); ++it) {
-        out.points.emplace_back(it->x(), it->y());
-        out.width.emplace_back(it_prev->z());
-        out.width.emplace_back(it->z());
-        it_prev = it;
+    for (auto it = path.begin() + 1; it != path.end(); ++it) {
+        if (!Point{ it->x(), it->y() }.coincides_with_epsilon(out.points.back())) {
+            out.points.emplace_back(it->x(), it->y());
+            out.points_width.emplace_back(it->z());
+        }
     }
+    // Don't create 1-element polyline.
+    if(out.points.size() <2)
+        return {};
 
+    assert(out.points.back().coincides_with_epsilon(Point{ path.back().x(), path.back().y() }));
+    out.points.back() = Point{ path.back().x(), path.back().y() };
+
+    assert(out.points.front().x() == path.front().x());
+    assert(out.points.front().y() == path.front().y());
+    assert(out.points.back().x() == path.back().x());
+    assert(out.points.back().y() == path.back().y());
     return out;
 }
 
 static inline Polygon to_polygon(const ExtrusionLine &line)
 {
     Polygon out;
-    assert(line.is_closed);
     assert(line.junctions.size() >= 3);
     assert(line.junctions.front().p == line.junctions.back().p);
     out.points.reserve(line.junctions.size() - 1);
@@ -257,11 +288,15 @@ static inline Polygon to_polygon(const ExtrusionLine &line)
     return out;
 }
 
-Points to_points(const ExtrusionLine &extrusion_line);
-
-BoundingBox get_extents(const ExtrusionLine &extrusion_line);
-
 #if 0
+static BoundingBox get_extents(const ExtrusionLine &extrusion_line)
+{
+    BoundingBox bbox;
+    for (const ExtrusionJunction &junction : extrusion_line.junctions)
+        bbox.merge(junction.p);
+    return bbox;
+}
+
 static BoundingBox get_extents(const std::vector<ExtrusionLine> &extrusion_lines)
 {
     BoundingBox bbox;
@@ -280,6 +315,15 @@ static BoundingBox get_extents(const std::vector<const ExtrusionLine *> &extrusi
     return bbox;
 }
 
+static Points to_points(const ExtrusionLine &extrusion_line)
+{
+    Points points;
+    points.reserve(extrusion_line.junctions.size());
+    for (const ExtrusionJunction &junction : extrusion_line.junctions)
+        points.emplace_back(junction.p);
+    return points;
+}
+
 static std::vector<Points> to_points(const std::vector<const ExtrusionLine *> &extrusion_lines)
 {
     std::vector<Points> points;
@@ -292,16 +336,6 @@ static std::vector<Points> to_points(const std::vector<const ExtrusionLine *> &e
 #endif
 
 using VariableWidthLines = std::vector<ExtrusionLine>; //<! The ExtrusionLines generated by libArachne
-using Perimeter = VariableWidthLines;
-using Perimeters = std::vector<Perimeter>;
 
 } // namespace Slic3r::Arachne
-
-namespace Slic3r {
-
-void extrusion_paths_append(ExtrusionPaths &dst, const ClipperLib_Z::Paths &extrusion_paths, const ExtrusionRole role, const Flow &flow, uint32_t perimeter_index);
-void extrusion_paths_append(ExtrusionPaths &dst, const Arachne::ExtrusionLine &extrusion, const ExtrusionRole role, const Flow &flow, uint32_t perimeter_index);
-
-} // namespace Slic3r
-
 #endif // UTILS_EXTRUSION_LINE_H

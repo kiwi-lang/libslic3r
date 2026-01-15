@@ -1,25 +1,9 @@
 #ifndef slic3r_Geometry_ArcWelder_hpp_
 #define slic3r_Geometry_ArcWelder_hpp_
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <optional>
-#include <Eigen/Geometry>
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <type_traits>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <complex>
-#include <cstddef>
 
 #include "../Point.hpp"
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r { namespace Geometry { namespace ArcWelder {
 
@@ -40,14 +24,42 @@ inline Eigen::Matrix<Float, 2, 1, Eigen::DontAlign> arc_center(
     static_assert(std::is_same<typename Derived::Scalar, Float>::value, "arc_center(): Radius must be of the same type as the vectors.");
     assert(radius != 0);
     using Vector = Eigen::Matrix<Float, 2, 1, Eigen::DontAlign>;
-    auto  v  = end_pos - start_pos;
+    Vector v  = end_pos - start_pos;
     Float q2 = v.squaredNorm();
     assert(q2 > 0);
     Float t2 = sqr(radius) / q2 - Float(.25f);
     // If the start_pos and end_pos are nearly antipodal, t2 may become slightly negative.
     // In that case return a centroid of start_point & end_point.
     Float t = t2 > 0 ? sqrt(t2) : Float(0);
-    auto mid = Float(0.5) * (start_pos + end_pos);
+    Vector mid = (start_pos + end_pos) * Float(0.5f);
+    Vector vp{ -v.y() * t, v.x() * t };
+    return (radius > Float(0)) == is_ccw ? (mid + vp).eval() : (mid - vp).eval();
+}
+
+
+// Calculate center point (center of a circle) of an arc given two points and a radius.
+// positive radius: take shorter arc
+// negative radius: take longer arc
+// radius must NOT be zero!
+template<typename Scalar, typename Float>
+inline Eigen::Matrix<Scalar, 2, 1, Eigen::DontAlign> arc_center_scalar(
+    const Eigen::Matrix<Scalar, 2, 1, Eigen::DontAlign>   &start_pos,
+    const Eigen::Matrix<Scalar, 2, 1, Eigen::DontAlign>   &end_pos, 
+    const Float                         radius,
+    const bool                          is_ccw)
+{
+    static_assert(!std::is_same<Scalar, Float>::value, "arc_center_scalar(): Radius shouldn't be a scalar but a float.");
+    assert(radius != 0);
+    assert(radius * 1.001 != radius && radius * 0.999 != radius); // check if Float is a float
+    using Vector = Eigen::Matrix<Scalar, 2, 1, Eigen::DontAlign>;
+    Vector v  = end_pos - start_pos;
+    Float q2 = v.squaredNorm();
+    assert(q2 > 0);
+    Float t2 = sqr(radius) / q2 - Float(.25f);
+    // If the start_pos and end_pos are nearly antipodal, t2 may become slightly negative.
+    // In that case return a centroid of start_point & end_point.
+    Float t = t2 > 0 ? sqrt(t2) : Float(0);
+    Vector mid = (start_pos + end_pos) * Float(0.5f);
     Vector vp{ -v.y() * t, v.x() * t };
     return (radius > Float(0)) == is_ccw ? (mid + vp).eval() : (mid - vp).eval();
 }
@@ -88,53 +100,25 @@ inline Eigen::Matrix<Float, 2, 1, Eigen::DontAlign> arc_middle_point(
 // positive radius: take shorter arc
 // negative radius: take longer arc
 // radius must NOT be zero!
-template<typename Derived, typename Derived2>
-inline typename Derived::Scalar arc_angle(
+template<typename Derived, typename Derived2, typename Float>
+inline Float arc_angle(
     const Eigen::MatrixBase<Derived>   &start_pos,
     const Eigen::MatrixBase<Derived2>  &end_pos, 
-    const typename Derived::Scalar      radius)
+    const Float                         radius)
 {
     static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "arc_angle(): first parameter is not a 2D vector");
     static_assert(Derived2::IsVectorAtCompileTime && int(Derived2::SizeAtCompileTime) == 2, "arc_angle(): second parameter is not a 2D vector");
     static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value, "arc_angle(): Both vectors must be of the same type.");
     assert(radius != 0);
-    using Float = typename Derived::Scalar;
     Float a = Float(0.5) * (end_pos - start_pos).norm() / radius;
-    return radius > Float(0) ?
+    Float angle = radius > Float(0)  ?
         // acute angle:
-        (a > Float( 1.) ? Float(M_PI) : Float(2.) * std::asin(a)) :
+        (a >= Float( 1.) ? Float(M_PI) : Float(2.) * std::asin(a)) :
         // obtuse angle:
-        (a < Float(-1.) ? Float(M_PI) : Float(2. * M_PI) + Float(2.) * std::asin(a));
-}
-
-// Calculate angle of an arc given two points, center and orientation.
-template<typename Derived, typename Derived2, typename Derived3>
-inline typename Derived::Scalar arc_angle(
-    const Eigen::MatrixBase<Derived>   &start_pos,
-    const Eigen::MatrixBase<Derived2>  &end_pos,
-    const Eigen::MatrixBase<Derived3>  &center_pos,
-    const bool                          ccw)
-{
-    static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "arc_angle(): first parameter is not a 2D vector");
-    static_assert(Derived2::IsVectorAtCompileTime && int(Derived2::SizeAtCompileTime) == 2, "arc_angle(): second parameter is not a 2D vector");
-    static_assert(Derived3::IsVectorAtCompileTime && int(Derived3::SizeAtCompileTime) == 2, "arc_angle(): third parameter is not a 2D vector");
-    static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value &&
-                  std::is_same<typename Derived::Scalar, typename Derived3::Scalar>::value, "arc_angle(): All third points must be of the same type.");
-
-    using Float = typename Derived::Scalar;
-
-    auto  vstart = start_pos - center_pos;
-    auto  vend   = end_pos - center_pos;
-    Float angle  = atan2(double(cross2(vstart, vend)), double(vstart.dot(vend)));
-    if (!ccw) {
-        angle *= Float(-1.);
-    }
-
-    if (angle < 0) {
-        angle += Float(2. * M_PI);
-    }
-
-    assert(angle >= Float(0.) && angle < Float(2. * M_PI + EPSILON));
+        (a <= Float(-1.) ? Float(M_PI) : Float(2. * M_PI) + Float(2.) * std::asin(a));
+    double asina = 0;
+    if(a >-1 && a <1) asina = std::asin(a);
+    assert(angle >= 0 && angle <= Float(2. * M_PI));
     return angle;
 }
 
@@ -142,11 +126,11 @@ inline typename Derived::Scalar arc_angle(
 // positive radius: take shorter arc
 // negative radius: take longer arc
 // radius must NOT be zero!
-template<typename Derived, typename Derived2>
-inline typename Derived::Scalar arc_length(
+template<typename Derived, typename Derived2, typename Float>
+inline Float arc_length(
     const Eigen::MatrixBase<Derived>   &start_pos,
     const Eigen::MatrixBase<Derived2>  &end_pos,
-    const typename Derived::Scalar      radius)
+    const Float                         radius)
 {
     static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "arc_length(): first parameter is not a 2D vector");
     static_assert(Derived2::IsVectorAtCompileTime && int(Derived2::SizeAtCompileTime) == 2, "arc_length(): second parameter is not a 2D vector");
@@ -156,8 +140,8 @@ inline typename Derived::Scalar arc_length(
 }
 
 // Calculate positive length of an arc given two points, center and orientation.
-template<typename Derived, typename Derived2, typename Derived3>
-inline typename Derived::Scalar arc_length(
+template<typename Derived, typename Derived2, typename Derived3, typename Float>
+inline Float arc_length(
     const Eigen::MatrixBase<Derived>   &start_pos,
     const Eigen::MatrixBase<Derived2>  &end_pos,
     const Eigen::MatrixBase<Derived3>  &center_pos,
@@ -168,7 +152,7 @@ inline typename Derived::Scalar arc_length(
     static_assert(Derived3::IsVectorAtCompileTime && int(Derived3::SizeAtCompileTime) == 2, "arc_length(): third parameter is not a 2D vector");
     static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value &&
                   std::is_same<typename Derived::Scalar, typename Derived3::Scalar>::value, "arc_length(): All third points must be of the same type.");
-    using Float = typename Derived::Scalar;
+    //using Float = typename Derived::Scalar;
     auto  vstart = start_pos - center_pos;
     auto  vend   = end_pos - center_pos;
     Float radius = vstart.norm();
@@ -179,41 +163,6 @@ inline typename Derived::Scalar arc_length(
         angle += Float(2. * M_PI);
     assert(angle >= Float(0.) && angle < Float(2. * M_PI + EPSILON));
     return angle * radius;
-}
-
-// Calculate a point on an arc at a specified distance from the start point.
-// The arc is defined by start_pos, end_pos, center_pos and orientation (ccw).
-// The function interpolates along the arc from start_pos toward end_pos,
-// returning the point at the given distance from the start.
-// If split_at_distance exceeds the arc length, the end point is returned.
-// If split_at_distance is negative or zero, the start point is returned.
-template<typename Derived, typename Derived2, typename Derived3>
-inline typename Eigen::Matrix<typename Derived::Scalar, 2, 1, Eigen::DontAlign> arc_point_at_distance(
-
-    const Eigen::MatrixBase<Derived>  &start_pos,
-    const Eigen::MatrixBase<Derived2> &end_pos,
-    const Eigen::MatrixBase<Derived3> &center_pos,
-    const bool                         ccw,
-    const typename Derived::Scalar     split_at_distance)
-{
-    static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) == 2, "arc_split(): first parameter is not a 2D vector");
-    static_assert(Derived2::IsVectorAtCompileTime && int(Derived2::SizeAtCompileTime) == 2, "arc_split(): second parameter is not a 2D vector");
-    static_assert(Derived3::IsVectorAtCompileTime && int(Derived3::SizeAtCompileTime) == 2, "arc_split(): third parameter is not a 2D vector");
-    static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value &&
-                  std::is_same<typename Derived::Scalar, typename Derived3::Scalar>::value, "arc_split(): All third points must be of the same type.");
-
-    using Float  = typename Derived::Scalar;
-    using Vector = Eigen::Matrix<Float, 2, 1, Eigen::DontAlign>;
-
-    const Vector arc_radius_vec = start_pos - center_pos;
-    const Float  arc_angle_val  = arc_angle(start_pos, end_pos, center_pos, ccw);
-    const Float  arc_length_val = arc_length(start_pos, end_pos, center_pos, ccw);
-
-    const Float t                       = std::clamp(split_at_distance / arc_length_val, static_cast<Float>(0.), static_cast<Float>(1.));
-    const Float split_at_angle          = t * arc_angle_val;
-    const Float split_at_angle_oriented = ccw ? split_at_angle : -split_at_angle;
-
-    return center_pos + Eigen::Rotation2D<Float>(split_at_angle_oriented) * arc_radius_vec;
 }
 
 // Be careful! This version has a strong bias towards small circles with small radii
@@ -238,7 +187,7 @@ inline typename Eigen::Matrix<typename Derived::Scalar, 2, 1, Eigen::DontAlign> 
     static_assert(Derived3::IsVectorAtCompileTime && int(Derived3::SizeAtCompileTime) == 2, "arc_fit_center_algebraic_ls(): third parameter is not a 2D vector");
     static_assert(std::is_same<typename Derived::Scalar, typename Derived2::Scalar>::value &&
                   std::is_same<typename Derived::Scalar, typename Derived3::Scalar>::value, "arc_fit_center_algebraic_ls(): All third points must be of the same type.");
-    using Float  = typename Derived::Scalar;
+    using Float  = double;//typename Derived::Scalar;
     using Vector = Eigen::Matrix<Float, 2, 1, Eigen::DontAlign>;
     // Prepare a vector space to transform the fitting into:
     // center_pos, dir_x, dir_y
@@ -445,6 +394,7 @@ size_t arc_discretization_steps(const FloatType radius, const FloatType angle, c
 // Discretize arc given the radius, orientation and maximum deviation from the arc.
 // Returned polygon starts with p1, ends with p2 and it is discretized to guarantee the maximum deviation.
 Points arc_discretize(const Point &p1, const Point &p2, const double radius, const bool ccw, const double deviation);
+Points arc_discretize(const Point &p1, const Point &p2, const double radius, const bool ccw, const size_t num_steps);
 
 // Variance of the arc fit of points <begin, end).
 // First and last points of <begin, end) are expected to fit the arc exactly.
@@ -456,11 +406,11 @@ double arc_fit_variance(const Point &start_point, const Point &end_point, const 
 double arc_fit_max_deviation(const Point &start_point, const Point &end_point, const float radius, bool is_ccw,
     const Points::const_iterator begin, const Points::const_iterator end);
 
-// 1.2m diameter, maximum given by coord_t
-static_assert(sizeof(coord_t) == 4);
-static constexpr const double default_scaled_max_radius = scaled<double>(600.);
+// 1.2m diameter, maximum given by coord_t in 32b
+//static_assert(sizeof(coord_t) == 4); // disabled, but keep the 1.2m max diameter, as it's enough I think.
+static constexpr const coordf_t default_scaled_max_radius = scaled(600.);
 // 0.05mm
-static constexpr const double default_scaled_resolution = scaled<double>(0.05);
+static constexpr const coordf_t default_scaled_resolution = scaled(0.05);
 // 5 percent
 static constexpr const double default_arc_length_percent_tolerance = 0.05;
 
@@ -479,6 +429,8 @@ Orientation arc_orientation(
     const Points::const_iterator begin,
     const Points::const_iterator end);
 
+Orientation arc_orientation(const Point &from, const Point &to, const Point &center, float radius);
+
 // Single segment of a smooth path.
 struct Segment
 {
@@ -486,12 +438,24 @@ struct Segment
     // Start point is provided by the preceding segment.
     Point       point;
     // Radius of a circular segment. Positive - take the shorter arc. Negative - take the longer arc. Zero - linear segment.
-    float       radius{ 0.f };
+    float       radius;
     // CCW or CW. Ignored for zero radius (linear segment).
-    Orientation orientation{ Orientation::CCW };
-
-    float height_fraction{ 1.f };
-    float e_fraction{ 1.f };
+    Orientation orientation;
+#ifdef _DEBUG
+    coordf_t length = 0;
+    Point center = Point(0,0);
+#endif
+    Segment() : point(0, 0), radius(0.f), orientation(Orientation::Unknown) {}
+    Segment(const Point &pt, float fradius, Orientation orien) : point(pt), radius(fradius), orientation(orien) {
+        assert(radius != 0 || orientation == Orientation::Unknown);
+        assert(radius == 0 || orientation != Orientation::Unknown);
+    }
+    Segment(Point &&pt, float fradius, Orientation orien) : point(std::move(pt)), radius(fradius), orientation(orien) {
+        assert(radius != 0 || orientation == Orientation::Unknown);
+        assert(radius == 0 || orientation != Orientation::Unknown);
+    }
+    Segment(const Point &pt) : point(pt), radius(0.f), orientation(Orientation::Unknown) {}
+    Segment(Point &&pt) : point(std::move(pt)), radius(0.f), orientation(Orientation::Unknown) {}
 
     bool    linear() const { return radius == 0; }
     bool    ccw() const { return orientation == Orientation::CCW; }
@@ -562,8 +526,8 @@ void reverse(Path &path);
 
 // Clip start / end of a smooth path by len.
 // If path is shorter than len, remaining path length to trim will be returned.
-double clip_start(Path &path, const double len);
-double clip_end(Path &path, const double len);
+double clip_start(Path &path, const coordf_t len);
+double clip_end(Path &path, const coordf_t len);
 
 struct PathSegmentProjection
 {

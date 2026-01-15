@@ -6,23 +6,16 @@
 #ifndef slic3r_GCode_PressureEqualizer_hpp_
 #define slic3r_GCode_PressureEqualizer_hpp_
 
-#include <assert.h>
-#include <stddef.h>
-#include <queue>
-#include <algorithm>
-#include <cmath>
-#include <string>
-#include <vector>
-#include <cassert>
-#include <cstddef>
+#include "../libslic3r.h"
+#include "../PrintConfig.hpp"
+#include "../ExtrusionRole.hpp"
 
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/ExtrusionRole.hpp"
+#include <queue>
 
 namespace Slic3r {
 
 struct LayerResult;
+
 class GCodeG1Formatter;
 
 //#define PRESSURE_EQUALIZER_STATISTIC
@@ -89,11 +82,12 @@ private:
     // X,Y,Z,E,F
     float                           m_current_pos[5];
     size_t                          m_current_extruder;
+    std::vector<std::string>        m_extruder_names;
     GCodeExtrusionRole              m_current_extrusion_role;
-    // Set only for external and internal perimeters. The external perimeter has value 0, the first internal perimeter has 1, and so on.
-    std::optional<uint16_t>         m_current_perimeter_index;
     bool                            m_retracted;
     bool                            m_use_relative_e_distances;
+    int                             m_gcode_precision_xyz = 3;
+    int                             m_gcode_precision_e = 5;
 
     // Indicate if extrude set speed block was opened using the tag ";_EXTRUDE_SET_SPEED"
     // or not (not opened, or it was closed using the tag ";_EXTRUDE_END").
@@ -137,9 +131,8 @@ private:
         float       feedrate()      const { return pos_end[4]; }
         float       time()          const { return dist_xyz() / feedrate(); }
         float       time_inv()      const { return feedrate() / dist_xyz(); }
-        float       volumetric_correction_avg() const {
-            // Cap the correction to 0.05 - 1.00000001 to avoid zero feedrate.
-            float avg_correction = std::max(0.05f, 0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate);
+        float       volumetric_correction_avg() const { 
+            float avg_correction = 0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate; 
             assert(avg_correction > 0.f);
             assert(avg_correction <= 1.00000001f);
             return avg_correction;
@@ -166,9 +159,6 @@ private:
         // Extrusion role of this segment.
         GCodeExtrusionRole extrusion_role;
 
-        // Set only for external and internal perimeters. The external perimeter has value 0, the first internal perimeter has 1, and so on.
-        std::optional<uint16_t> perimeter_index;
-
         // Current volumetric extrusion rate.
         float       volumetric_extrusion_rate;
         // Volumetric extrusion rate at the start of this segment.
@@ -183,12 +173,9 @@ private:
 
         bool        adjustable_flow       = false;
 
-        void        update_end_position(const float *position_end, const bool *position_provided_original);
-        void        update_end_position(const float *position_start, const float *position_end, float t, const bool *position_provided_original);
+        bool        extrude_set_speed_tag = false;
+        bool        extrude_end_tag       = false;
     };
-
-    using GCodeLines = std::vector<GCodeLine>;
-    using GCodeLinesConstIt = GCodeLines::const_iterator;
 
     // Output buffer will only grow. It will not be reallocated over and over.
     std::vector<char>               output_buffer;
@@ -202,12 +189,11 @@ private:
 
     bool process_line(const char *line, const char *line_end, GCodeLine &buf);
     void output_gcode_line(size_t line_idx);
-
-    GCodeLinesConstIt advance_segment_beyond_small_gap(const GCodeLinesConstIt &last_extruding_line_it) const;
+    void parse_activate_extruder(const std::string&);
 
     // Go back from the current circular_buffer_pos and lower the feedtrate to decrease the slope of the extrusion rate changes.
     // Then go forward and adjust the feedrate to decrease the slope of the extrusion rate changes.
-    void adjust_volumetric_rate(size_t first_line_idx, size_t last_line_idx);
+    void adjust_volumetric_rate();
 
     // Push the text to the end of the output_buffer.
     inline void push_to_output(GCodeG1Formatter &formatter);

@@ -4,17 +4,9 @@
 ///|/
 #include "Tesselate.hpp"
 
-#include <glu-libtess.h>
-#include <algorithm>
-#include <deque>
-#include <utility>
-#include <cassert>
-#include <cstring>
-
 #include "ExPolygon.hpp"
-#include "admesh/stl.h"
 
-class GLUtesselator;
+#include <glu-libtess.h>
 
 namespace Slic3r {
 

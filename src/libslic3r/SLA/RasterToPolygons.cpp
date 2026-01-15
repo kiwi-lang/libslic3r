@@ -4,17 +4,10 @@
 ///|/
 #include "RasterToPolygons.hpp"
 
-#include <algorithm>
-#include <utility>
-#include <vector>
-#include <cinttypes>
-#include <cstddef>
-
 #include "AGGRaster.hpp"
 #include "libslic3r/MarchingSquares.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include "MTUtils.hpp"
+#include "ClipperUtils.hpp"
 
 namespace marchsq {
 
@@ -44,7 +37,7 @@ template<class Fn> void foreach_vertex(ExPolygon &poly, Fn &&fn)
         for (auto &p : h.points) fn(p);
 }
 
-ExPolygons raster_to_polygons(const RasterGrayscaleAA &rst, Vec2i windowsize)
+ExPolygons raster_to_polygons(const RasterGrayscaleAA &rst, Vec2i32 windowsize)
 {    
     size_t rows = rst.resolution().height_px, cols = rst.resolution().width_px;
     

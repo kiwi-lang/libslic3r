@@ -3,14 +3,12 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "AABBMesh.hpp"
+#include <Execution/ExecutionTBB.hpp>
 
 #include <libslic3r/AABBTreeIndirect.hpp>
 #include <libslic3r/TriangleMesh.hpp>
-#include <igl/Hit.h>
-#include <algorithm>
 
-#include "admesh/stl.h"
-#include "libslic3r/Point.hpp"
+#include <numeric>
 
 #ifdef SLIC3R_HOLE_RAYCASTER
 #include <libslic3r/SLA/Hollowing.hpp>
@@ -119,8 +117,6 @@ AABBMesh &AABBMesh::operator=(AABBMesh &&other) = default;
 
 AABBMesh::AABBMesh(AABBMesh &&other) = default;
 
-
-
 const std::vector<Vec3f>& AABBMesh::vertices() const
 {
     return m_tm->vertices;
@@ -128,12 +124,10 @@ const std::vector<Vec3f>& AABBMesh::vertices() const
 
 
 
-const std::vector<Vec3i>& AABBMesh::indices()  const
+const std::vector<Vec3i32>& AABBMesh::indices()  const
 {
     return m_tm->indices;
 }
-
-
 
 const Vec3f& AABBMesh::vertices(size_t idx) const
 {
@@ -142,7 +136,7 @@ const Vec3f& AABBMesh::vertices(size_t idx) const
 
 
 
-const Vec3i& AABBMesh::indices(size_t idx) const
+const Vec3i32& AABBMesh::indices(size_t idx) const
 {
     return m_tm->indices[idx];
 }
@@ -152,7 +146,6 @@ Vec3d AABBMesh::normal_by_face_id(int face_id) const {
 
     return its_unnormalized_normal(*m_tm, face_id).cast<double>().normalized();
 }
-
 
 AABBMesh::hit_result
 AABBMesh::query_ray_hit(const Vec3d &s, const Vec3d &dir) const

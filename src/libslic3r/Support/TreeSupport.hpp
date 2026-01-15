@@ -13,26 +13,15 @@
 #ifndef slic3r_TreeSupport_hpp
 #define slic3r_TreeSupport_hpp
 
-#include <boost/container/small_vector.hpp>
-#include <stddef.h>
-#include <stdint.h>
-#include <boost/cstdint.hpp>
-#include <algorithm>
-#include <deque>
-#include <functional>
-#include <limits>
-#include <utility>
-#include <vector>
-#include <cstddef>
-
 #include "SupportLayer.hpp"
 #include "TreeModelVolumes.hpp"
 #include "TreeSupportCommon.hpp"
+
 #include "../BoundingBox.hpp"
 #include "../Point.hpp"
 #include "../Utils.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include <boost/container/small_vector.hpp>
 
 
 // #define TREE_SUPPORT_SHOW_ERRORS

@@ -6,14 +6,9 @@
 #ifndef slic3r_FillLine_hpp_
 #define slic3r_FillLine_hpp_
 
-#include <utility>
+#include "../libslic3r.h"
 
-#include "libslic3r/libslic3r.h"
 #include "FillBase.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
 
 namespace Slic3r {
 
@@ -22,17 +17,18 @@ class Surface;
 class FillLine : public Fill
 {
 public:
+    FillLine() : Fill() { can_fill_surface_single = true; }
     Fill* clone() const override { return new FillLine(*this); };
     ~FillLine() override = default;
-    bool is_self_crossing() override { return false; }
 
+	void init_spacing(double spacing, const FillParams& params) override;
 protected:
 	void _fill_surface_single(
 	    const FillParams                &params, 
 	    unsigned int                     thickness_layers,
 	    const std::pair<float, Point>   &direction, 
 	    ExPolygon    		             expolygon,
-	    Polylines                       &polylines_out) override;
+	    Polylines                       &polylines_out) const override;
 
 	coord_t _min_spacing;
 	coord_t _line_spacing;
@@ -46,7 +42,7 @@ protected:
 		return Line(Point(x - osc, y_min), Point(x + osc, y_max));
 	}
 
-	bool _can_connect(coord_t dist_X, coord_t dist_Y)
+	bool _can_connect(coord_t dist_X, coord_t dist_Y) const
 	{
 	    const auto TOLERANCE = coord_t(10 * SCALED_EPSILON);
     	return (dist_X >= (this->_line_spacing - this->_line_oscillation) - TOLERANCE)

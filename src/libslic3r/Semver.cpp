@@ -2,12 +2,10 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-
-#include "libslic3r/Semver.hpp"
-#include "libslic3r_version.h"
+#include "libslic3r.h"
 
 namespace Slic3r {
 
-Semver SEMVER { SLIC3R_VERSION };
+Semver SEMVER { SLIC3R_VERSION_FULL };
 
 }

@@ -3,18 +3,18 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "GCodeReader.hpp"
-
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/nowide/fstream.hpp>
 #include <boost/nowide/cstdio.hpp>
-#include <fast_float.h>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
-
 #include "Utils.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include "LocalesUtils.hpp"
+
+#include <fast_float/fast_float.h>
 
 namespace Slic3r {
 
@@ -117,7 +117,7 @@ void GCodeReader::update_coordinates(GCodeLine &gline, std::pair<const char*, co
 {
     if (*command.first == 'G') {
         int cmd_len = int(command.second - command.first);
-        if ((cmd_len == 2 && (command.first[1] == '0' || command.first[1] == '1')) ||
+        if ((cmd_len == 2 && (command.first[1] == '0' || command.first[1] == '1' || command.first[1] == '2' || command.first[1] == '3')) ||
             (cmd_len == 3 &&  command.first[1] == '9' && command.first[2] == '2')) {
             for (size_t i = 0; i < NUM_AXES; ++ i)
                 if (gline.has(Axis(i)))
@@ -131,10 +131,6 @@ bool GCodeReader::parse_file_raw_internal(const std::string &filename, ParseLine
 {
     FilePtr in{ boost::nowide::fopen(filename.c_str(), "rb") };
 
-    fseek(in.f, 0, SEEK_END);
-    const long file_size = ftell(in.f);
-    rewind(in.f);
-
     // Read the input stream 64kB at a time, extract lines and process them.
     std::vector<char> buffer(65536 * 10, 0);
     // Line buffer.
@@ -145,7 +141,6 @@ bool GCodeReader::parse_file_raw_internal(const std::string &filename, ParseLine
         size_t cnt_read = ::fread(buffer.data(), 1, buffer.size(), in.f);
         if (::ferror(in.f))
             return false;
-
         bool eof       = cnt_read == 0;
         auto it        = buffer.begin();
         auto it_bufend = buffer.begin() + cnt_read;
@@ -183,8 +178,6 @@ bool GCodeReader::parse_file_raw_internal(const std::string &filename, ParseLine
         if (eof)
             break;
         file_pos += cnt_read;
-        if (m_progress_callback != nullptr)
-            m_progress_callback(static_cast<float>(file_pos) / static_cast<float>(file_size));
     }
     return true;
 }

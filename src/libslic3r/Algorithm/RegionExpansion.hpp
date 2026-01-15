@@ -5,14 +5,10 @@
 #ifndef SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 #define SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 
+#include <cstdint>
 #include <libslic3r/Point.hpp>
 #include <libslic3r/Polygon.hpp>
 #include <libslic3r/ExPolygon.hpp>
-#include <stddef.h>
-#include <cstdint>
-#include <algorithm>
-#include <vector>
-#include <cstddef>
 
 namespace Slic3r {
 namespace Algorithm {
@@ -37,9 +33,9 @@ struct RegionExpansionParameters
 
     static RegionExpansionParameters build(
         // Scaled expansion value
-        float                full_expansion,
+        coord_t             full_expansion,
         // Expand by waves of expansion_step size (expansion_step is scaled).
-        float                expansion_step,
+        coord_t             expansion_step,
         // Don't take more than max_nr_steps for small expansion_step.
         size_t               max_nr_expansion_steps);
 };

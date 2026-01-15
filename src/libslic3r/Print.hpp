@@ -21,8 +21,8 @@
 #ifndef slic3r_Print_hpp_
 #define slic3r_Print_hpp_
 
-#include "libslic3r/Fill/FillAdaptive.hpp"
-#include "libslic3r/Fill/FillLightning.hpp"
+#include "Fill/FillAdaptive.hpp"
+#include "Fill/FillLightning.hpp"
 #include "PrintBase.hpp"
 
 #include "BoundingBox.hpp"
@@ -32,16 +32,18 @@
 #include "Slicing.hpp"
 #include "SupportSpotsGenerator.hpp"
 #include "TriangleMeshSlicer.hpp"
-#include "libslic3r/GCode/ToolOrdering.hpp"
-#include "libslic3r/GCode/WipeTower.hpp"
-#include "libslic3r/GCode/ThumbnailData.hpp"
-#include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "Surface.hpp"
+#include "GCode/ToolOrdering.hpp"
+#include "GCode/WipeTower.hpp"
+#include "GCode/ThumbnailData.hpp"
 #include "MultiMaterialSegmentation.hpp"
 
 #include "libslic3r.h"
 
 #include <Eigen/Geometry>
 
+#include <atomic>
+#include <ctime>
 #include <functional>
 #include <optional>
 #include <set>
@@ -50,6 +52,7 @@
 namespace Slic3r {
 
 class GCodeGenerator;
+struct GCodeProcessorResult;
 class Layer;
 class ModelObject;
 class Print;
@@ -68,9 +71,10 @@ namespace FillLightning {
     using GeneratorPtr = std::unique_ptr<Generator, GeneratorDeleter>;
 }; // namespace FillLightning
 
+
 // Print step IDs for keeping track of the print state.
 // The Print steps are applied in this order.
-enum PrintStep : unsigned int {
+enum PrintStep : uint8_t {
     psWipeTower,
     // Ordering of the tools on PrintObjects for a multi-material print.
     // psToolOrdering is a synonym to psWipeTower, as the Wipe Tower calculates and modifies the ToolOrdering,
@@ -82,14 +86,64 @@ enum PrintStep : unsigned int {
     // should be refreshed.
     psSlicingFinished = psSkirtBrim,
     psGCodeExport,
+   //TODO: psGCodeLoader (for params that are only used for time display and such)
     psCount,
 };
 
-enum PrintObjectStep : unsigned int {
-    posSlice, posPerimeters, posPrepareInfill,
-    posInfill, posIroning, posSupportSpotsSearch, posSupportMaterial, posEstimateCurledExtrusions, posCalculateOverhangingPerimeters, posCount,
+enum PrintObjectStep : uint8_t {
+    posSlice,
+    posPerimeters,
+    posPrepareInfill,
+    posInfill,
+    posIroning,
+    posSupportSpotsSearch,
+    posSupportMaterial, 
+    posEstimateCurledExtrusions,
+    posCalculateOverhangingPerimeters,
+    posSimplifyPath, // simplify &  arc fitting from BBS
+    posCount,
 };
 
+/**
+* order:
+*            m_objects[idx]->make_perimeters();
+*                   -> slice()
+*                   -> make_perimeters()
+*            m_objects[idx]->infill();
+*            m_objects[idx]->ironing();
+*            obj->generate_support_spots();
+*            psAlertWhenSupportsNeeded
+*            obj.generate_support_material();
+*            obj.estimate_curled_extrusions();
+*            obj.calculate_overhanging_perimeters();
+*            _make_wipe_tower();
+*            _make_skirt();
+*            make_brim();
+*            simplify_extrusion_path();
+* 
+*           then export_gcode();
+* */
+
+// step % for starting this step
+inline std::map<PrintObjectStep, int> objectstep_2_percent = {{PrintObjectStep::posSlice, 0},
+                                                       {PrintObjectStep::posPerimeters, 10},
+                                                       {PrintObjectStep::posPrepareInfill, 20},
+                                                       {PrintObjectStep::posInfill, 30},
+                                                       {PrintObjectStep::posIroning, 40},
+                                                       {PrintObjectStep::posSupportSpotsSearch, 45},
+                                                       {PrintObjectStep::posSupportMaterial, 50},
+                                                       {PrintObjectStep::posEstimateCurledExtrusions, 60},
+                                                       {PrintObjectStep::posCalculateOverhangingPerimeters, 65},
+                                                       {PrintObjectStep::posSimplifyPath, 80},
+                                                       {PrintObjectStep::posCount, 85}};
+
+inline std::map<PrintStep, int> printstep_2_percent = {
+    {PrintStep::psAlertWhenSupportsNeeded, 45},
+    {PrintStep::psSkirtBrim, 70},
+    {PrintStep::psWipeTower, 75},
+    {PrintStep::psGCodeExport, 85},
+    {PrintStep::psCount, 100},
+};
 // A PrintRegion object represents a group of volumes to print
 // sharing the same config (including the same assigned extruder(s))
 class PrintRegion
@@ -110,16 +164,15 @@ public:
     int                         print_region_id() const throw() { return m_print_region_id; }
     int                         print_object_region_id() const throw() { return m_print_object_region_id; }
 	// 1-based extruder identifier for this region and role.
-	unsigned int 				extruder(FlowRole role) const;
-    Flow                        flow(const PrintObject &object, FlowRole role, double layer_height, bool first_layer = false) const;
+    uint16_t 				    extruder(FlowRole role, const PrintObject& object) const;
+    Flow                        flow(const PrintObject &object, FlowRole role, double layer_height, size_t layer_id) const;
+    float                       width(FlowRole role, bool first_layer, const PrintObject& object) const;
     // Average diameter of nozzles participating on extruding this region.
     coordf_t                    nozzle_dmr_avg(const PrintConfig &print_config) const;
-    // Average diameter of nozzles participating on extruding this region.
-    coordf_t                    bridging_height_avg(const PrintConfig &print_config) const;
 
     // Collect 0-based extruder indices used to print this region's object.
-	void                        collect_object_printing_extruders(const Print &print, std::vector<unsigned int> &object_extruders) const;
-	static void                 collect_object_printing_extruders(const PrintConfig &print_config, const PrintRegionConfig &region_config, const bool has_brim, std::vector<unsigned int> &object_extruders);
+	void                        collect_object_printing_extruders(const Print& print, std::set<uint16_t> &object_extruders) const;
+	static void                 collect_object_printing_extruders(const PrintConfig &print_config, const PrintObjectConfig &object_config, const PrintRegionConfig &region_config, std::set<uint16_t> &object_extruders);
 
 // Methods modifying the PrintRegion's state:
 public:
@@ -149,6 +202,8 @@ using SpanOfConstPtrs           = tcb::span<const T* const>;
 
 using LayerPtrs                 = std::vector<Layer*>;
 using SupportLayerPtrs          = std::vector<SupportLayer*>;
+
+class BoundingBoxf3;        // TODO: for temporary constructor parameter
 
 // Single instance of a PrintObject.
 // As multiple PrintObjects may be generated for a single ModelObject (their instances differ in rotation around Z),
@@ -202,22 +257,6 @@ public:
         PrintRegion     *region { nullptr };
     };
 
-    struct LayerRangeRegions;
-
-    struct FuzzySkinPaintedRegion
-    {
-        enum class ParentType { VolumeRegion, PaintedRegion };
-
-        ParentType   parent_type { ParentType::VolumeRegion };
-        // Index of a parent VolumeRegion or PaintedRegion.
-        int          parent { -1 };
-        // Pointer to PrintObjectRegions::all_regions.
-        PrintRegion *region { nullptr };
-
-        PrintRegion *parent_print_object_region(const LayerRangeRegions &layer_range) const;
-        int          parent_print_object_region_id(const LayerRangeRegions &layer_range) const;
-    };
-
     // One slice over the PrintObject (possibly the whole PrintObject) and a list of ModelVolumes and their bounding boxes
     // possibly clipped by the layer_height_range.
     struct LayerRangeRegions
@@ -230,9 +269,8 @@ public:
         std::vector<VolumeExtents>  volumes;
 
         // Sorted in the order of their source ModelVolumes, thus reflecting the order of region clipping, modifier overrides etc.
-        std::vector<VolumeRegion>           volume_regions;
-        std::vector<PaintedRegion>          painted_regions;
-        std::vector<FuzzySkinPaintedRegion> fuzzy_skin_painted_regions;
+        std::vector<VolumeRegion>   volume_regions;
+        std::vector<PaintedRegion>  painted_regions;
 
         bool has_volume(const ObjectID id) const {
             auto it = lower_bound_by_predicate(this->volumes.begin(), this->volumes.end(), [id](const VolumeExtents &l) { return l.volume_id < id; });
@@ -278,7 +316,8 @@ private: // Prevents erroneous use by other classes.
 public:
     // Size of an object: XYZ in scaled coordinates. The size might not be quite snug in XY plane.
     const Vec3crd&               size() const			{ return m_size; }
-    const PrintObjectConfig&     config() const         { return m_config; }    
+    const PrintObjectConfig&     config() const         { return m_config; }
+    const PrintRegionConfig&     default_region_config(const PrintRegionConfig &from_print) const;
     auto                         layers() const         { return SpanOfConstPtrs<Layer>(const_cast<const Layer* const* const>(m_layers.data()), m_layers.size()); }
     auto                         support_layers() const { return SpanOfConstPtrs<SupportLayer>(const_cast<const SupportLayer* const* const>(m_support_layers.data()), m_support_layers.size()); }
     const Transform3d&           trafo() const          { return m_trafo; }
@@ -289,7 +328,7 @@ public:
 
     // Whoever will get a non-const pointer to PrintObject will be able to modify its layers.
     LayerPtrs&                   layers()               { return m_layers; }
-    SupportLayerPtrs&            support_layers()       { return m_support_layers; }
+    SupportLayerPtrs&            edit_support_layers()       { return m_support_layers; }
 
     // Bounding box is used to align the object infill patterns, and to calculate attractor for the rear seam.
     // The bounding box may not be quite snug.
@@ -300,11 +339,8 @@ public:
     // Centering offset of the sliced mesh from the scaled and rotated mesh of the model.
     const Point& 			     center_offset() const  { return m_center_offset; }
 
-    bool                         has_brim() const       {
-        return this->config().brim_type != btNoBrim
-            && this->config().brim_width.value > 0.
-            && ! this->has_raft();
-    }
+    bool                         has_brim() const;
+    Polygons                     get_brim_patch(ModelVolumeType brim_type, const PrintInstance *instance = nullptr) const;
 
     // This is the *total* layer count (including support layers)
     // this value is not supposed to be compared with Layer::id
@@ -322,16 +358,18 @@ public:
     Layer*			get_layer_at_printz(coordf_t print_z, coordf_t epsilon);
     // Get the first layer approximately bellow print_z.
     const Layer*	get_first_layer_bellow_printz(coordf_t print_z, coordf_t epsilon) const;
+    // For sparse infill, get the max spasing avaialable in this object (avaialable after prepare_infill)
+    coord_t         get_sparse_max_spacing() const { return m_max_sparse_spacing; }
 
     // print_z: top of the layer; slice_z: center of the layer.
     Layer*          add_layer(int id, coordf_t height, coordf_t print_z, coordf_t slice_z);
 
     size_t          support_layer_count() const { return m_support_layers.size(); }
     void            clear_support_layers();
-    SupportLayer*   get_support_layer(int idx) { return m_support_layers[idx]; }
-    SupportLayer*   add_support_layer(int id, int interface_id, coordf_t height, coordf_t print_z);
-    SupportLayerPtrs::iterator insert_support_layer(SupportLayerPtrs::iterator pos, size_t id, size_t interface_id, coordf_t height, coordf_t print_z, coordf_t slice_z);
-    void            delete_support_layer(int idx);
+    const SupportLayer*   get_support_layer(int idx) { return m_support_layers[idx]; }
+    void            add_support_layer(int id, int interface_id, coordf_t height, coordf_t print_z);
+    SupportLayerPtrs::iterator insert_support_layer(SupportLayerPtrs::const_iterator pos, size_t id, size_t interface_id, coordf_t height, coordf_t print_z, coordf_t slice_z);
+    //void            delete_support_layer(int idx);
     
     // Initialize the layer_height_profile from the model_object's layer_height_profile, from model_object's layer height table, or from slicing parameters.
     // Returns true, if the layer_height_profile was changed.
@@ -341,11 +379,11 @@ public:
     // by the interactive layer height editor and by the printing process itself.
     // The slicing parameters are dependent on various configuration values
     // (layer height, first layer height, raft settings, print nozzle diameter etc).
-    const SlicingParameters&    slicing_parameters() const { return m_slicing_params; }
-    static SlicingParameters    slicing_parameters(const DynamicPrintConfig &full_config, const ModelObject &model_object, float object_max_z, const Vec3d &object_shrinkage_compensation);
+    const SlicingParameters&                    slicing_parameters() const { return *m_slicing_params; }
+    static std::shared_ptr<SlicingParameters>   slicing_parameters(const DynamicPrintConfig &full_config, const ModelObject &model_object, float object_max_z);
 
-    size_t                      num_printing_regions() const throw() { return m_shared_regions->all_regions.size(); }
-    const PrintRegion&          printing_region(size_t idx) const throw() { return *m_shared_regions->all_regions[idx].get(); }
+    size_t                      num_printing_regions() const throw() { assert(m_shared_regions); return m_shared_regions->all_regions.size(); }
+    const PrintRegion&          printing_region(size_t idx) const throw() { assert(m_shared_regions); return *m_shared_regions->all_regions[idx].get(); }
     //FIXME returing all possible regions before slicing, thus some of the regions may not be slicing at the end.
     std::vector<std::reference_wrapper<const PrintRegion>> all_regions() const;
     const PrintObjectRegions*   shared_regions() const throw() { return m_shared_regions; }
@@ -355,24 +393,28 @@ public:
     bool                        has_support_material()  const { return this->has_support() || this->has_raft(); }
     // Checks if the model object is painted using the multi-material painting gizmo.
     bool                        is_mm_painted()         const { return this->model_object()->is_mm_painted(); }
-    // Checks if the model object is painted using the fuzzy skin painting gizmo.
-    bool                        is_fuzzy_skin_painted() const { return this->model_object()->is_fuzzy_skin_painted(); }
 
     // returns 0-based indices of extruders used to print the object (without brim, support and other helper extrusions)
-    std::vector<unsigned int>   object_extruders() const;
+    std::set<uint16_t>   object_extruders() const;
+    double               get_first_layer_height() const;
 
     // Called by make_perimeters()
     void slice();
 
     // Helpers to slice support enforcer / blocker meshes by the support generator.
-    std::vector<Polygons>       slice_support_volumes(const ModelVolumeType model_volume_type) const;
-    std::vector<Polygons>       slice_support_blockers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_BLOCKER); }
-    std::vector<Polygons>       slice_support_enforcers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_ENFORCER); }
+    std::vector<ExPolygons>     slice_support_volumes(const ModelVolumeType model_volume_type) const;
+    std::vector<ExPolygons>     slice_support_blockers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_BLOCKER); }
+    std::vector<ExPolygons>     slice_support_enforcers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_ENFORCER); }
 
     // Helpers to project custom facets on slices
-    void project_and_append_custom_facets(bool seam, TriangleStateType type, std::vector<Polygons>& expolys) const;
+    std::vector<Polygons> project_and_append_custom_facets(bool seam, EnforcerBlockerType type) const;
 
-private:
+    /// skirts if done per copy and not per platter
+    const std::optional<ExtrusionEntityCollection>& skirt_first_layer() const { return m_skirt_first_layer; }
+    const ExtrusionEntityCollection& skirt() const { return m_skirt; }
+    const ExtrusionEntityCollection& brim() const { return m_brim; }
+
+protected:
     // to be called from Print only.
     friend class Print;
     friend class PrintBaseWithState<PrintStep, psCount>;
@@ -414,17 +456,27 @@ private:
     void generate_support_material();
     void estimate_curled_extrusions();
     void calculate_overhanging_perimeters();
+    void simplify_extrusion_path();
 
     void slice_volumes();
     // Has any support (not counting the raft).
+    ExPolygons _shrink_contour_holes(double contour_delta, double default_delta, double convex_delta, const ExPolygons& input) const;
+    void _transform_hole_to_polyholes();
+    void _max_overhang_threshold();
+    ExPolygons _smooth_curves(const ExPolygons &input, const PrintRegionConfig &conf) const;
     void detect_surfaces_type();
-    void process_external_surfaces();
+    void apply_solid_infill_below_layer_area();
+    void process_external_surfaces(bool old);
     void discover_vertical_shells();
     void bridge_over_infill();
-    void clip_fill_surfaces();
+    void replaceSurfaceType(SurfaceType st_to_replace, SurfaceType st_replacement, SurfaceType st_under_it);
+    // void clip_fill_surfaces(); //infill_only_where_needed
+    void tag_under_bridge();
     void discover_horizontal_shells();
+    void clean_surfaces();
     void combine_infill();
     void _generate_support_material();
+    void _compute_max_sparse_spacing();
     std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data(
         const std::vector<std::pair<const Surface*, float>>& surfaces_w_bottom_z) const;
     FillLightning::GeneratorPtr prepare_lightning_infill_data();
@@ -444,15 +496,26 @@ private:
     // Shared among PrintObjects created for the same ModelObject.
     PrintObjectRegions                     *m_shared_regions { nullptr };
 
-    SlicingParameters                       m_slicing_params;
+    std::shared_ptr<SlicingParameters>      m_slicing_params;
     LayerPtrs                               m_layers;
     SupportLayerPtrs                        m_support_layers;
+
+    // Ordered collections of extrusion paths to build skirt loops and brim.
+    // have to be duplicated per copy
+    std::optional<ExtrusionEntityCollection> m_skirt_first_layer;
+    ExtrusionEntityCollection               m_skirt;
+    ExtrusionEntityCollection               m_brim;
 
     // this is set to true when LayerRegion->slices is split in top/internal/bottom
     // so that next call to make_perimeters() performs a union() before computing loops
     bool                    				m_typed_slices = false;
 
+    //this setting allow fill_aligned_z to get the max sparse spacing spacing.
+    coord_t                                 m_max_sparse_spacing = 0;
+
+    // pair < adaptive , support>, filled by prepare_adaptive_infill_data() (in bridge_over_infill() in prepare_infill()) and used in infill()
     std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> m_adaptive_fill_octrees;
+    // filled by prepare_lightning_infill_data() (in bridge_over_infill() in prepare_infill()) and used in infill()
     FillLightning::GeneratorPtr m_lightning_generator;
 };
 
@@ -510,25 +573,19 @@ private:
 	WipeTowerData &operator=(const WipeTowerData & /* rhs */) = delete;
 };
 
-bool is_toolchange_required(
-    const bool first_layer,
-    const unsigned last_extruder_id,
-    const unsigned extruder_id,
-    const unsigned current_extruder_id
-);
-
 struct PrintStatistics
 {
     PrintStatistics() { clear(); }
-    float                           normal_print_time_seconds;
-    float                           silent_print_time_seconds;
-    std::string                     estimated_normal_print_time;
-    std::string                     estimated_silent_print_time;
+    // PrintEstimatedStatistics::ETimeMode::Normal -> time
+    std::map<uint8_t, double>       estimated_print_time;
+    std::map<uint8_t, std::string>  estimated_print_time_str;
     double                          total_used_filament;
+    std::vector<std::pair<size_t, double>> color_extruderid_to_used_filament; // id -> mm (length)
     double                          total_extruded_volume;
     double                          total_cost;
     int                             total_toolchanges;
     double                          total_weight;
+    std::vector<std::pair<size_t, double>> color_extruderid_to_used_weight;
     double                          total_wipe_tower_cost;
     double                          total_wipe_tower_filament;
     double                          total_wipe_tower_filament_weight;
@@ -536,7 +593,10 @@ struct PrintStatistics
     unsigned int                    initial_extruder_id;
     std::string                     initial_filament_type;
     std::string                     printing_filament_types;
-    std::map<size_t, double>        filament_stats;
+    std::map<size_t, double>        filament_stats; // extruder id -> volume in mm3
+    std::vector<std::pair<double, float>> layer_area_stats; // print_z to area
+
+    std::atomic_bool is_computing_gcode;
 
     // Config with the filled in print statistics.
     DynamicConfig           config() const;
@@ -559,6 +619,7 @@ struct PrintStatistics
         printing_filament_types.clear();
         filament_stats.clear();
         printing_extruders.clear();
+        is_computing_gcode = false;
     }
 
     static const std::string FilamentUsedG;
@@ -579,6 +640,25 @@ struct PrintStatistics
     static const std::string TotalFilamentUsedWipeTowerValueMask;
 };
 
+struct ConflictResult
+{
+    std::string _objName1;
+    std::string _objName2;
+    double      _height;
+    const void* _obj1; // nullptr means wipe tower
+    const void* _obj2;
+    int         layer = -1;
+    ConflictResult(const std::string& objName1, const std::string& objName2, double height, const void* obj1, const void* obj2)
+        : _objName1(objName1), _objName2(objName2), _height(height), _obj1(obj1), _obj2(obj2)
+    {}
+    ConflictResult(const std::string& objName1, const std::string& objName2, double height, const void* obj1, const void* obj2, int layer_id)
+        : _objName1(objName1), _objName2(objName2), _height(height), _obj1(obj1), _obj2(obj2), layer(layer_id)
+    {}
+    ConflictResult() = default;
+};
+
+using ConflictResultOpt = std::optional<ConflictResult>;
+
 using PrintObjectPtrs          = std::vector<PrintObject*>;
 using ConstPrintObjectPtrs     = std::vector<const PrintObject*>;
 
@@ -593,7 +673,11 @@ private: // Prevents erroneous use by other classes.
     typedef std::pair<PrintObject *, bool>         PrintObjectInfo;
 
 public:
-    Print() = default;
+    Print() {
+        //create config hierachy
+        m_default_object_config.parent = &m_config;
+        m_default_region_config.parent = &m_default_object_config;
+    };
 	virtual ~Print() { this->clear(); }
 
 	PrinterTechnology	technology() const noexcept override { return ptFFF; }
@@ -608,7 +692,7 @@ public:
     // List of existing PrintObject IDs, to remove notifications for non-existent IDs.
     std::vector<ObjectID> print_object_ids() const override;
 
-    ApplyStatus         apply(const Model &model, DynamicPrintConfig config, std::vector<std::string> *warnings = nullptr) override;
+    ApplyStatus         apply(const Model &model, DynamicPrintConfig config) override;
     void                set_task(const TaskParams &params) override { PrintBaseWithState<PrintStep, psCount>::set_task_impl(params, m_objects); }
     void                process() override;
     void                finalize() override { PrintBaseWithState<PrintStep, psCount>::finalize_impl(m_objects); }
@@ -630,14 +714,19 @@ public:
     bool                has_brim() const;
 
     // Returns an empty string if valid, otherwise returns an error message.
-    std::string         validate(std::vector<std::string>* warnings = nullptr) const override;
-    double              skirt_first_layer_height() const;
-    Flow                brim_flow() const;
-    Flow                skirt_flow() const;
-    
-    std::vector<unsigned int> object_extruders() const;
-    std::vector<unsigned int> support_material_extruders() const;
-    std::vector<unsigned int> extruders() const;
+    std::pair<PrintValidationError, std::string> validate(std::vector<std::string>* warnings = nullptr) const override;
+    Flow                brim_flow(size_t extruder_id, const PrintObjectConfig &brim_config) const;
+    Flow                skirt_flow(size_t extruder_id, bool first_layer=false) const;
+    double              get_min_first_layer_height() const;
+    double              get_object_first_layer_height(const PrintObject& object) const;
+
+    // get the extruders of these obejcts
+    std::set<uint16_t>  object_extruders(const PrintObjectPtrs &objects, float z = -1) const;
+    // get all extruders from the list of objects in this print ( same as print.object_extruders(print.objects()) )
+    std::set<uint16_t>  object_extruders(float z = -1) const;
+    std::set<uint16_t>  support_material_extruders(float z = -1) const;
+    // all extruder to print layers that extrude at this z.
+    std::set<uint16_t>  extruders(float z = -1) const;
     double              max_allowed_layer_height() const;
     bool                has_support_material() const;
     // Make sure the background processing has no access to this model_object during this call!
@@ -649,7 +738,7 @@ public:
     SpanOfConstPtrs<PrintObject> objects() const { return SpanOfConstPtrs<PrintObject>(const_cast<const PrintObject* const* const>(m_objects.data()), m_objects.size()); }
     PrintObject*                get_object(size_t idx) { return const_cast<PrintObject*>(m_objects[idx]); }
     const PrintObject*          get_object(size_t idx) const { return m_objects[idx]; }
-    const PrintObject* get_print_object_by_model_object_id(ObjectID object_id) const {
+    const PrintObject*          get_print_object_by_model_object_id(ObjectID object_id) const {
         auto it = std::find_if(m_objects.begin(), m_objects.end(),
                                [object_id](const PrintObject* obj) { return obj->model_object()->id() == object_id; });
         return (it == m_objects.end()) ? nullptr : *it;
@@ -663,7 +752,9 @@ public:
     }
     // How many of PrintObject::copies() over all print objects are there?
     // If zero, then the print is empty and the print shall not be executed.
-    unsigned int                num_object_instances() const;
+    uint16_t                    num_object_instances() const;
+
+    const std::optional<ExtrusionEntityCollection>& skirt_first_layer() const { return m_skirt_first_layer; }
 
     const ExtrusionEntityCollection& skirt() const { return m_skirt; }
     const ExtrusionEntityCollection& brim() const { return m_brim; }
@@ -676,10 +767,12 @@ public:
 
     const PrintStatistics&      print_statistics() const { return m_print_statistics; }
     PrintStatistics&            print_statistics() { return m_print_statistics; }
+    std::time_t                 timestamp_last_change() const { return m_timestamp_last_change; }
 
     // Wipe tower support.
     bool                        has_wipe_tower() const;
-    const WipeTowerData&        wipe_tower_data(size_t extruders_cnt = 0) const;
+    const WipeTowerData&        wipe_tower_data(const ConfigBase* config, double nozzle_diameter) const;
+    const WipeTowerData&        wipe_tower_data() const { return wipe_tower_data(&this->m_config,0); }
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
 
 	std::string                 output_filename(const std::string &filename_base = std::string()) const override;
@@ -688,20 +781,43 @@ public:
     const PrintRegion&          get_print_region(size_t idx) const  { return *m_print_regions[idx]; }
     const ToolOrdering&         get_tool_ordering() const { return m_wipe_tower_data.tool_ordering; }
 
-    // Returns if all used filaments have same shrinkage compensations.
-    bool has_same_shrinkage_compensations() const;
+    const Polygons& get_sequential_print_clearance_contours() const { return m_sequential_print_clearance_contours; }
+//TODO: decide to use this one or the printconfig one.
+    static bool sequential_print_horizontal_clearance_valid(const Print& print, Polygons* polygons = nullptr);
 
-    // Returns scaling for each axis representing shrinkage compensations in each axis.
-    Vec3d shrinkage_compensation() const;
+    //put this in public to be accessible for tests, it was in private before.
+    bool                invalidate_state_by_config_options(const ConfigOptionResolver& new_config, const std::vector<t_config_option_key> &opt_keys);
 
-protected:
     // Invalidates the step, and its depending steps in Print.
+    //in public to invalidate gcode when the physical printer change. It's needed if we allow the gcode macro to read these values.
     bool                invalidate_step(PrintStep step);
 
-private:
-    bool                invalidate_state_by_config_options(const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys);
+    // just a little wrapper to let the user know that this print can only be modified to emit warnings & update advancement status, change stats.
+    // TODO: have the status out of the printbase class and into another one, so we can have a const print & a mutable statusmonitor
+    class StatusMonitor
+    {
+    private:
+        Print& print;
 
-    void                _make_skirt();
+    public:
+        StatusMonitor(Print &print_mutable) : print(print_mutable) {}
+
+        // need this extra method because active_step_add_warning is protected and so need the friend status, and Gcode has it.
+        void active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id = 0)
+        {
+            print.active_step_add_warning(warning_level, message, message_id);
+        }
+        PrintStatistics &stats() { return print.m_print_statistics; }
+        bool             set_started(PrintStep step) { return print.set_started(step); }
+        PrintStateBase::TimeStamp set_done(PrintStep step) { return print.set_done(step); }
+        
+    };
+
+protected:
+private:
+
+    void                _make_skirt_brim();
+    void                _make_skirt(const PrintObjectPtrs &objects, ExtrusionEntityCollection &out, std::optional<ExtrusionEntityCollection> &out_first_layer);
     void                _make_wipe_tower();
     void                finalize_first_layer_convex_hull();
     void                alert_when_supports_needed();
@@ -724,6 +840,7 @@ private:
     PrintRegionPtrs                         m_print_regions;
 
     // Ordered collections of extrusion paths to build skirt loops and brim.
+    std::optional<ExtrusionEntityCollection> m_skirt_first_layer;
     ExtrusionEntityCollection               m_skirt;
     ExtrusionEntityCollection               m_brim;
     // Convex hull of the 1st layer extrusions.
@@ -740,17 +857,25 @@ private:
 
     // Estimated print time, filament consumed.
     PrintStatistics                         m_print_statistics;
+    // time of last change, used by the gui to see if it needs to be updated
+    std::time_t                             m_timestamp_last_change;
+
+    // Cache to store sequential print clearance contours
+    Polygons m_sequential_print_clearance_contours;
 
     // To allow GCode to set the Print's GCodeExport step status.
-    friend class GCodeGenerator;
+    //friend class GCodeGenerator;
     // To allow GCodeProcessor to emit warnings.
-    friend class GCodeProcessor;
+    //friend class GCodeProcessor;
     // Allow PrintObject to access m_mutex and m_cancel_callback.
     friend class PrintObject;
 
-    ConflictResultOpt m_conflict_result;
-    std::optional<std::pair<std::string, std::string>> m_sequential_collision_detected; // names of objects (hit first when printing second)
+    std::optional<ConflictResult> m_conflict_result;
 };
+
+//for testing purpose (in printobject)
+ExPolygons dense_fill_fit_to_size(const ExPolygon &polygon_to_cover,
+    const ExPolygon& growing_area, const coord_t offset, float coverage);
 
 } /* slic3r_Print_hpp_ */
 

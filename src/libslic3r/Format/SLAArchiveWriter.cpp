@@ -4,17 +4,15 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "SLAArchiveWriter.hpp"
-
 #include "SLAArchiveFormatRegistry.hpp"
-#include "libslic3r/PrintConfig.hpp"
 
 namespace Slic3r {
 
 std::unique_ptr<SLAArchiveWriter>
-SLAArchiveWriter::create(const std::string &archtype, const SLAPrinterConfig &cfg)
+SLAArchiveWriter::create(OutputFormat archtype, const SLAPrinterConfig &cfg)
 {
     std::unique_ptr<SLAArchiveWriter> ret;
-    auto factory = get_writer_factory(archtype.c_str());
+    auto factory = get_writer_factory(archtype);
 
     if (factory)
         ret = factory(cfg);

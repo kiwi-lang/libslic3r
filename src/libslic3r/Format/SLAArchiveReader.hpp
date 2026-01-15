@@ -48,7 +48,7 @@ public:
     // The first match is used.
     static std::unique_ptr<SLAArchiveReader> create(
         const std::string &fname,
-        const std::string &format_id,
+        OutputFormat       format_id,
         SLAImportQuality   quality = SLAImportQuality::Balanced,
         const ProgrFn     &progr   = [](int) { return false; });
 };
@@ -64,7 +64,7 @@ class ReaderUnimplementedError : public RuntimeError
 // Can throw ReaderUnimplementedError or MissingProfileError
 ConfigSubstitutions import_sla_archive(
     const std::string       &zipfname,
-    const std::string       &format_id,
+    OutputFormat             format_id,
     indexed_triangle_set    &out,
     DynamicPrintConfig      &profile,
     SLAImportQuality         quality = SLAImportQuality::Balanced,
@@ -72,7 +72,7 @@ ConfigSubstitutions import_sla_archive(
 
 // Only reads the profile, doesn't reconstruct the model.
 ConfigSubstitutions import_sla_archive(const std::string  &zipfname,
-                                       const std::string  &format_id,
+                                       OutputFormat        format_id,
                                        DynamicPrintConfig &out);
 
 } // namespace Slic3r

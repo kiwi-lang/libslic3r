@@ -5,8 +5,6 @@
 #ifndef slic3r_Format_3mf_hpp_
 #define slic3r_Format_3mf_hpp_
 
-#include "libslic3r/Semver.hpp"
-#include <boost/optional/optional.hpp>
 namespace Slic3r {
 
     /* The format for saving the SLA points was changing in the past. This enum holds the latest version that is being currently used.
@@ -19,18 +17,7 @@ namespace Slic3r {
      * version 1 :  ThreeMF_support_points_version=1
                     object_id=1|-12.055421 -2.658771 10.000000 0.4 0.0
                     object_id=2|-14.051745 -3.570338 5.000000 0.6 1.0
-        // introduced header with version number; x,y,z,head_size,type)
-        // before 2.9.1 fifth float means is_island (bool flag) -> value from 0.9999f to 1.0001f means it is support for island otherwise not. User edited points has always value zero.
-        // since 2.9.1 fifth float means type -> starts show user edited points
-        // type range value meaning
-        // (float is used only for compatibility, string will be better)
-        // from    | to     | meaning
-        // --------------------------------
-        // 0.9999f | 1.0001 | island (no change)
-        // 1.9999f | 2.0001 | manual edited points loose info about island
-        // 2.9999f | 3.0001 | generated point by slope ration
-        // all other values are readed also as slope type
-
+        // introduced header with version number; x,y,z,head_size,is_new_island)
     */
 
     enum {
@@ -47,21 +34,34 @@ namespace Slic3r {
     struct ThumbnailData;
 
     // Returns true if the 3mf file with the given filename is a PrusaSlicer project file (i.e. if it contains a config).
-    extern std::pair<bool, std::optional<Semver>> is_project_3mf(const std::string&);
+    extern bool is_project_3mf(const std::string& filename);
 
     // Load the content of a 3mf file into the given model and preset bundle.
-    extern bool load_3mf(
-        const char* path,
-        DynamicPrintConfig& config,
-        ConfigSubstitutionContext& config_substitutions,
-        Model* model,
-        bool check_version,
-        boost::optional<Semver> &prusaslicer_generator_version
-    );
+    extern bool load_3mf(const char *path,
+                         DynamicPrintConfig &config,
+                         ConfigSubstitutionContext &config_substitutions,
+                         Model *model,
+                         bool check_version,
+                         bool unbake_transformation);
+
+    struct OptionStore3mf {
+        bool fullpath_sources = true;
+        bool zip64 = true;
+        bool export_config = true;
+        bool export_modifiers = true;
+        int bake_transformation_in_mesh = -1;
+        const ThumbnailData* thumbnail_data = nullptr;
+        OptionStore3mf set_fullpath_sources(bool use_fullpath_sources) { fullpath_sources = use_fullpath_sources; return *this; }
+        OptionStore3mf set_zip64(bool use_zip64) { zip64 = use_zip64; return *this; }
+        OptionStore3mf set_export_config(bool use_export_config) { export_config = use_export_config; return *this; }
+        OptionStore3mf set_export_modifiers(bool use_export_modifiers) { export_modifiers = use_export_modifiers; return *this; }
+        OptionStore3mf set_thumbnail_data(const ThumbnailData* thumbnail) { thumbnail_data = thumbnail; return *this; }
+        OptionStore3mf set_bake_transformation_in_mesh(bool use_bake_transformation_in_mesh) { this->bake_transformation_in_mesh = use_bake_transformation_in_mesh ? 1 : 0; return *this; }
+    };
 
     // Save the given model and the config data contained in the given Print into a 3mf file.
     // The model could be modified during the export process if meshes are not repaired or have no shared vertices
-    extern bool store_3mf(const char* path, Model* model, const DynamicPrintConfig* config, bool fullpath_sources, const ThumbnailData* thumbnail_data = nullptr, bool zip64 = true);
+    extern bool store_3mf(const char* path, Model* model, const DynamicPrintConfig* config, OptionStore3mf options = OptionStore3mf{});
 
 } // namespace Slic3r
 

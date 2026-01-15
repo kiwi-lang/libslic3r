@@ -1,11 +1,7 @@
 #ifndef slic3r_ExPolygonsIndex_hpp_
 #define slic3r_ExPolygonsIndex_hpp_
 
-#include <cstdint>
-#include <vector>
-
 #include "ExPolygon.hpp"
-
 namespace Slic3r {
 
 /// <summary>

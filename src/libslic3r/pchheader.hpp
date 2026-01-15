@@ -11,18 +11,16 @@
 	#endif
 #endif
 
-#include <float.h>
-#include <math.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <string.h>
 
 #include <cassert>
+#include <cfloat>
 #include <climits>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 
@@ -39,6 +37,7 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <ostream>
 #include <queue>
@@ -91,11 +90,12 @@
 #include <boost/log/expressions.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/multi_array.hpp>
+#include <boost/nowide/cenv.hpp>
 #include <boost/nowide/convert.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/nowide/cstdlib.hpp>
 #include <boost/nowide/fstream.hpp>
-#include <boost/nowide/filesystem.hpp>
+#include <boost/nowide/integration/filesystem.hpp>
 #include <boost/nowide/iostream.hpp>
 
 // boost/property_tree/json_parser/detail/parser.hpp includes boost/bind.hpp, which is deprecated.
@@ -109,10 +109,10 @@
 #include <boost/thread.hpp>
 #include <boost/version.hpp>
 
-#include <tbb/parallel_for.h>
-#include <tbb/scalable_allocator.h>
-#include <tbb/spin_mutex.h>
-#include <tbb/task_group.h>
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/scalable_allocator.h>
+#include <oneapi/tbb/spin_mutex.h>
+#include <oneapi/tbb/task_group.h>
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -121,20 +121,20 @@
 #include <cereal/types/base_class.hpp>
 
 #include <clipper/clipper_z.hpp>
-#include "libslic3r/clipper.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/enum_bitmask.hpp"
-#include "libslic3r/format.hpp"
-#include "libslic3r/I18N.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/SVG.hpp"
+#include "clipper.hpp"
+#include "BoundingBox.hpp"
+#include "ClipperUtils.hpp"
+#include "Config.hpp"
+#include "enum_bitmask.hpp"
+#include "format.hpp"
+#include "I18N.hpp"
+#include "MultiPoint.hpp"
+#include "Point.hpp"
+#include "Polygon.hpp"
+#include "Polyline.hpp"
+#include "SVG.hpp"
 
-#include "libslic3r/libslic3r.h"
+#include "libslic3r.h"
 #include "libslic3r_version.h"
 
 #include <admesh/stl.h>

@@ -3,24 +3,11 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "Triangulation.hpp"
-
+#include "IntersectionPoints.hpp"
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Constrained_Delaunay_triangulation_2.h>
 #include <CGAL/Triangulation_vertex_base_with_info_2.h>
 #include <CGAL/spatial_sort.h>
-#include <boost/variant/get.hpp>
-#include <limits>
-#include <algorithm>
-#include <cassert>
-#include <cstddef>
-
-#include "IntersectionPoints.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 using namespace Slic3r;
 namespace priv{
@@ -86,7 +73,6 @@ inline bool has_self_intersection(
 //#define VISUALIZE_TRIANGULATION
 #ifdef VISUALIZE_TRIANGULATION
 #include "admesh/stl.h" // indexed triangle set
-
 static void visualize(const Points                 &points,
                const Triangulation::Indices &indices,
                const char                   *filename)
@@ -178,7 +164,7 @@ Triangulation::Indices Triangulation::triangulate(const Points    &points,
     };
 
 #ifdef VISUALIZE_TRIANGULATION
-    std::vector<Vec3i> indices2;
+    std::vector<Vec3i32> indices2;
     indices2.reserve(num_faces);
     for (CDT::Face_handle fh : faces)
         if (inside(fh)) indices2.emplace_back(fh->vertex(0)->info(), fh->vertex(1)->info(), fh->vertex(2)->info());
@@ -209,7 +195,7 @@ Triangulation::Indices Triangulation::triangulate(const Points    &points,
         }
     }
 
-    std::vector<Vec3i> indices;
+    std::vector<Vec3i32> indices;
     indices.reserve(num_faces);
     for (CDT::Face_handle fh : faces)
         if (inside(fh))
@@ -270,7 +256,7 @@ Triangulation::Indices Triangulation::triangulate(const ExPolygons &expolygons){
         changes2[changes[i]] = i;
 
     // convert indices into expolygons indicies
-    for (Vec3i &t : indices) 
+    for (Vec3i32 &t : indices) 
         for (size_t ti = 0; ti < 3; ti++) t[ti] = changes2[t[ti]];
     
     return indices;

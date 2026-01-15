@@ -7,15 +7,8 @@
 
 // For indexed_triangle_set
 #include <admesh/stl.h>
-#include <optional>
-#include <utility>
-#include <vector>
 
 #include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/libslic3r.h"
-
-struct indexed_triangle_set;
 
 namespace Slic3r { namespace branchingtree {
 

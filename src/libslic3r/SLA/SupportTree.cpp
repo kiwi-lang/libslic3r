@@ -7,23 +7,22 @@
  *
  */
 
+#include <mutex>
+#include <numeric>
 #include <libslic3r/SLA/SupportTree.hpp>
+#include <libslic3r/SLA/SpatIndex.hpp>
 #include <libslic3r/SLA/SupportTreeBuilder.hpp>
 #include <libslic3r/SLA/DefaultSupportTree.hpp>
 #include <libslic3r/SLA/BranchingTreeSLA.hpp>
-#include <libslic3r/MTUtils.hpp>
-#include <libslic3r/TriangleMeshSlicer.hpp>
-#include <boost/log/trivial.hpp>
-#include <chrono>
-#include <iterator>
-#include <cstddef>
 
-#include "libslic3r/Point.hpp"
-#include "libslic3r/SLA/JobController.hpp"
-#include "libslic3r/SLA/Pad.hpp"
-#include "libslic3r/SLA/SupportTreeStrategies.hpp"
-#include "libslic3r/TriangleMesh.hpp"
-#include "libslic3r/libslic3r.h"
+#include <libslic3r/MTUtils.hpp>
+#include <libslic3r/ClipperUtils.hpp>
+#include <libslic3r/Model.hpp>
+#include <libslic3r/TriangleMeshSlicer.hpp>
+
+#include <boost/log/trivial.hpp>
+
+#include <libnest2d/tools/benchmark.h>
 
 
 namespace Slic3r { namespace sla {
@@ -34,8 +33,8 @@ indexed_triangle_set create_support_tree(const SupportableMesh &sm,
     auto builder = make_unique<SupportTreeBuilder>(ctl);
 
     if (sm.cfg.enabled) {
-        using std::chrono::high_resolution_clock;
-        auto start{high_resolution_clock::now()};
+        Benchmark bench;
+        bench.start();
 
         switch (sm.cfg.tree_type) {
         case SupportTreeType::Default: {
@@ -52,12 +51,10 @@ indexed_triangle_set create_support_tree(const SupportableMesh &sm,
         default:;
         }
 
-        auto stop{high_resolution_clock::now()};
+        bench.stop();
 
-        using std::chrono::duration;
-        using std::chrono::seconds;
         BOOST_LOG_TRIVIAL(info) << "Support tree creation took: "
-                                << duration<double>{stop - start}.count()
+                                << bench.getElapsedSec()
                                 << " seconds";
 
         builder->merge_and_cleanup();   // clean metadata, leave only the meshes.

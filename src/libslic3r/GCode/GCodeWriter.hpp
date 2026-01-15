@@ -9,294 +9,177 @@
 #ifndef slic3r_GCodeWriter_hpp_
 #define slic3r_GCodeWriter_hpp_
 
-#include <string.h>
+#include "../libslic3r.h"
+#include "../Extruder.hpp"
+#include "../Point.hpp"
+#include "../PrintConfig.hpp"
+#include "CoolingBuffer.hpp"
+#include "GCodeFormatter.hpp"
+
 #include <string>
 #include <string_view>
-#include <charconv>
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <vector>
-#include <cstring>
-
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Extruder.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "CoolingBuffer.hpp"
+#include <charconv>
 
 namespace Slic3r {
 
 class GCodeWriter {
 public:
     GCodeConfig config;
-    bool multiple_extruders;
+    bool multiple_extruders = false;
+    // override from region
+    const PrintRegionConfig* config_region = nullptr;
     
-    GCodeWriter() : 
-        multiple_extruders(false), m_extrusion_axis("E"), m_extruder(nullptr),
-        m_single_extruder_multi_material(false),
-        m_last_acceleration(0), m_max_acceleration(0),
-        m_last_bed_temperature(0), m_last_bed_temperature_reached(true)
-        {}
-    Extruder*            extruder()             { return m_extruder; }
-    const Extruder*      extruder()     const   { return m_extruder; }
+    GCodeWriter() {}
+    void                reset();
+    Tool*               tool()             { return m_tool; }
+    const Tool*         tool()     const   { return m_tool; }
+
+    Vec2d               current_tool_offset() const;
+    const GCodeConfig &      gcode_config() const { return config; }
+    const PrintRegionConfig *print_region_config() const { return config_region; }
 
     // Returns empty string for gcfNoExtrusion.
-    std::string          extrusion_axis() const { return m_extrusion_axis; }
-    void                 apply_print_config(const PrintConfig &print_config);
+    std::string         extrusion_axis() const { return m_extrusion_axis; }
+    void                apply_print_config(const PrintConfig &print_config);
+    void                apply_print_region_config(const PrintRegionConfig& print_region_config);
     // Extruders are expected to be sorted in an increasing order.
-    void                 set_extruders(std::vector<unsigned int> extruder_ids);
+    void                set_extruders(std::vector<uint16_t> extruder_ids);
     const std::vector<Extruder>& extruders() const { return m_extruders; }
-    std::vector<unsigned int> extruder_ids() const { 
-        std::vector<unsigned int> out; 
-        out.reserve(m_extruders.size()); 
-        for (const Extruder &e : m_extruders) 
-            out.push_back(e.id()); 
-        return out;
-    }
+    std::vector<uint16_t> extruder_ids() const;
+    void                set_mills(std::vector<uint16_t> extruder_ids);
+    const std::vector<Mill>& mills() const { return m_millers; }
+    std::vector<uint16_t> mill_ids() const;
+    //give the first mill id or an id after the last extruder. Can be used to see if an id is an extruder or a mill
+    uint16_t first_mill() const;
+    bool tool_is_extruder() const;
+    const Tool* get_tool(uint16_t id) const;
     std::string preamble();
     std::string postamble() const;
-    std::string set_temperature(unsigned int temperature, bool wait = false, int tool = -1) const;
-    std::string set_bed_temperature(unsigned int temperature, bool wait = false);
-    std::string set_chamber_temperature(unsigned int temperature, bool wait, bool accurate) const;
-    std::string set_print_acceleration(unsigned int acceleration)   { return set_acceleration_internal(Acceleration::Print, acceleration); }
-    std::string set_travel_acceleration(unsigned int acceleration)  { return set_acceleration_internal(Acceleration::Travel, acceleration); }
-    std::string set_junction_deviation(double junction_deviation);
+    std::string set_temperature(int16_t temperature, bool wait = false, int tool = -1);
+    std::string set_bed_temperature(uint32_t temperature, bool wait = false);
+    void set_pressure_advance(double pa);
+    std::string write_pressure_advance(double pa);
+    std::string set_chamber_temperature(uint32_t temperature, bool wait = false);
+    void        set_acceleration(uint32_t acceleration);
+    void        set_travel_acceleration(uint32_t acceleration);
+    uint32_t    get_acceleration() const;
+    std::string write_acceleration();
     std::string reset_e(bool force = false);
-    std::string update_progress(unsigned int num, unsigned int tot, bool allow_100 = false) const;
+    std::string update_progress(uint32_t num, uint32_t tot, bool allow_100 = false) const;
     // return false if this extruder was already selected
-    bool        need_toolchange(unsigned int extruder_id) const 
-        { return m_extruder == nullptr || m_extruder->id() != extruder_id; }
-    std::string set_extruder(unsigned int extruder_id)
-        { return this->need_toolchange(extruder_id) ? this->toolchange(extruder_id) : ""; }
+    bool        need_toolchange(uint16_t tool_id) const 
+        { return m_tool == nullptr || m_tool->id() != tool_id; }
+    std::string set_tool(uint16_t tool_id)
+        { return this->need_toolchange(tool_id) ? this->toolchange(tool_id) : ""; }
     // Prefix of the toolchange G-code line, to be used by the CoolingBuffer to separate sections of the G-code
     // printed with the same extruder.
     std::string toolchange_prefix() const;
-    std::string toolchange(unsigned int extruder_id);
-    std::string set_speed(double F, const std::string_view comment = {}, const std::string_view cooling_marker = {}) const;
-
-    /**
-     * @brief Return gcode to travel to the specified point.
-     * Feed rate is computed based on the vector (to - m_pos).
-     * Maintains the internal m_pos position.
-     * Movements less than XYZ_EPSILON generate no output.
-     *
-     * @param to Where to travel to.
-     * @param comment Description of the travel purpose.
-     */
-    std::string travel_to_xyz(const Vec3d &to, const std::string_view comment = {});
-    std::string travel_to_xy(const Vec2d &point, const std::string_view comment = {});
-    std::string travel_to_z(double z, const std::string_view comment = {});
-
-    std::string travel_to_xy_G2G3IJ(const Vec2d &point, const Vec2d &ij, const bool ccw, const std::string_view comment = {});
-
-    /**
-     * @brief Generate G-Code to travel to the specified point unconditionally.
-     * Feed rate is computed based on the vector (to - m_pos).
-     * Maintains the internal m_pos position.
-     * The distance test XYZ_EPSILON is not performed.
-     * @param to The point to travel to.
-     * @param comment Description of the travel purpose.
-     */
-    std::string travel_to_xyz_force(const Vec3d &to, const std::string_view comment = {});
-    std::string travel_to_xy_force(const Vec2d &point, const std::string_view comment = {});
-    std::string travel_to_z_force(double z, const std::string_view comment = {});
-
-    /**
-     * @brief Generate G-Code to move to the specified point while extruding.
-     * Maintains the internal m_pos position.
-     * The distance test XYZ_EPSILON is not performed.
-     * @param point The point to move to.
-     * @param dE The E-steps to extrude while moving.
-     * @param comment Description of the movement purpose.
-     */
-    std::string extrude_to_xy(const Vec2d &point, double dE, const std::string_view comment = {});
-    std::string extrude_to_xyz(const Vec3d &point, double dE, const std::string_view comment = {});
-
-    std::string extrude_to_xy_G2G3IJ(const Vec2d &point, const Vec2d &ij, const bool ccw, double dE, const std::string_view comment);
-
+    std::string toolchange(uint16_t tool_id);
+    // in mm/s
+    std::string set_speed_mm_s(const double speed, const std::string_view comment = {}, const std::string_view cooling_marker = {});
+    // in mm/s
+    double      get_speed_mm_s() const;
+    std::string travel_to_xy(const Vec2d &point, const double speed = 0.0, const std::string_view comment = {});
+    std::string travel_arc_to_xy(const Vec2d& point, const Vec2d& center_offset, const bool is_ccw, const double speed, const std::string_view comment);
+    std::string travel_to_xyz(const Vec3d &point, const bool is_lift, const double speed = 0.0, const std::string_view comment = {});
+    std::string travel_to_z(const double z, const std::string_view comment = {});
+    // low-level method to force a z travel, disregarding the lift and other thigns. Prefer using "travel_to_z" "lift" and "unlift".
+    std::string get_travel_to_z_gcode(const double z, const std::string_view comment = {});
+    bool        will_move_z(const double z) const;
+    std::string extrude_to_xy(const Vec2d &point, const double dE, const std::string_view comment = {});
+    std::string extrude_arc_to_xy(const Vec2d& point, const Vec2d& center_offset, const double dE, const bool is_ccw, const std::string_view comment = {}); //BBS: generate G2 or G3 extrude which moves by arc
+    std::string extrude_arc_to_xyz(const Vec3d& point, const Vec2d& center_offset, const double dE, const bool is_ccw, const std::string_view comment = {}); //BBS: generate G2 or G3 extrude which moves by arc
+    std::string extrude_to_xyz(const Vec3d &point, const double dE, const std::string_view comment = {});
     std::string retract(bool before_wipe = false);
     std::string retract_for_toolchange(bool before_wipe = false);
     std::string unretract();
+    void        set_extra_lift(double extra_zlift) { this->m_extra_lift = extra_zlift; }
+    double      get_extra_lift() const { return this->m_extra_lift; }
+    double      get_lift() const { return this->m_lifted; } // for placeholder & ramping lift
+    void        set_lift(double new_lift) { this->m_lifted = new_lift; } // for ramping lift
+    double      will_lift(int layer_id) const;
+    std::string lift(int layer_id);
+    std::string unlift();
+    // extrude a bit of filament without moving, then deduce it from the next extrusion.
+    std::string pre_extrude(const double dE, const std::string_view comment = {});
+
+    // this 'de' should be too small to print, but should be be accounted for.
+    // for exemple, if the retraction miss this ammount, the unretraction mays be a little bit too far (by one unit)
+    void        add_de_delayed(double too_small_de) { m_de_left += too_small_de; }
 
     // Current position of the printer, in G-code coordinates.
     // Z coordinate of current position contains zhop. If zhop is applied (this->zhop() > 0),
     // then the print_z = this->get_position().z() - this->zhop().
     Vec3d       get_position() const { return m_pos; }
-    // Zhop value is obsolete. This is for backwards compability.
-    double      get_zhop() const { return 0; }
+    Vec3d       get_unlifted_position() const { return m_pos - Vec3d{0, 0, m_lifted}; }
     // Update position of the print head based on the final position returned by a custom G-code block.
     // The new position Z coordinate contains the Z-hop.
     // GCodeWriter expects the custom script to NOT change print_z, only Z-hop, thus the print_z is maintained
     // by this function while the current Z-hop accumulator is updated.
-    void        update_position(const Vec3d &new_pos);
+    void        update_position_by_lift(const Vec3d &new_pos);
 
     // Returns whether this flavor supports separate print and travel acceleration.
     static bool supports_separate_travel_acceleration(GCodeFlavor flavor);
 
     // To be called by the CoolingBuffer from another thread.
-    static std::string set_fan(const GCodeFlavor gcode_flavor, bool gcode_comments, unsigned int speed);
-    // To be called by the main thread. It always emits the G-code, it does not remember the previous state.
+    static std::string set_fan(const GCodeFlavor gcode_flavor, bool gcode_comments, uint8_t speed, uint8_t tool_fan_offset, bool is_fan_percentage, const std::string_view comment = {});
+    // To be called by the main thread. It always emits the G-code, it does remember the previous state to be able to reset after the wipe tower (but remove that when the wipe tower will be extrusions and not string).
     // Keeping the state is left to the CoolingBuffer, which runs asynchronously on another thread.
-    std::string set_fan(unsigned int speed) const;
+    std::string set_fan(uint8_t speed, uint16_t default_tool = 0);
+    uint8_t get_fan() { return m_last_fan_speed; }
+
+    GCodeFormatter get_default_gcode_formatter() const { return GCodeFormatter(config.gcode_precision_xyz, config.gcode_precision_e); }
+
+    static std::string get_default_pause_gcode(const GCodeConfig &config);
+    static std::string get_default_color_change_gcode(const GCodeConfig &config);
+
+protected:
+    void _extrude_e(GCodeFormatter &w, double dE);
 
 private:
 	// Extruders are sorted by their ID, so that binary search is possible.
     std::vector<Extruder> m_extruders;
-    std::string     m_extrusion_axis;
-    bool            m_single_extruder_multi_material;
-    Extruder*       m_extruder;
-    unsigned int    m_last_acceleration = (unsigned int)(-1);
-    unsigned int    m_last_travel_acceleration = (unsigned int)(-1); // only used for flavors supporting separate print/travel acc
-    // Limit for setting the acceleration, to respect the machine limits set for the Marlin firmware.
-    // If set to zero, the limit is not in action.
-    unsigned int    m_max_acceleration;
-    unsigned int    m_max_travel_acceleration;
-    double          m_max_junction_deviation;
-
-    unsigned int    m_last_bed_temperature;
-    bool            m_last_bed_temperature_reached;
+    std::vector<Mill> m_millers;
+    std::string     m_extrusion_axis = "E";
+    bool            m_single_extruder_multi_material = false;
+    Tool*           m_tool = nullptr;
+    double          m_last_pressure_advance = 0;
+    double          m_current_pressure_advance = 0;
+    uint32_t        m_last_acceleration = uint32_t(0);
+    uint32_t        m_last_travel_acceleration = uint32_t(0);
+    uint32_t        m_current_acceleration = 0;
+    uint32_t        m_current_travel_acceleration = 0;
+    //uint32_t        m_max_acceleration;
+    //uint32_t        m_max_travel_acceleration;
+    double          m_current_speed = 0;
+    uint8_t         m_last_fan_speed = 0;
+    int16_t         m_last_temperature = 0;
+    int16_t         m_last_temperature_with_offset = 0;
+    bool            m_last_temperature_with_offset_waited = false;
+    int16_t         m_last_bed_temperature = 0;
+    bool            m_last_bed_temperature_reached = true;
+    int16_t         m_last_chamber_temperature = 0;
+    // if positive, it's set, and the next lift wil have this extra lift
+    double          m_extra_lift = 0;
+    // current lift, to remove from m_pos to have the current height.
+    double          m_lifted = 0;
+    double          m_pre_extrude = 0;
     Vec3d           m_pos = Vec3d::Zero();
+    // cached string representation of x & y & z m_pos
+    std::string     m_pos_str_x;
+    std::string     m_pos_str_y;
+    std::string     m_pos_str_z;
+    // stored de that wasn't written, because of the rounding
+    double          m_de_left = 0;
+    
+    
+    GCodeFormatter  m_formatter {0,0};
+    
+    std::string _retract(double length, std::optional<double> restart_extra, std::optional<double> restart_extra_toolchange, const std::string_view comment = {});
+    // write the pressure advance if needed on gcode string
+    void _write_pressure_advance(std::string &gcode);
 
-    enum class Acceleration {
-        Travel,
-        Print
-    };
-
-    std::string _retract(double length, double restart_extra, const std::string_view comment);
-    std::string set_acceleration_internal(Acceleration type, unsigned int acceleration);
-};
-
-class GCodeFormatter {
-public:
-    GCodeFormatter() {
-        this->buf_end = buf + buflen;
-        this->ptr_err.ptr = this->buf;
-    }
-
-    GCodeFormatter(const GCodeFormatter&) = delete;
-    GCodeFormatter& operator=(const GCodeFormatter&) = delete;
-
-    // At layer height 0.15mm, extrusion width 0.2mm and filament diameter 1.75mm,
-    // the crossection of extrusion is 0.4 * 0.15 = 0.06mm2
-    // and the filament crossection is 1.75^2 = 3.063mm2
-    // thus the filament moves 3.063 / 0.6 = 51x slower than the XY axes
-    // and we need roughly two decimal digits more on extruder than on XY.
-#if 1
-    static constexpr const int XYZF_EXPORT_DIGITS = 3;
-    static constexpr const int E_EXPORT_DIGITS    = 5;
-#else
-    // order of magnitude smaller extrusion rate erros
-    static constexpr const int XYZF_EXPORT_DIGITS = 4;
-    static constexpr const int E_EXPORT_DIGITS    = 6;
-    // excessive accuracy
-//    static constexpr const int XYZF_EXPORT_DIGITS = 6;
-//    static constexpr const int E_EXPORT_DIGITS    = 9;
-#endif
-
-    static constexpr const std::array<double, 10> pow_10    {   1.,     10.,    100.,    1000.,    10000.,    100000.,    1000000.,    10000000.,    100000000.,    1000000000.};
-    static constexpr const std::array<double, 10> pow_10_inv{1./1.,  1./10., 1./100., 1./1000., 1./10000., 1./100000., 1./1000000., 1./10000000., 1./100000000., 1./1000000000.};
-
-    // Compute XYZ_EPSILON based on XYZF_EXPORT_DIGITS
-    static constexpr double XYZ_EPSILON = pow_10_inv[XYZF_EXPORT_DIGITS];
-
-    // Quantize doubles to a resolution of the G-code.
-    static double                                 quantize(double v, size_t ndigits) { return std::round(v * pow_10[ndigits]) * pow_10_inv[ndigits]; }
-    static double                                 quantize_xyzf(double v) { return quantize(v, XYZF_EXPORT_DIGITS); }
-    static double                                 quantize_e(double v) { return quantize(v, E_EXPORT_DIGITS); }
-    static Vec2d                                  quantize(const Vec2d &pt)
-        { return { quantize(pt.x(), XYZF_EXPORT_DIGITS), quantize(pt.y(), XYZF_EXPORT_DIGITS) }; }
-    static Vec3d                                  quantize(const Vec3d &pt)
-        { return { quantize(pt.x(), XYZF_EXPORT_DIGITS), quantize(pt.y(), XYZF_EXPORT_DIGITS), quantize(pt.z(), XYZF_EXPORT_DIGITS) }; }
-    static Vec2d                                  quantize(const Vec2f &pt)
-        { return { quantize(double(pt.x()), XYZF_EXPORT_DIGITS), quantize(double(pt.y()), XYZF_EXPORT_DIGITS) }; }
-
-    void emit_axis(const char axis, const double v, size_t digits);
-
-    void emit_xy(const Vec2d &point) {
-        this->emit_axis('X', point.x(), XYZF_EXPORT_DIGITS);
-        this->emit_axis('Y', point.y(), XYZF_EXPORT_DIGITS);
-    }
-
-    void emit_xyz(const Vec3d &point) {
-        this->emit_axis('X', point.x(), XYZF_EXPORT_DIGITS);
-        this->emit_axis('Y', point.y(), XYZF_EXPORT_DIGITS);
-        this->emit_z(point.z());
-    }
-
-    void emit_z(const double z) {
-        this->emit_axis('Z', z, XYZF_EXPORT_DIGITS);
-    }
-
-    void emit_ij(const Vec2d &point) {
-        if (point.x() != 0)
-            this->emit_axis('I', point.x(), XYZF_EXPORT_DIGITS);
-        if (point.y() != 0)
-            this->emit_axis('J', point.y(), XYZF_EXPORT_DIGITS);
-    }
-
-    void emit_e(const std::string_view axis, double v) {
-        const double precision{std::pow(10.0, -E_EXPORT_DIGITS)};
-        if (std::abs(v) < precision) {
-            v = v < 0 ? -precision : precision;
-        }
-        if (! axis.empty()) {
-            // not gcfNoExtrusion
-            this->emit_axis(axis[0], v, E_EXPORT_DIGITS);
-        }
-    }
-
-    void emit_f(double speed) {
-        this->emit_axis('F', speed, XYZF_EXPORT_DIGITS);
-    }
-
-    void emit_string(const std::string_view s) {
-        // Be aware that std::string_view::data() returns a pointer to a buffer that is not necessarily null-terminated.
-        memcpy(ptr_err.ptr, s.data(), s.size());
-        ptr_err.ptr += s.size();
-    }
-
-    void emit_comment(bool allow_comments, const std::string_view comment) {
-        if (allow_comments && ! comment.empty()) {
-            *ptr_err.ptr ++ = ' '; *ptr_err.ptr ++ = ';'; *ptr_err.ptr ++ = ' ';
-            this->emit_string(comment);
-        }
-    }
-
-    std::string string() {
-        *ptr_err.ptr ++ = '\n';
-        return std::string(this->buf, ptr_err.ptr - buf);
-    }
-
-protected:
-    static constexpr const size_t   buflen = 256;
-    char                            buf[buflen];
-    char* buf_end;
-    std::to_chars_result            ptr_err;
-};
-
-class GCodeG1Formatter : public GCodeFormatter {
-public:
-    GCodeG1Formatter() {
-        this->buf[0] = 'G';
-        this->buf[1] = '1';
-        this->ptr_err.ptr += 2;
-    }
-
-    GCodeG1Formatter(const GCodeG1Formatter&) = delete;
-    GCodeG1Formatter& operator=(const GCodeG1Formatter&) = delete;
-};
-
-class GCodeG2G3Formatter : public GCodeFormatter {
-public:
-    GCodeG2G3Formatter(bool ccw) {
-        this->buf[0] = 'G';
-        this->buf[1] = ccw ? '3' : '2';
-        this->ptr_err.ptr += 2;
-    }
-
-    GCodeG2G3Formatter(const GCodeG2G3Formatter&) = delete;
-    GCodeG2G3Formatter& operator=(const GCodeG2G3Formatter&) = delete;
 };
 
 } /* namespace Slic3r */

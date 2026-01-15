@@ -12,56 +12,20 @@
 #ifndef slic3r_TriangleMesh_hpp_
 #define slic3r_TriangleMesh_hpp_
 
+#include "libslic3r.h"
 #include <admesh/stl.h>
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <cereal/cereal.hpp>
 #include <functional>
 #include <vector>
-#include <Eigen/Geometry>
-#include <array>
-#include <utility>
-#include <cassert>
-#include <cinttypes>
-#include <cstddef>
-
-#include "libslic3r.h"
 #include "BoundingBox.hpp"
 #include "Line.hpp"
 #include "Point.hpp"
 #include "Polygon.hpp"
 #include "ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r {
 
 class TriangleMesh;
 class TriangleMeshSlicer;
-
-struct indexed_triangle_set_with_color
-{
-    std::vector<stl_triangle_vertex_indices> indices;
-    std::vector<stl_vertex>                  vertices;
-    std::vector<uint8_t>                     colors;
-};
-
-enum class AdditionalMeshInfo {
-    None,
-    Color
-};
-
-template<AdditionalMeshInfo mesh_info> struct IndexedTriangleSetType;
-
-template<> struct IndexedTriangleSetType<AdditionalMeshInfo::None>
-{
-    using type = indexed_triangle_set;
-};
-
-template<> struct IndexedTriangleSetType<AdditionalMeshInfo::Color>
-{
-    using type = indexed_triangle_set_with_color;
-};
 
 struct RepairedMeshErrors {
     // How many edges were united by merging their end points with some other end points in epsilon neighborhood?
@@ -135,8 +99,8 @@ class TriangleMesh
 {
 public:
     TriangleMesh() = default;
-    TriangleMesh(const std::vector<Vec3f> &vertices, const std::vector<Vec3i> &faces);
-    TriangleMesh(std::vector<Vec3f> &&vertices, const std::vector<Vec3i> &&faces);
+    TriangleMesh(const std::vector<Vec3f> &vertices, const std::vector<Vec3i32> &faces);
+    TriangleMesh(std::vector<Vec3f> &&vertices, const std::vector<Vec3i32> &&faces);
     explicit TriangleMesh(const indexed_triangle_set &M);
     explicit TriangleMesh(indexed_triangle_set &&M, const RepairedMeshErrors& repaired_errors = RepairedMeshErrors());
     void clear() { this->its.clear(); m_stats.clear(); }
@@ -199,11 +163,15 @@ public:
     void   restore_optional() {}
 
     const TriangleMeshStats& stats() const { return m_stats; }
+
+    void set_init_shift(const Vec3d &offset) { m_init_shift = offset; }
+    Vec3d get_init_shift() const { return m_init_shift; }
     
     indexed_triangle_set its;
-
+    
 private:
     TriangleMeshStats m_stats;
+    Vec3d m_init_shift {0.0, 0.0, 0.0}; // BBS, for import bbs 3mf...
 };
 
 // Index of face indices incident with a vertex index.
@@ -234,20 +202,15 @@ private:
 // Map from a face edge to a unique edge identifier or -1 if no neighbor exists.
 // Two neighbor faces share a unique edge identifier even if they are flipped.
 // Used for chaining slice lines into polygons.
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its);
-
-std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback);
-
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None>
-std::vector<Vec3i> its_face_edge_ids(const typename IndexedTriangleSetType<mesh_info>::type &its, const std::vector<char> &face_mask);
-
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its);
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::function<void()> throw_on_cancel_callback);
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, const std::vector<char> &face_mask);
 // Having the face neighbors available, assign unique edge IDs to face edges for chaining of polygons over slices.
-std::vector<Vec3i> its_face_edge_ids(const indexed_triangle_set &its, std::vector<Vec3i> &face_neighbors, bool assign_unbound_edges = false, int *num_edges = nullptr);
+std::vector<Vec3i32> its_face_edge_ids(const indexed_triangle_set &its, std::vector<Vec3i32> &face_neighbors, bool assign_unbound_edges = false, int *num_edges = nullptr);
 
 // Create index that gives neighbor faces for each face. Ignores face orientations.
-std::vector<Vec3i> its_face_neighbors(const indexed_triangle_set &its);
-std::vector<Vec3i> its_face_neighbors_par(const indexed_triangle_set &its);
+std::vector<Vec3i32> its_face_neighbors(const indexed_triangle_set &its);
+std::vector<Vec3i32> its_face_neighbors_par(const indexed_triangle_set &its);
 
 // After applying a transformation with negative determinant, flip the faces to keep the transformed mesh volume positive.
 void its_flip_triangles(indexed_triangle_set &its);
@@ -270,18 +233,18 @@ bool its_store_triangle_to_obj(const indexed_triangle_set &its, const char *obj_
 bool its_store_triangles_to_obj(const indexed_triangle_set &its, const char *obj_filename, const std::vector<size_t>& triangles);
 
 std::vector<indexed_triangle_set> its_split(const indexed_triangle_set &its);
-std::vector<indexed_triangle_set> its_split(const indexed_triangle_set &its, std::vector<Vec3i> &face_neighbors);
+std::vector<indexed_triangle_set> its_split(const indexed_triangle_set &its, std::vector<Vec3i32> &face_neighbors);
 
 // Number of disconnected patches (faces are connected if they share an edge, shared edge defined with 2 shared vertex indices).
 size_t its_number_of_patches(const indexed_triangle_set &its);
-size_t its_number_of_patches(const indexed_triangle_set &its, const std::vector<Vec3i> &face_neighbors);
+size_t its_number_of_patches(const indexed_triangle_set &its, const std::vector<Vec3i32> &face_neighbors);
 // Same as its_number_of_patches(its) > 1, but faster.
 bool its_is_splittable(const indexed_triangle_set &its);
-bool its_is_splittable(const indexed_triangle_set &its, const std::vector<Vec3i> &face_neighbors);
+bool its_is_splittable(const indexed_triangle_set &its, const std::vector<Vec3i32> &face_neighbors);
 
 // Calculate number of unconnected face edges. There should be no unconnected edge in a manifold mesh.
 size_t its_num_open_edges(const indexed_triangle_set &its);
-size_t its_num_open_edges(const std::vector<Vec3i> &face_neighbors);
+size_t its_num_open_edges(const std::vector<Vec3i32> &face_neighbors);
 
 // Calculate and returns the list of unconnected face edges.
 // Each edge is represented by the indices of the two endpoint vertices
@@ -306,14 +269,14 @@ inline int its_triangle_vertex_index(const stl_triangle_vertex_indices &triangle
            vertex_idx == triangle_indices[2] ? 2 : -1;
 }
 
-inline Vec2i its_triangle_edge(const stl_triangle_vertex_indices &triangle_indices, int edge_idx)
+inline Vec2i32 its_triangle_edge(const stl_triangle_vertex_indices &triangle_indices, int edge_idx)
 {
     int next_edge_idx = (edge_idx == 2) ? 0 : edge_idx + 1;
     return { triangle_indices[edge_idx], triangle_indices[next_edge_idx] };
 }
 
 // Index of an edge inside triangle.
-inline int its_triangle_edge_index(const stl_triangle_vertex_indices &triangle_indices, const Vec2i &triangle_edge)
+inline int its_triangle_edge_index(const stl_triangle_vertex_indices &triangle_indices, const Vec2i32 &triangle_edge)
 {
     return triangle_edge(0) == triangle_indices[0] && triangle_edge(1) == triangle_indices[1] ? 0 :
            triangle_edge(0) == triangle_indices[1] && triangle_edge(1) == triangle_indices[2] ? 1 :
@@ -323,7 +286,7 @@ inline int its_triangle_edge_index(const stl_triangle_vertex_indices &triangle_i
 using its_triangle = std::array<stl_vertex, 3>;
 
 inline its_triangle its_triangle_vertices(const indexed_triangle_set &its,
-                                          const Vec3i &face)
+                                          const Vec3i32 &face)
 {
     return {its.vertices[face(0)],
             its.vertices[face(1)],
@@ -423,11 +386,10 @@ inline BoundingBoxf3 bounding_box(const indexed_triangle_set& its, const Transfo
     return {bmin.cast<double>(), bmax.cast<double>()};
 }
 
-} // namespace Slic3r
+}
 
 // Serialization through the Cereal library
 #include <cereal/access.hpp>
-
 namespace cereal {
     template <class Archive> struct specialize<Archive, Slic3r::TriangleMesh, cereal::specialization::non_member_load_save> {};
     template<class Archive> void load(Archive &archive, Slic3r::TriangleMesh &mesh) {

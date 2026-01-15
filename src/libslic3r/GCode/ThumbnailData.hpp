@@ -6,8 +6,6 @@
 #define slic3r_ThumbnailData_hpp_
 
 #include <vector>
-#include <functional>
-
 #include "libslic3r/Point.hpp"
 
 namespace Slic3r {
@@ -29,11 +27,11 @@ using ThumbnailsList = std::vector<ThumbnailData>;
 
 struct ThumbnailsParams
 {
-	Vec2ds 	sizes;
-	bool 			printable_only;
-	bool 			parts_only;
-	bool 			show_bed;
-	bool 			transparent_background;
+    const Vec2ds    sizes;
+    bool            printable_only;
+    bool            parts_only;
+    bool            show_bed;
+    bool            transparent_background;
 };
 
 typedef std::function<ThumbnailsList(const ThumbnailsParams&)> ThumbnailsGeneratorCallback;

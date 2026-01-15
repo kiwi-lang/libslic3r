@@ -5,12 +5,8 @@
 #ifndef slic3r_Color_hpp_
 #define slic3r_Color_hpp_
 
-#include <assert.h>
 #include <array>
 #include <algorithm>
-#include <string>
-#include <vector>
-#include <cassert>
 
 #include "Point.hpp"
 
@@ -165,6 +161,8 @@ bool decode_color(const std::string& color_in, ColorRGBA& color_out);
 
 bool decode_colors(const std::vector<std::string>& colors_in, std::vector<ColorRGB>& colors_out);
 bool decode_colors(const std::vector<std::string>& colors_in, std::vector<ColorRGBA>& colors_out);
+    
+ColorRGBA get_a_color(size_t idx);
 
 std::string encode_color(const ColorRGB& color);
 std::string encode_color(const ColorRGBA& color);
@@ -172,6 +170,12 @@ std::string encode_color(const ColorRGBA& color);
 ColorRGB  to_rgb(const ColorRGBA& other_rgba);
 ColorRGBA to_rgba(const ColorRGB& other_rgb);
 ColorRGBA to_rgba(const ColorRGB& other_rgb, float alpha);
+
+typedef struct {
+	double h;       // angle in degrees
+	double s;       // a fraction between 0 and 1
+	double v;       // a fraction between 0 and 1
+} hsv;
 
 // Color mapping of a value into RGB false colors.
 inline Vec3f value_to_rgbf(float minimum, float maximum, float value) 
@@ -183,11 +187,41 @@ inline Vec3f value_to_rgbf(float minimum, float maximum, float value)
     return Vec3f { r, g, b };
 }
 
+//utility color methods
+hsv         rgb2hsv(const ColorRGB &in);
+ColorRGB    hsv2rgb(const hsv &in);
+uint32_t    hex2int(const std::string &hex);
+std::string int2hex(uint32_t int_color);
+ColorRGB    int2rgb(uint32_t int_color);
+uint32_t    rgb2int(const ColorRGB &rgb_color);
+uint32_t	change_endian_int24(uint32_t int_color);
+
 // Color mapping of a value into RGB false colors.
-inline Vec3i value_to_rgbi(float minimum, float maximum, float value)
+inline Vec3i32 value_to_rgbi(float minimum, float maximum, float value)
 {
     return (value_to_rgbf(minimum, maximum, value) * 255).cast<int>();
 }
+
+struct ColorReplace
+{
+    std::string color_to_replace_str;
+    ColorRGB   color_to_replace;
+    std::string   new_color_str;
+    ColorRGB   new_color;
+	// true if colorRGB exists, false if a string isn't a hash-color #00FF00
+	bool is_valid = false;
+};
+struct ColorReplaces{
+	std::vector<ColorReplace> changes;
+	void add(const std::string&, const std::string&);
+	void add(const ColorRGB&, const ColorRGB&);
+	void add(const uint32_t&, const uint32_t&);
+    void add(const std::string &sold, const uint32_t &inew);
+	std::optional<ColorReplace> has_key(const ColorRGB&) const;
+	std::optional<ColorReplace> has_value(const ColorRGB&) const;
+	std::optional<ColorReplace> has_key(const std::string&) const;
+	std::optional<ColorReplace> has_value(const std::string&) const;
+};
 
 ColorRGBA picking_decode(unsigned int id);
 unsigned int picking_encode(unsigned char r, unsigned char g, unsigned char b);
