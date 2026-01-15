@@ -6,8 +6,14 @@ include(PrecompiledHeader)
 string(TIMESTAMP COMPILE_TIME %Y%m%d-%H%M%S)
 set(SLIC3R_BUILD_TIME ${COMPILE_TIME})
 
-if(NOT DEFINED ORCA_CHECK_GCODE_PLACEHOLDERS)
-    set(ORCA_CHECK_GCODE_PLACEHOLDERS "0")
+if("${BBL_RELEASE_TO_PUBLIC}" STREQUAL "0")
+execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_SHA1
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+set(SLIC3R_COMPILE_VERSION "${GIT_SHA1}")
 endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/libslic3r_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h @ONLY)
@@ -30,10 +36,10 @@ set(lisbslic3r_sources
     AABBTreeLines.hpp
     AABBMesh.hpp
     AABBMesh.cpp
-    Algorithm/PathSorting.hpp
-    Algorithm/RegionExpansion.hpp
-    Algorithm/RegionExpansion.cpp
+    Algorithm/LineSegmentation/LineSegmentation.cpp
+    Algorithm/LineSegmentation/LineSegmentation.hpp
     AnyPtr.hpp
+    AStar.hpp
     BoundingBox.cpp
     BoundingBox.hpp
     BridgeDetector.cpp
@@ -44,6 +50,8 @@ set(lisbslic3r_sources
     Brim.hpp
     BuildVolume.cpp
     BuildVolume.hpp
+	Calib.cpp
+    Calib.hpp
     Circle.cpp
     Circle.hpp
     clipper.cpp
@@ -52,13 +60,15 @@ set(lisbslic3r_sources
     ClipperUtils.hpp
     Clipper2Utils.cpp
     Clipper2Utils.hpp
-    ClipperZUtils.hpp
     Color.cpp
     Color.hpp
+    CommonDefs.hpp
     Config.cpp
     Config.hpp
     CurveAnalyzer.cpp
     CurveAnalyzer.hpp
+    CutUtils.cpp
+    CutUtils.hpp
     EdgeGrid.cpp
     EdgeGrid.hpp
     ElephantFootCompensation.cpp
@@ -115,10 +125,16 @@ set(lisbslic3r_sources
     Fill/Lightning/TreeNode.hpp
     Fill/FillRectilinear.cpp
     Fill/FillRectilinear.hpp
+    Fill/FillFloatingConcentric.hpp
+    Fill/FillFloatingConcentric.cpp
     Flow.cpp
     Flow.hpp
+    Frustum.cpp
+    Frustum.hpp
     FlushVolCalc.cpp
     FlushVolCalc.hpp
+    FuzzySkin.cpp
+    FuzzySkin.hpp
     format.hpp
     Format/3mf.cpp
     Format/3mf.hpp
@@ -138,24 +154,18 @@ set(lisbslic3r_sources
     Format/SL1.cpp
 	Format/svg.hpp
     Format/svg.cpp
-    Format/ZipperArchiveImport.hpp
-    Format/ZipperArchiveImport.cpp
     GCode/ThumbnailData.cpp
     GCode/ThumbnailData.hpp
-    GCode/CoolingBuffer.cpp
-    GCode/CoolingBuffer.hpp
-	GCode/FanMover.cpp
-    GCode/FanMover.hpp
+    GCode/GCodeEditor.cpp
+    GCode/GCodeEditor.hpp
     GCode/PostProcessor.cpp
     GCode/PostProcessor.hpp
-    GCode/PressureEqualizer.cpp
-    GCode/PressureEqualizer.hpp
+#    GCode/PressureEqualizer.cpp
+#    GCode/PressureEqualizer.hpp
     GCode/PrintExtents.cpp
     GCode/PrintExtents.hpp
     GCode/RetractWhenCrossingPerimeters.cpp
     GCode/RetractWhenCrossingPerimeters.hpp
-    GCode/SmallAreaInfillFlowCompensator.cpp
-    GCode/SmallAreaInfillFlowCompensator.hpp
     GCode/SpiralVase.cpp
     GCode/SpiralVase.hpp
     GCode/SeamPlacer.cpp
@@ -164,15 +174,18 @@ set(lisbslic3r_sources
     GCode/ToolOrdering.hpp
     GCode/WipeTower.cpp
     GCode/WipeTower.hpp
-    GCode/WipeTower2.cpp
-    GCode/WipeTower2.hpp
     GCode/GCodeProcessor.cpp
     GCode/GCodeProcessor.hpp
     GCode/AvoidCrossingPerimeters.cpp
     GCode/AvoidCrossingPerimeters.hpp
-    GCode/ExtrusionProcessor.hpp
     GCode/ConflictChecker.cpp
     GCode/ConflictChecker.hpp
+    GCode/Smoothing.cpp
+    GCode/Smoothing.hpp
+    GCode/CoolingBuffer.cpp
+    GCode/CoolingBuffer.hpp
+    GCode/TimelapsePosPicker.cpp
+    GCode/TimelapsePosPicker.hpp
     GCode.cpp
     GCode.hpp
     GCodeReader.cpp
@@ -201,20 +214,21 @@ set(lisbslic3r_sources
     Geometry/VoronoiUtilsCgal.hpp
     Geometry/VoronoiVisualUtils.hpp
     Int128.hpp
+    InternalBridgeDetector.cpp
+    InternalBridgeDetector.hpp
+    JumpPointSearch.hpp
+    JumpPointSearch.cpp
     KDTreeIndirect.hpp
     Layer.cpp
     Layer.hpp
     LayerRegion.cpp
     libslic3r.h
-    libslic3r.cpp
     Line.cpp
     Line.hpp
     BlacklistedLibraryCheck.cpp
     BlacklistedLibraryCheck.hpp
     LocalesUtils.cpp
     LocalesUtils.hpp
-    CutUtils.cpp
-    CutUtils.hpp
     Model.cpp
     Model.hpp
     ModelArrange.hpp
@@ -230,20 +244,23 @@ set(lisbslic3r_sources
     Arrange.cpp
     NormalUtils.cpp
     NormalUtils.hpp
+    ObjColorUtils.cpp
     ObjColorUtils.hpp
     Orient.hpp
     Orient.cpp
     MultiPoint.cpp
     MultiPoint.hpp
     MutablePriorityQueue.hpp
-    NSVGUtils.cpp
-    NSVGUtils.hpp
     ObjectID.cpp
     ObjectID.hpp
+    NSVGUtils.cpp
+    NSVGUtils.hpp
 	ParameterUtils.cpp
     ParameterUtils.hpp
     PerimeterGenerator.cpp
     PerimeterGenerator.hpp
+    OverhangDetector.hpp
+    OverhangDetector.cpp
     PlaceholderParser.cpp
     PlaceholderParser.hpp
     Platform.cpp
@@ -299,29 +316,16 @@ set(lisbslic3r_sources
     SlicingAdaptive.hpp
     Support/SupportCommon.cpp
     Support/SupportCommon.hpp
-    Support/SupportDebug.cpp
-    Support/SupportDebug.hpp
-    Support/SupportLayer.hpp
-    # Support/SupportMaterial.cpp
-    # Support/SupportMaterial.hpp
-    Support/SupportParameters.cpp
-    Support/SupportParameters.hpp
-    Support/OrganicSupport.cpp
-    Support/OrganicSupport.hpp
-    Support/TreeSupport.cpp
+    Support/SupportMaterial.cpp
+    Support/SupportMaterial.hpp
     Support/TreeSupport.hpp
-    Support/TreeSupportCommon.cpp
-    Support/TreeSupportCommon.hpp
-    Support/TreeModelVolumes.cpp
+    Support/TreeSupport.cpp
+    Support/TreeSupport3D.hpp
+    Support/TreeSupport3D.cpp
     Support/TreeModelVolumes.hpp
-    SupportMaterial.cpp
-    SupportMaterial.hpp
-    PrincipalComponents2D.cpp
-    PrincipalComponents2D.hpp
-    SupportSpotsGenerator.cpp
-    SupportSpotsGenerator.hpp
-    TreeSupport.hpp 
-    TreeSupport.cpp
+    Support/TreeModelVolumes.cpp
+    Support/TreeSupportCommon.hpp
+    Support/SupportParameters.hpp
     MinimumSpanningTree.hpp
     MinimumSpanningTree.cpp
     Surface.cpp
@@ -334,7 +338,6 @@ set(lisbslic3r_sources
     Technologies.hpp
     Tesselate.cpp
     Tesselate.hpp
-    TextConfiguration.hpp
     TriangleMesh.cpp
     TriangleMesh.hpp
     TriangleMeshSlicer.cpp
@@ -419,6 +422,8 @@ set(lisbslic3r_sources
     Arachne/BeadingStrategy/RedistributeBeadingStrategy.cpp
     Arachne/BeadingStrategy/WideningBeadingStrategy.hpp
     Arachne/BeadingStrategy/WideningBeadingStrategy.cpp
+    Arachne/BeadingStrategy/OuterWallContourStrategy.hpp
+    Arachne/BeadingStrategy/OuterWallContourStrategy.cpp
     Arachne/utils/ExtrusionJunction.hpp
     Arachne/utils/ExtrusionJunction.cpp
     Arachne/utils/ExtrusionLine.hpp
@@ -445,14 +450,25 @@ set(lisbslic3r_sources
     Arachne/WallToolPaths.cpp
     Shape/TextShape.hpp
     Shape/TextShape.cpp
-    calib.hpp
-    calib.cpp
-    GCode/Thumbnails.cpp
-    GCode/Thumbnails.hpp
+    RegionExpansion.hpp
+    RegionExpansion.cpp
+    ClipperZUtils.hpp
+    FlushVolPredictor.hpp
+    FlushVolPredictor.cpp
+    FilamentGroup.hpp
+    FilamentGroup.cpp
+    FilamentGroupUtils.hpp
+    FilamentGroupUtils.cpp
+    GCode/ToolOrderUtils.hpp
+    GCode/ToolOrderUtils.cpp
+    FlushVolPredictor.hpp
+    FlushVolPredictor.cpp
     Interlocking/InterlockingGenerator.hpp
     Interlocking/InterlockingGenerator.cpp
     Interlocking/VoxelUtils.hpp
     Interlocking/VoxelUtils.cpp
+    MultiNozzleUtils.hpp
+    MultiNozzleUtils.cpp
 )
 
 if (APPLE)
@@ -463,7 +479,7 @@ if (APPLE)
         )
 endif ()
 
-add_library(libslic3r STATIC ${lisbslic3r_sources} 
+add_library(libslic3r STATIC ${lisbslic3r_sources}
     "${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h"
     ${OpenVDBUtils_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lisbslic3r_sources})
@@ -479,13 +495,12 @@ find_package(CGAL REQUIRED)
 find_package(OpenCV REQUIRED core)
 cmake_policy(POP)
 
-add_library(libslic3r_cgal STATIC 
+add_library(libslic3r_cgal STATIC
     CutSurface.hpp CutSurface.cpp
     IntersectionPoints.hpp IntersectionPoints.cpp
     MeshBoolean.hpp MeshBoolean.cpp
     TryCatchSignal.hpp TryCatchSignal.cpp
-    Triangulation.hpp Triangulation.cpp
-)
+    Triangulation.hpp Triangulation.cpp)
 target_include_directories(libslic3r_cgal PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # Reset compile options of libslic3r_cgal. Despite it being linked privately, CGAL options
@@ -504,6 +519,13 @@ if (_opts)
     target_compile_options(libslic3r_cgal PRIVATE "${_opts_bad}")
 endif()
 
+if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 14.1)
+    set_property(TARGET libslic3r PROPERTY CXX_STANDARD 17)
+    set_property(TARGET libslic3r PROPERTY CXX_EXTENSIONS OFF)
+    set_property(TARGET libslic3r_cgal PROPERTY CXX_STANDARD 17)
+    set_property(TARGET libslic3r_cgal PROPERTY CXX_EXTENSIONS OFF)
+endif()
+
 target_link_libraries(libslic3r_cgal PRIVATE ${_cgal_tgt} libigl mcut)
 
 if (MSVC AND "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4") # 32 bit MSVC workaround
@@ -520,8 +542,6 @@ target_include_directories(libslic3r PUBLIC ${EXPAT_INCLUDE_DIRS})
 set(OpenCASCADE_DIR "${CMAKE_PREFIX_PATH}/lib/cmake/occt")
 find_package(OpenCASCADE REQUIRED)
 target_include_directories(libslic3r PUBLIC ${OpenCASCADE_INCLUDE_DIR})
-
-find_package(JPEG REQUIRED)
 
 set(OCCT_LIBS
     TKXDESTEP
@@ -556,7 +576,7 @@ set(OCCT_LIBS
 target_link_libraries(libslic3r
     libnest2d
     admesh
-    cereal::cereal
+    cereal
     libigl
     miniz
     boost_libs
@@ -575,8 +595,6 @@ target_link_libraries(libslic3r
     ${OCCT_LIBS}
     Clipper2
     mcut
-    JPEG::JPEG
-    qoi
     opencv_world
     )
 

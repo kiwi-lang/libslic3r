@@ -1,5 +1,6 @@
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/MultiNozzleUtils.hpp"
 #include "AppConfig.hpp"
 //BBS
 #include "Preset.hpp"
@@ -38,15 +39,12 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-static const std::string VERSION_CHECK_URL_STABLE = "https://api.github.com/repos/softfever/OrcaSlicer/releases/latest";
-static const std::string VERSION_CHECK_URL = "https://api.github.com/repos/softfever/OrcaSlicer/releases";
-static const std::string PROFILE_UPDATE_URL = "https://api.github.com/repos/OrcaSlicer/orcaslicer-profiles/releases/tags";
+static const std::string VERSION_CHECK_URL = "";
 static const std::string MODELS_STR = "models";
 
 const std::string AppConfig::SECTION_FILAMENTS = "filaments";
 const std::string AppConfig::SECTION_MATERIALS = "sla_materials";
 const std::string AppConfig::SECTION_EMBOSS_STYLE = "font";
-
 std::string AppConfig::get_language_code()
 {
     std::string get_lang = get("language");
@@ -68,19 +66,19 @@ std::string AppConfig::get_hms_host()
 {
     std::string sel = get("iot_environment");
     std::string host = "";
-// #if !BBL_RELEASE_TO_PUBLIC
-//     if (sel == ENV_DEV_HOST)
-//         host = "e-dev.bambu-lab.com";
-//     else if (sel == ENV_QAT_HOST)
-//         host = "e-qa.bambu-lab.com";
-//     else if (sel == ENV_PRE_HOST)
-//         host = "e-pre.bambu-lab.com";
-//     else if (sel == ENV_PRODUCT_HOST)
-//         host = "e.bambulab.com";
-//     return host;
-// #else
+#if !BBL_RELEASE_TO_PUBLIC
+    if (sel == ENV_DEV_HOST)
+        host = "e-dev.bambulab.net";
+    else if (sel == ENV_QAT_HOST)
+        host = "e-qa.bambulab.net";
+    else if (sel == ENV_PRE_HOST)
+        host = "e-pre.bambulab.net";
+    else if (sel == ENV_PRODUCT_HOST)
+        host = "e.bambulab.com";
+    return host;
+#else
     return "e.bambulab.com";
-// #endif
+#endif
 }
 
 void AppConfig::reset()
@@ -134,7 +132,8 @@ void AppConfig::set_defaults()
 
         if (get("single_instance").empty())
             set_bool("single_instance", false);
-
+        if (get("import_3mf_as_project").empty())
+            set_bool("import_3mf_as_project", true);
 #ifdef SUPPORT_REMEMBER_OUTPUT_PATH
         if (get("remember_output_path").empty())
             set_bool("remember_output_path", true);
@@ -152,9 +151,6 @@ void AppConfig::set_defaults()
 
         if (get("use_inches").empty())
             set("use_inches", "0");
-
-        if (get("default_page").empty())
-            set("default_page", "0");
     }
     else {
 #ifdef _WIN32
@@ -166,31 +162,79 @@ void AppConfig::set_defaults()
     if (get("use_perspective_camera").empty())
         set_bool("use_perspective_camera", true);
 
+#ifdef SUPPORT_FREE_CAMERA
     if (get("use_free_camera").empty())
         set_bool("use_free_camera", false);
+#endif
 
-    if (get("camera_navigation_style").empty())
-        set("camera_navigation_style", "0");
-
+#ifdef SUPPORT_REVERSE_MOUSE_ZOOM
     if (get("reverse_mouse_wheel_zoom").empty())
         set_bool("reverse_mouse_wheel_zoom", false);
+#endif
+    if (get("enable_append_color_by_sync_ams").empty())
+        set_bool("enable_append_color_by_sync_ams", true);
+    if (get("enable_merge_color_by_sync_ams").empty())
+        set_bool("enable_merge_color_by_sync_ams", false);
+    if (get("ams_sync_match_full_use_color_dist").empty())
+        set_bool("ams_sync_match_full_use_color_dist", false);
+    if (get("enable_sidebar_floatable").empty())
+        set_bool("enable_sidebar_floatable", false);
+
+    if (get("export_sources_full_pathnames").empty())
+        set_bool("export_sources_full_pathnames", false);
 
     if (get("zoom_to_mouse").empty())
         set_bool("zoom_to_mouse", false);
-
+    if (get("show_shells_in_preview").empty())
+        set_bool("show_shells_in_preview", true);
+    if (get("enable_text_styles").empty())
+        set_bool("enable_text_styles", false);
+    if (get("use_last_fold_state_gcodeview_option_panel").empty())
+        set_bool("use_last_fold_state_gcodeview_option_panel", true);
+    if (get("enable_lod").empty())
+        set_bool("enable_lod", true);
+    if (get("gamma_correct_in_import_obj").empty())
+        set_bool("gamma_correct_in_import_obj", false);
+    if (get("enable_opengl_multi_instance").empty())
+        set_bool("enable_opengl_multi_instance", true);
+    if (get("import_single_svg_and_split").empty())
+        set_bool("import_single_svg_and_split", true);
+    if (get("user_bed_type").empty())
+        set_bool("user_bed_type", true);
+    if (get("grabber_size_factor").empty())
+        set("grabber_size_factor", "1.0");
+    if (get("cancel_glmultidraw").empty())
+        set_bool("cancel_glmultidraw", false);
 //#ifdef SUPPORT_SHOW_HINTS
     if (get("show_hints").empty())
-        set_bool("show_hints", true);
+        set_bool("show_hints", false);
 //#endif
+    if (get("support_backup_fonts").empty())
+        set_bool("support_backup_fonts", true);
+    if (get("custom_back_font_name").empty())
+        set("custom_back_font_name", "");
     if (get("enable_multi_machine").empty())
         set_bool("enable_multi_machine", false);
 
-    if (get("show_gcode_window").empty())
-        set_bool("show_gcode_window", true);
+    if (get("enable_record_gcodeviewer_option_item").empty())
+        set_bool("enable_record_gcodeviewer_option_item", false);
+    if (get("prefer_to_use_dgpu").empty())
+        set_bool("prefer_to_use_dgpu", false);
+
+    if (get("msaa_type").empty())
+        set("msaa_type", "X4");
+
+    if (get("enable_advanced_antialiasing").empty())
+        set_bool("enable_advanced_antialiasing", false);
+
+    if (get("enable_advanced_gcode_viewer_").empty())
+        set_bool("enable_advanced_gcode_viewer_", true);
+
+    if (get("gizmo_keep_screen_size").empty())
+        set_bool("gizmo_keep_screen_size", true);
 
     if (get("show_3d_navigator").empty())
         set_bool("show_3d_navigator", true);
-
 
 #ifdef _WIN32
 
@@ -223,8 +267,8 @@ void AppConfig::set_defaults()
     if (get("enable_ssl_for_ftp").empty())
         set_bool("enable_ssl_for_ftp", true);
 
-    if (get("log_severity_level").empty())
-        set("log_severity_level", "warning");
+    if (get("severity_level").empty())
+        set("severity_level", "info");
 
     if (get("internal_developer_mode").empty())
         set_bool("internal_developer_mode", false);
@@ -237,20 +281,6 @@ void AppConfig::set_defaults()
     if (get("slicer_uuid").empty()) {
         boost::uuids::uuid uuid = boost::uuids::random_generator()();
         set("slicer_uuid", to_string(uuid));
-    }
-
-    // Orca
-    if (get("stealth_mode").empty()) {
-        set_bool("stealth_mode", false);
-    }
-
-    if(get("check_stable_update_only").empty()) {
-        set_bool("check_stable_update_only", false);
-    }
-
-    // Orca
-    if(get("show_splash_screen").empty()) {
-        set_bool("show_splash_screen", true);
     }
 
     if (get("show_model_mesh").empty()) {
@@ -268,21 +298,33 @@ void AppConfig::set_defaults()
     if (get("show_daily_tips").empty()) {
         set_bool("show_daily_tips", true);
     }
-    //true is auto calculate
-    if (get("auto_calculate").empty()) {
-        set_bool("auto_calculate", true);
+
+    if (get("auto_calculate_flush").empty()){
+        set("auto_calculate_flush","all");
     }
 
-    if (get("remember_printer_config").empty()) {
-        set_bool("remember_printer_config", true);
+    if (get("enable_high_low_temp_mixed_printing").empty()){
+        set_bool("enable_high_low_temp_mixed_printing", false);
     }
 
-    if (get("auto_calculate_when_filament_change").empty()){
-        set_bool("auto_calculate_when_filament_change", true);
+    if (get("ignore_ext_filament_in_filament_map").empty()){
+        set_bool("ignore_ext_filament_in_filament_map", false);
+    }
+
+    if (get("pop_up_filament_map_dialog").empty()){
+        set_bool("pop_up_filament_map_dialog", false);
+    }
+
+    if (get("prefered_filament_map_mode").empty()){
+        set("prefered_filament_map_mode",ConfigOptionEnum<FilamentMapMode>::get_enum_names()[FilamentMapMode::fmmAutoForFlush]);
     }
 
     if (get("show_home_page").empty()) {
         set_bool("show_home_page", true);
+    }
+
+    if (get("show_print_history").empty()) {
+        set_bool("show_print_history", true);
     }
 
     if (get("show_printable_box").empty()) {
@@ -291,6 +333,10 @@ void AppConfig::set_defaults()
 
     if (get("units").empty()) {
          set("units", "0");
+    }
+
+    if (get("auto_transfer_when_switch_preset").empty()) {
+        set("auto_transfer_when_switch_preset", "true");
     }
 
     if (get("sync_user_preset").empty()) {
@@ -330,16 +376,28 @@ void AppConfig::set_defaults()
     }
 
     if (get("mouse_wheel").empty()) {
-        set("mouse_wheel", "0");
+        set("mouse_wheel", "0"); }
+
+    // helio options
+    if (get("helio_enable").empty()) {
+        set_bool("helio_enable", false);
     }
-    
+
+    if (get("helio_api_china").empty()) {
+        set("helio_api_china", "https://api.helioam.cn/graphql");
+    }
+
+    if (get("helio_api_other").empty()) {
+        set("helio_api_other", "https://api.helioadditive.com/graphql");
+    }
+
     if (get("max_recent_count").empty()) {
         set("max_recent_count", "18");
     }
 
-    // if (get("staff_pick_switch").empty()) {
-    //     set_bool("staff_pick_switch", false);
-    // }
+    if (get("staff_pick_switch").empty()) {
+        set_bool("staff_pick_switch", true);
+    }
 
     if (get("sync_system_preset").empty()) {
         set_bool("sync_system_preset", true);
@@ -347,6 +405,10 @@ void AppConfig::set_defaults()
 
     if (get("backup_switch").empty() || get("version") < "01.06.00.00") {
         set_bool("backup_switch", true);
+    }
+
+    if (get("liveview", "auto_stop_liveview").empty()) {
+        set("liveview", "auto_stop_liveview", true);
     }
 
     if (get("backup_interval").empty()) {
@@ -365,22 +427,15 @@ void AppConfig::set_defaults()
         set("max_send", "3");
     }
 
-// #if BBL_RELEASE_TO_PUBLIC
+#if BBL_RELEASE_TO_PUBLIC
     if (get("iot_environment").empty()) {
         set("iot_environment", "3");
     }
-// #else
-//     if (get("iot_environment").empty()) {
-//         set("iot_environment", "1");
-//     }
-// #endif
-
-    if (get("allow_ip_resolve").empty())
-        set_bool("allow_ip_resolve", true);
-
-    if (get("presets", "filament_colors").empty()) {
-        set_str("presets", "filament_colors", "#F2754E");
+#else
+    if (get("iot_environment").empty()) {
+        set("iot_environment", "2");
     }
+#endif
 
     if (get("print", "bed_leveling").empty()) {
         set_str("print", "bed_leveling", "1");
@@ -392,6 +447,39 @@ void AppConfig::set_defaults()
         set_str("print", "timelapse", "1");
     }
 
+    if (get("enable_step_mesh_setting").empty()) {
+        set_bool("enable_step_mesh_setting", true);
+    }
+    if (get("linear_defletion").empty()) {
+        set("linear_defletion", "0.003");
+    }
+    if (get("angle_defletion").empty()) {
+        set("angle_defletion", "0.5");
+    }
+    if (get("is_split_compound").empty()) {
+        set_bool("is_split_compound", false);
+    }
+    if (get("play_slicing_video").empty()) {
+        set_bool("play_slicing_video", true);
+    }
+    if (get("play_tpu_printing_video").empty()) {
+        set_bool("play_tpu_printing_video", true);
+    }
+    if (get("show_wrapping_detect_dialog").empty()) {
+        set_bool("show_wrapping_detect_dialog", true);
+    }
+    if (get("ignore_module_cert").empty()) {
+        set_bool("ignore_module_cert", false);
+    }
+    if (get("webview_auto_fill").empty()) {
+        set_bool("webview_auto_fill", true);
+    }
+    erase("app", "item_webview_auto_fill");
+
+    if (get("prompt_for_brittle_filaments").empty()){
+        set_bool("prompt_for_brittle_filaments", true);
+    }
+
     // Remove legacy window positions/sizes
     erase("app", "main_frame_maximized");
     erase("app", "main_frame_pos");
@@ -399,7 +487,6 @@ void AppConfig::set_defaults()
     erase("app", "object_settings_maximized");
     erase("app", "object_settings_pos");
     erase("app", "object_settings_size");
-    erase("app", "severity_level");
 }
 
 #ifdef WIN32
@@ -463,23 +550,33 @@ std::string AppConfig::load()
     std::string error_message;
 
     try {
-        ifs.open(AppConfig::loading_path());
-
+        auto path = AppConfig::loading_path();
+        ifs.open(path);
+        if (!ifs.is_open()) {
+            BOOST_LOG_TRIVIAL(info) << "AppConfig::load() open fail:" << PathSanitizer::sanitize(path);
+            return "Line break format may be incorrect.";
+        }
 #ifdef WIN32
         std::stringstream input_stream;
         input_stream << ifs.rdbuf();
         std::string total_string = input_stream.str();
-        size_t last_pos = total_string.find_last_of('}');
-        std::string left_string = total_string.substr(0, last_pos+1);
-        //skip the "\n"
-        std::string right_string = total_string.substr(last_pos+2);
+        if (total_string.empty()) {
+            BOOST_LOG_TRIVIAL(info) << "AppConfig::load() read fail:" << PathSanitizer::sanitize(path);
+            return "read fail.";
+        } else {
+            size_t      last_pos    = total_string.find_last_of('}');
+            std::string left_string = total_string.substr(0, last_pos + 1);
+            // skip the "\n"
+            std::string right_string = total_string.substr(last_pos + 2);
 
-        std::string md5_str = appconfig_md5_hash_line({left_string.data()});
-        // Verify the checksum of the config file without taking just for debugging purpose.
-        if (md5_str != right_string)
-            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
-            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
-        j = json::parse(left_string);
+            std::string md5_str = appconfig_md5_hash_line({left_string.data()});
+            // Verify the checksum of the config file without taking just for debugging purpose.
+            if (md5_str != right_string) {
+                BOOST_LOG_TRIVIAL(info) << "The configuration file " << PathSanitizer::sanitize(path)
+                                        << " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+            }
+            j = json::parse(left_string);
+        }
 #else
         ifs >> j;
 #endif
@@ -580,6 +677,20 @@ std::string AppConfig::load()
                             CaliPresetInfo preset_info;
                             preset_info.tray_id     = cali_it.value()["tray_id"].get<int>();
                             preset_info.nozzle_diameter = cali_it.value()["nozzle_diameter"].get<float>();
+                            preset_info.filament_id     = cali_it.value()["filament_id"].get<std::string>();
+                            preset_info.setting_id      = cali_it.value()["setting_id"].get<std::string>();
+                            preset_info.name            = cali_it.value()["name"].get<std::string>();
+                            if (cali_it.value().contains("extruder_id"))
+                                preset_info.extruder_id = cali_it.value()["extruder_id"].get<int>();
+                            if (cali_it.value().contains("nozzle_volume_type"))
+                                preset_info.nozzle_volume_type  = NozzleVolumeType(cali_it.value()["nozzle_volume_type"].get<int>());
+                            if (cali_it.value().contains("bed_type"))
+                                preset_info.bed_type = BedType(cali_it.value()["bed_type"].get<int>());
+                            if (cali_it.value().contains("nozzle_pos_id"))
+                                preset_info.nozzle_pos_id = cali_it.value()["nozzle_pos_id"].get<int>();
+                            if (cali_it.value().contains("nozzle_sn"))
+                                preset_info.nozzle_sn = cali_it.value()["nozzle_sn"].get<std::string>();
+                            preset_info.nozzle_diameter = cali_it.value()["nozzle_diameter"].get<float>();
                             preset_info.filament_id = cali_it.value()["filament_id"].get<std::string>();
                             preset_info.setting_id  = cali_it.value()["setting_id"].get<std::string>();
                             preset_info.name        = cali_it.value()["name"].get<std::string>();
@@ -587,10 +698,6 @@ std::string AppConfig::load()
                         }
                     }
                     m_printer_cali_infos.emplace_back(cali_info);
-                }
-            } else if (it.key() == "orca_presets") {
-                for (auto& j_model : it.value()) {
-                    m_printer_settings[j_model["machine"].get<std::string>()] = j_model;
                 }
             } else {
                 if (it.value().is_object()) {
@@ -605,12 +712,15 @@ std::string AppConfig::load()
                             m_filament_presets = iter.value().get<std::vector<std::string>>();
                         } else if (iter.key() == "filament_colors") {
                             m_filament_colors = iter.value().get<std::vector<std::string>>();
-                        }
-                        else {
+                        } else if(iter.key() == "filament_multi_colors") {
+                           m_filament_multi_colors = iter.value().get<std::vector<std::string>>();
+                        } else if(iter.key() == "filament_color_types") {
+                           m_filament_color_types = iter.value().get<std::vector<std::string>>();
+                        } else {
                             if (iter.value().is_string())
                                 m_storage[it.key()][iter.key()] = iter.value().get<std::string>();
                             else {
-                                BOOST_LOG_TRIVIAL(trace) << "load config warning...";
+                                BOOST_LOG_TRIVIAL(warning) << "load config warning...";
                             }
                         }
                     }
@@ -618,7 +728,7 @@ std::string AppConfig::load()
             }
         }
     } catch(std::exception err) {
-        BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
+        BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", PathSanitizer::sanitize(AppConfig::loading_path()), err.what());
 
         return err.what();
     }
@@ -660,7 +770,7 @@ void AppConfig::save()
     // The config is first written to a file with a PID suffix and then moved
     // to avoid race conditions with multiple instances of Slic3r
     const auto path = config_path();
-    std::string path_pid = (boost::format("%1%.%2%") % path % get_current_pid()).str();
+    std::string path_pid = (boost::format("%1%.%2%") % PathSanitizer::sanitize(path) % get_current_pid()).str();
 
     json j;
 
@@ -690,6 +800,13 @@ void AppConfig::save()
     for (const auto &filament_color : m_filament_colors) {
         j["app"]["filament_colors"].push_back(filament_color);
     }
+    for (const auto &filament_multi_color : m_filament_multi_colors) {
+       j["app"]["filament_multi_colors"].push_back(filament_multi_color);
+    }
+
+    for (const auto &filament_color_type : m_filament_color_types) {
+       j["app"]["filament_color_types"].push_back(filament_color_type);
+    }
 
     for (const auto &cali_info : m_printer_cali_infos) {
         json cali_json;
@@ -700,7 +817,12 @@ void AppConfig::save()
         for (auto filament_preset : cali_info.selected_presets) {
             json preset_json;
             preset_json["tray_id"] = filament_preset.tray_id;
+            preset_json["extruder_id"]      = filament_preset.extruder_id;
+            preset_json["nozzle_volume_type"]  = int(filament_preset.nozzle_volume_type);
+            preset_json["bed_type"] = int(filament_preset.bed_type);
             preset_json["nozzle_diameter"]  = filament_preset.nozzle_diameter;
+            preset_json["nozzle_pos_id"]    = filament_preset.nozzle_pos_id;
+            preset_json["nozzle_sn"]        = filament_preset.nozzle_sn;
             preset_json["filament_id"]      = filament_preset.filament_id;
             preset_json["setting_id"]       = filament_preset.setting_id;
             preset_json["name"]             = filament_preset.name;
@@ -723,7 +845,7 @@ void AppConfig::save()
         } else if (category.first == "presets") {
             json j_filament_array;
             for(const auto& kvp : category.second) {
-                if (boost::starts_with(kvp.first, "filament") && kvp.first != "filament_colors") {
+                if (boost::starts_with(kvp.first, "filament") && kvp.first != "filament_colors" && kvp.first != "filament_multi_colors" && kvp.first != "filament_color_types") {
                     j_filament_array.push_back(kvp.second);
                 } else {
                     j[category.first][kvp.first] = kvp.second;
@@ -764,10 +886,6 @@ void AppConfig::save()
         }
     }
 
-    // write machine settings
-    for (const auto& preset : m_printer_settings) {
-        j["orca_presets"].push_back(preset.second);
-    }
     boost::nowide::ofstream c;
     c.open(path_pid, std::ios::out | std::ios::trunc);
     c << std::setw(4) << j << std::endl;
@@ -787,7 +905,7 @@ void AppConfig::save()
     std::string backup_path = (boost::format("%1%.bak") % path).str();
     // Copy configuration file with PID suffix into the configuration file with "bak" suffix.
     if (copy_file(path_pid, backup_path, error_message, false) != SUCCESS)
-        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << backup_path << " failed. Failed to create a backup configuration.";
+        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << PathSanitizer::sanitize(backup_path) << " failed. Failed to create a backup configuration.";
 #endif
 
     // Rename the config atomically.
@@ -812,7 +930,7 @@ std::string AppConfig::load()
 #ifdef WIN32
         // Verify the checksum of the config file without taking just for debugging purpose.
         if (!verify_config_file_checksum(ifs))
-            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
+            BOOST_LOG_TRIVIAL(info) << "The configuration file " << PathSanitizer::sanitize(AppConfig::loading_path()) <<
             " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
 
         ifs.seekg(0, boost::nowide::ifstream::beg);
@@ -828,17 +946,17 @@ std::string AppConfig::load()
             // Compute checksum of the configuration backup file and try to load configuration from it when the checksum is correct.
             boost::nowide::ifstream backup_ifs(backup_path);
             if (!verify_config_file_checksum(backup_ifs)) {
-                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", AppConfig::loading_path(), backup_path);
+                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", PathSanitizer::sanitize(AppConfig::loading_path()), PathSanitizer::sanitize(backup_path));
                 backup_ifs.close();
                 boost::filesystem::remove(backup_path);
             }
             else if (std::string error_message; copy_file(backup_path, AppConfig::loading_path(), error_message, false) != SUCCESS) {
-                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", AppConfig::loading_path(), backup_path, error_message);
+                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", PathSanitizer::sanitize(AppConfig::loading_path()), PathSanitizer::sanitize(backup_path), error_message);
                 backup_ifs.close();
                 boost::filesystem::remove(backup_path);
             }
             else {
-                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", AppConfig::loading_path(), backup_path);
+                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", PathSanitizer::sanitize(AppConfig::loading_path()), PathSanitizer::sanitize(backup_path));
                 // Try parse configuration file after restore from backup.
                 try {
                     ifs.open(AppConfig::loading_path());
@@ -846,13 +964,13 @@ std::string AppConfig::load()
                     recovered = true;
                 }
                 catch (pt::ptree_error& ex) {
-                    BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\" after it has been restored from backup: %2%", AppConfig::loading_path(), ex.what());
+                    BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\" after it has been restored from backup: %2%", PathSanitizer::sanitize(AppConfig::loading_path()), ex.what());
                 }
             }
         }
         else
 #endif // WIN32
-            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", AppConfig::loading_path(), ex.what());
+            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", PathSanitizer::sanitize(AppConfig::loading_path()), ex.what());
         if (!recovered) {
             // Report the initial error of parsing PrusaSlicer.ini.
             // Error while parsing config file. We'll customize the error message and rethrow to be displayed.
@@ -938,7 +1056,7 @@ void AppConfig::save()
     // The config is first written to a file with a PID suffix and then moved
     // to avoid race conditions with multiple instances of Slic3r
     const auto path = config_path();
-    std::string path_pid = (boost::format("%1%.%2%") % path % get_current_pid()).str();
+    std::string path_pid = (boost::format("%1%.%2%") % PathSanitizer::sanitize(path) % get_current_pid()).str();
 
     std::stringstream config_ss;
     if (m_mode == EAppMode::Editor)
@@ -992,7 +1110,7 @@ void AppConfig::save()
     std::string backup_path = (boost::format("%1%.bak") % path).str();
     // Copy configuration file with PID suffix into the configuration file with "bak" suffix.
     if (copy_file(path_pid, backup_path, error_message, false) != SUCCESS)
-        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << backup_path << " failed. Failed to create a backup configuration.";
+        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << PathSanitizer::sanitize(backup_path) << " failed. Failed to create a backup configuration.";
 #endif
 
     // Rename the config atomically.
@@ -1096,13 +1214,14 @@ void AppConfig::set_recent_projects(const std::vector<std::string>& recent_proje
     for (unsigned int i = 0; i < (unsigned int)recent_projects.size(); ++i)
     {
         auto n = std::to_string(i + 1);
-        if (n.length() == 1) n = "0" + n;
+        if (n.length() == 1) n = "00" + n;
+        else if (n.length() == 2) n = "0" + n;
         it->second[n] = recent_projects[i];
     }
 }
 
 void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone,
-                                 float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll)
+                                 float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz)
 {
     std::string key = std::string("mouse_device:") + name;
     auto it = m_storage.find(key);
@@ -1116,12 +1235,6 @@ void AppConfig::set_mouse_device(const std::string& name, double translation_spe
     it->second["rotation_deadzone"] = float_to_string_decimal_point(rotation_deadzone);
     it->second["zoom_speed"] = float_to_string_decimal_point(zoom_speed);
     it->second["swap_yz"] = swap_yz ? "1" : "0";
-    it->second["invert_x"] = invert_x ? "1" : "0";
-    it->second["invert_y"] = invert_y ? "1" : "0";
-    it->second["invert_z"] = invert_z ? "1" : "0";
-    it->second["invert_yaw"] = invert_yaw ? "1" : "0";
-    it->second["invert_pitch"] = invert_pitch ? "1" : "0";
-    it->second["invert_roll"] = invert_roll ? "1" : "0";
 }
 
 std::vector<std::string> AppConfig::get_mouse_device_names() const
@@ -1203,29 +1316,29 @@ void AppConfig::update_last_backup_dir(const std::string& dir)
 
 std::string AppConfig::get_region()
 {
-// #if BBL_RELEASE_TO_PUBLIC
+#if BBL_RELEASE_TO_PUBLIC
     return this->get("region");
-// #else
-//     std::string sel = get("iot_environment");
-//     std::string region;
-//     if (sel == ENV_DEV_HOST)
-//         region = "ENV_CN_DEV";
-//     else if (sel == ENV_QAT_HOST)
-//         region = "ENV_CN_QA";
-//     else if (sel == ENV_PRE_HOST)
-//         region = "ENV_CN_PRE";
-//     if (region.empty())
-//         return this->get("region");
-//     return region;
-// #endif
+#else
+    std::string sel = get("iot_environment");
+    std::string region;
+    if (sel == ENV_DEV_HOST)
+        region = "NEW_ENV_DEV_HOST";
+    else if (sel == ENV_QAT_HOST)
+        region = "NEW_ENV_QAT_HOST";
+    else if (sel == ENV_PRE_HOST)
+        region = "NEW_ENV_PRE_HOST";
+    if (region.empty())
+        return this->get("region");
+    return region;
+#endif
 }
 
 std::string AppConfig::get_country_code()
 {
     std::string region = get_region();
-// #if !BBL_RELEASE_TO_PUBLIC
-//     if (is_engineering_region()) { return region; }
-// #endif
+#if !BBL_RELEASE_TO_PUBLIC
+    if (is_engineering_region()) { return region; }
+#endif
     if (region == "CHN" || region == "China")
         return "CN";
     else if (region == "USA")
@@ -1285,6 +1398,32 @@ std::vector<std::string> AppConfig::get_custom_color_from_config()
     return colors;
 }
 
+void AppConfig::save_nozzle_volume_types_to_config(const std::string& printer_name, const std::string& nozzle_volume_types)
+{
+    if (!has_section("nozzle_volume_types")) {
+        std::map<std::string, std::string> data;
+        data[printer_name] = nozzle_volume_types;
+        set_section("nozzle_volume_types", data);
+    } else {
+        auto data        = get_section("nozzle_volume_types");
+        auto data_modify = const_cast<std::map<std::string, std::string>&>(data);
+        data_modify[printer_name] = nozzle_volume_types;
+        set_section("nozzle_volume_types", data_modify);
+    }
+}
+
+std::string AppConfig::get_nozzle_volume_types_from_config(const std::string& printer_name)
+{
+    std::string nozzle_volume_types;
+    if (has_section("nozzle_volume_types")) {
+        auto data        = get_section("nozzle_volume_types");
+        if (data.find(printer_name) != data.end())
+            nozzle_volume_types = data[printer_name];
+    }
+
+    return nozzle_volume_types;
+}
+
 void AppConfig::reset_selections()
 {
     auto it = m_storage.find("presets");
@@ -1314,15 +1453,10 @@ std::string AppConfig::config_path()
     return path;
 }
 
-std::string AppConfig::version_check_url(bool stable_only/* = false*/) const
+std::string AppConfig::version_check_url() const
 {
     auto from_settings = get("version_check_url");
-    return from_settings.empty() ? stable_only ? VERSION_CHECK_URL_STABLE : VERSION_CHECK_URL : from_settings;
-}
-
-std::string AppConfig::profile_update_url() const
-{
-    return PROFILE_UPDATE_URL;
+    return from_settings.empty() ? VERSION_CHECK_URL : from_settings;
 }
 
 bool AppConfig::exists()
