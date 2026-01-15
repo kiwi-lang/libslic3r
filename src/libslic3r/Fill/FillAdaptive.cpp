@@ -1,42 +1,29 @@
-///|/ Copyright (c) Prusa Research 2020 - 2022 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-// for indexed_triangle_set
-#include <admesh/stl.h>
-#include <boost/geometry/core/access.hpp>
-#include <boost/geometry/core/static_assert.hpp>
-#include <cstdlib>
-#include <cmath>
-#include <algorithm>
-#include <numeric>
-#include <array>
-#include <iterator>
-#include <limits>
-#include <optional>
-#include <cassert>
-#include <complex>
-
 #include "../ClipperUtils.hpp"
 #include "../ExPolygon.hpp"
+#include "../Surface.hpp"
 #include "../Geometry.hpp"
 #include "../Layer.hpp"
 #include "../Print.hpp"
 #include "../ShortestPath.hpp"
-#include "libslic3r/Fill/FillAdaptive.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Flow.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "tcbspan/span.hpp"
+
+#include "FillAdaptive.hpp"
+
+// for indexed_triangle_set
+#include <admesh/stl.h>
+
+#include <cstdlib>
+#include <cmath>
+#include <algorithm>
+#include <numeric>
 
 // Boost pool: Don't use mutexes to synchronize memory allocation.
 #define BOOST_POOL_NO_MT
 #include <boost/pool/object_pool.hpp>
+
 #include <boost/geometry.hpp>
+#include <boost/geometry/geometries/point.hpp>
 #include <boost/geometry/geometries/segment.hpp>
+#include <boost/geometry/index/rtree.hpp>
 
 
 namespace Slic3r {
@@ -311,15 +298,15 @@ std::pair<double, double> adaptive_fill_line_spacing(const PrintObject &print_ob
     double                     default_infill_extrusion_width = Flow::auto_extrusion_width(FlowRole::frInfill, float(max_nozzle_diameter));
     for (size_t region_id = 0; region_id < print_object.num_printing_regions(); ++ region_id) {
         const PrintRegionConfig &config                 = print_object.printing_region(region_id).config();
-        bool                     nonempty               = config.fill_density > 0;
-        bool                     has_adaptive_infill    = nonempty && config.fill_pattern == ipAdaptiveCubic;
-        bool                     has_support_infill     = nonempty && config.fill_pattern == ipSupportCubic;
-        double                   infill_extrusion_width = config.infill_extrusion_width.percent ? default_infill_extrusion_width * 0.01 * config.infill_extrusion_width : config.infill_extrusion_width;
+        bool                     nonempty               = config.sparse_infill_density > 0;
+        bool                     has_adaptive_infill    = nonempty && config.sparse_infill_pattern == ipAdaptiveCubic;
+        bool                     has_support_infill     = nonempty && config.sparse_infill_pattern == ipSupportCubic;
+        double                   sparse_infill_line_width = config.sparse_infill_line_width.get_abs_value(max_nozzle_diameter);
         region_fill_data.push_back(RegionFillData({
             has_adaptive_infill ? Tristate::Maybe : Tristate::No,
             has_support_infill ? Tristate::Maybe : Tristate::No,
-            config.fill_density,
-            infill_extrusion_width != 0. ? infill_extrusion_width : default_infill_extrusion_width
+            config.sparse_infill_density,
+            sparse_infill_line_width != 0. ? sparse_infill_line_width : default_infill_extrusion_width
         }));
         build_octree |= has_adaptive_infill || has_support_infill;
     }
@@ -329,9 +316,9 @@ std::pair<double, double> adaptive_fill_line_spacing(const PrintObject &print_ob
         for (const Layer *layer : print_object.layers())
             for (size_t region_id = 0; region_id < layer->regions().size(); ++ region_id) {
                 RegionFillData &rd = region_fill_data[region_id];
-                if (rd.has_adaptive_infill == Tristate::Maybe && ! layer->regions()[region_id]->fill_surfaces().empty())
+                if (rd.has_adaptive_infill == Tristate::Maybe && ! layer->regions()[region_id]->fill_surfaces.empty())
                     rd.has_adaptive_infill = Tristate::Yes;
-                if (rd.has_support_infill == Tristate::Maybe && ! layer->regions()[region_id]->fill_surfaces().empty())
+                if (rd.has_support_infill == Tristate::Maybe && ! layer->regions()[region_id]->fill_surfaces.empty())
                     rd.has_support_infill = Tristate::Yes;
             }
 
@@ -516,6 +503,10 @@ static void generate_infill_lines_recursive(
             ++ address;
     }
 }
+
+#ifndef NDEBUG
+//    #define ADAPTIVE_CUBIC_INFILL_DEBUG_OUTPUT
+#endif
 
 #ifdef ADAPTIVE_CUBIC_INFILL_DEBUG_OUTPUT
 static void export_infill_lines_to_svg(const ExPolygon &expoly, const Polylines &polylines, const std::string &path, const Points &pts = Points())

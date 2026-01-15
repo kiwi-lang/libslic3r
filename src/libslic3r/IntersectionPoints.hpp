@@ -1,18 +1,7 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_IntersectionPoints_hpp_
 #define slic3r_IntersectionPoints_hpp_
 
-#include <stdint.h>
-#include <vector>
-#include <cinttypes>
-
 #include "ExPolygon.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
 
 namespace Slic3r {
 

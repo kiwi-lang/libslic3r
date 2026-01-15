@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Vojtěch Bubník @bubnikv, Filip Sykala @Jony01
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "CutSurface.hpp"
 
 /// models_input.obj - Check transormation of model to each others
@@ -27,41 +23,18 @@
 //#define DEBUG_OUTPUT_DIR std::string("C:/data/temp/cutSurface/")
 
 using namespace Slic3r;
+#include "ExPolygonsIndex.hpp"
+#include <boost/next_prior.hpp>
 #include <CGAL/Polygon_mesh_processing/corefinement.h>
 #include <CGAL/Exact_integer.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Cartesian_converter.h>
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <boost/property_map/property_map.hpp>
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <iterator>
-#include <limits>
-#include <map>
-#include <optional>
-#include <queue>
-#include <set>
-#include <tuple>
-#include <utility>
-#include <cassert>
+#include <tbb/parallel_for.h>
 
-#include "ExPolygonsIndex.hpp"
 // libslic3r
 #include "TriangleMesh.hpp" // its_merge
 #include "Utils.hpp" // next_highest_power_of_2
-#include "admesh/stl.h"
-#include "libslic3r/AABBTreeIndirect.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Emboss.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include "ClipperUtils.hpp" // union_ex + offset_ex
 
 namespace priv {
 
@@ -544,10 +517,9 @@ void store(const Emboss::IProjection &projection, const Point &point_to_project,
 } // namespace privat
 
 #ifdef DEBUG_OUTPUT_DIR
+#include "libslic3r/SVG.hpp"
 #include <boost/log/trivial.hpp>
 #include <filesystem>
-
-#include "libslic3r/SVG.hpp"
 #endif // DEBUG_OUTPUT_DIR
 
 SurfaceCut Slic3r::cut_surface(const ExPolygons &shapes,
@@ -730,7 +702,7 @@ using IsOnSides = std::vector<std::array<bool, 4>>;
 /// <param name="t">Triangle</param>
 /// <param name="is_on_sides">Flag is vertex index out of plane</param>
 /// <returns>True when triangle is out of one of plane</returns>
-bool is_all_on_one_side(const Vec3i &t, const IsOnSides& is_on_sides);
+bool is_all_on_one_side(const Vec3i32 &t, const IsOnSides& is_on_sides);
 
 } // namespace priv
 
@@ -742,7 +714,7 @@ bool priv::is_out_of(const Vec3d &v, const PointNormal &point_normal)
     return signed_distance > 1e-5;
 };
 
-bool priv::is_all_on_one_side(const Vec3i &t, const IsOnSides& is_on_sides) {
+bool priv::is_all_on_one_side(const Vec3i32 &t, const IsOnSides& is_on_sides) {
     for (size_t side = 0; side < 4; side++) {
         bool result = true;
         for (auto vi : t) {
@@ -1803,7 +1775,6 @@ priv::VDistances priv::calc_distances(const SurfacePatches &patches,
 
 #include "libslic3r/AABBTreeLines.hpp"
 #include "libslic3r/Line.hpp"
-
 // functions for choose_best_distance
 namespace priv {
 
@@ -1916,7 +1887,7 @@ uint32_t priv::get_closest_point_index(const SearchData &sd,
         const Polygon   &poly  = (id.polygon_index == 0) ?
                                            shape.contour :
                                            shape.holes[id.polygon_index - 1];
-        Vec2i p_ = p.cast<int>();
+        auto p_ = p.cast<coord_t>();
         return p_ == poly[id.point_index];
     };
 
@@ -2585,7 +2556,6 @@ void priv::create_face_types(FaceTypeMap           &map,
 
 #include <CGAL/Polygon_mesh_processing/clip.h>
 #include <CGAL/Polygon_mesh_processing/corefinement.h>
-
 bool priv::clip_cut(SurfacePatch &cut, CutMesh clipper)
 {
     CutMesh& tm = cut.mesh; 
@@ -3585,7 +3555,7 @@ SurfaceCut priv::patch2cut(SurfacePatch &patch)
         assert(mesh.next(mesh.next(mesh.next(hi))) == hi);
 
         // triangle indicies
-        Vec3i ti;
+        Vec3i32 ti;
         size_t i = 0;
         for (VI vi : { mesh.source(hi), 
                        mesh.target(hi), 
@@ -3768,7 +3738,7 @@ indexed_triangle_set priv::create_indexed_triangle_set(
         HI hi_end = hi;
 
         int   ti = 0;
-        Vec3i t;
+        Vec3i32 t;
 
         do {
             VI   vi  = mesh.source(hi);
@@ -3828,8 +3798,8 @@ void priv::store(const CutAOIs &aois, const CutMesh &mesh, const std::string &di
             size_t bi2 = its.vertices.size();
             its.vertices.push_back(b + dir);
 
-            its.indices.push_back(Vec3i(ai, ai2, bi));
-            its.indices.push_back(Vec3i(ai2, bi2, bi));
+            its.indices.push_back(Vec3i32(ai, ai2, bi));
+            its.indices.push_back(Vec3i32(ai2, bi2, bi));
         }
         return its;    
     };
@@ -4028,8 +3998,8 @@ indexed_triangle_set priv::create_contour_its(
         size_t bi2 = result.vertices.size();
         result.vertices.push_back(b + dir);
 
-        result.indices.push_back(Vec3i(ai, bi, ai2));
-        result.indices.push_back(Vec3i(ai2, bi, bi2));
+        result.indices.push_back(Vec3i32(ai, bi, ai2));
+        result.indices.push_back(Vec3i32(ai2, bi, bi2));
         prev_vi = vi;
     }
     return result;

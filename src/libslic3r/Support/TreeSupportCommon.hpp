@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Tree supports by Thomas Rahm, losely based on Tree Supports by CuraEngine.
 // Original source of Thomas Rahm's tree supports:
 // https://github.com/ThomasRahm/CuraEngine
@@ -13,31 +9,11 @@
 #ifndef slic3r_TreeSupportCommon_hpp
 #define slic3r_TreeSupportCommon_hpp
 
-#include <assert.h>
-#include <math.h>
-#include <oneapi/tbb/scalable_allocator.h>
-#include <stddef.h>
-#include <string_view>
-#include <algorithm>
-#include <mutex>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cmath>
-#include <cstddef>
-
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Polygon.hpp"
+#include "../libslic3r.h"
+#include "../Polygon.hpp"
 #include "SupportCommon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/Slicing.hpp"
-#include "libslic3r/Support/SupportLayer.hpp"
-#include "libslic3r/Support/SupportParameters.hpp"
 
-namespace Slic3r {
-class PrintObject;
-}  // namespace Slic3r
+#include <string_view>
 
 using namespace Slic3r::FFFSupport;
 
@@ -472,7 +448,7 @@ private:
 
 static constexpr const bool polygons_strictly_simple = false;
 
-static constexpr const auto tiny_area_threshold = sqr(scaled<double>(0.001));
+inline double tiny_area_threshold() { return sqr(scaled<double>(0.001)); }
 
 void tree_supports_show_error(std::string_view message, bool critical);
 

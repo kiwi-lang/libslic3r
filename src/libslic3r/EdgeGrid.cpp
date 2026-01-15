@@ -1,13 +1,9 @@
-///|/ Copyright (c) Prusa Research 2016 - 2022 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include <algorithm>
 #include <vector>
+#include <float.h>
 #include <unordered_map>
-#include <cstdint>
-#include <set>
-#include <cfloat>
+
+#include <png.h>
 
 #include "libslic3r.h"
 #include "ClipperUtils.hpp"
@@ -15,9 +11,6 @@
 #include "Geometry.hpp"
 #include "SVG.hpp"
 #include "PNGReadWrite.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
 
 // #define EDGE_GRID_DEBUG_OUTPUT
 
@@ -27,6 +20,8 @@
 #define _DEBUG
 #undef NDEBUG
 #endif
+
+#include <assert.h>
 
 namespace Slic3r {
 
@@ -1312,9 +1307,9 @@ Polygons EdgeGrid::Grid::contours_simplified(coord_t offset, bool fill_holes) co
 	// 1) Collect the lines.
 	std::vector<Line> lines;
 	EndPointMapType start_point_to_line_idx;
-	for (int r = 0; r <= int(m_rows); ++ r) {
-		for (int c = 0; c <= int(m_cols); ++ c) {
-			int  addr    = (r + 1) * cell_cols + c + 1;
+	for (coord_t r = 0; r <= coord_t(m_rows); ++ r) {
+		for (coord_t c = 0; c <= coord_t(m_cols); ++ c) {
+			size_t  addr    = (r + 1) * cell_cols + c + 1;
 			bool left    = cell_inside[addr - 1];
 			bool top     = cell_inside[addr - cell_cols];
 			bool current = cell_inside[addr];

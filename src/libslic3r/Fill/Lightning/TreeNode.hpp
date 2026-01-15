@@ -4,30 +4,21 @@
 #ifndef LIGHTNING_TREE_NODE_H
 #define LIGHTNING_TREE_NODE_H
 
-#include <stddef.h>
-#include <stdint.h>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
-#include <utility>
-#include <cinttypes>
-#include <cstddef>
 
-#include "libslic3r/EdgeGrid.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/SVG.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
+#include "../../EdgeGrid.hpp"
+#include "../../Polygon.hpp"
+#include "SVG.hpp"
 
 //#define LIGHTNING_TREE_NODE_DEBUG_OUTPUT
 
 namespace Slic3r::FillLightning
 {
 
-constexpr auto locator_cell_size = scaled<coord_t>(4.);
+inline coord_t locator_cell_size() { return scaled<coord_t>(4.); }
 
 class Node;
 
@@ -255,6 +246,8 @@ public:
      * This needs to be known when roots are reconnected, so that the last (higher) layer is supported by the next one.
      */
     const std::optional<Point>& getLastGroundingLocation() const { return m_last_grounding_location; }
+
+    void draw_tree(SVG& svg) { for (auto& child : m_children) { svg.draw(Line(m_p, child->getLocation()), "yellow"); child->draw_tree(svg); } }
 
 protected:
     /*!

@@ -1,14 +1,9 @@
-///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_RetractWhenCrossingPerimeters_hpp_
 #define slic3r_RetractWhenCrossingPerimeters_hpp_
 
 #include <vector>
 
 #include "../AABBTreeIndirect.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 

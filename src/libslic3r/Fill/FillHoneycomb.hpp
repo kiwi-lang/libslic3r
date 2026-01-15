@@ -1,27 +1,11 @@
-///|/ Copyright (c) Prusa Research 2016 - 2020 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Fill/Honeycomb.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2012 - 2015 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillHoneycomb_hpp_
 #define slic3r_FillHoneycomb_hpp_
 
-#include <math.h>
-#include <stddef.h>
 #include <map>
-#include <utility>
-#include <cmath>
-#include <cstddef>
 
-#include "libslic3r/libslic3r.h"
+#include "../libslic3r.h"
+
 #include "FillBase.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
 
 namespace Slic3r {
 
@@ -29,7 +13,6 @@ class FillHoneycomb : public Fill
 {
 public:
     ~FillHoneycomb() override {}
-    bool is_self_crossing() override { return false; }
 
 protected:
     Fill* clone() const override { return new FillHoneycomb(*this); };

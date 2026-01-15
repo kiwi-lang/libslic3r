@@ -1,28 +1,9 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Fill/Concentric.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2015 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillRectilinear_hpp_
 #define slic3r_FillRectilinear_hpp_
 
-#include <stddef.h>
-#include <initializer_list>
-#include <cstddef>
+#include "../libslic3r.h"
 
-#include "libslic3r/libslic3r.h"
 #include "FillBase.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/ShortestPath.hpp"
 
 namespace Slic3r {
 
@@ -35,7 +16,6 @@ public:
     Fill* clone() const override { return new FillRectilinear(*this); }
     ~FillRectilinear() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
-    bool is_self_crossing() override { return false; }
 
 protected:
     // Fill by single directional lines, interconnect the lines along perimeters.
@@ -48,9 +28,6 @@ protected:
         float pattern_shift;
     };
     bool fill_surface_by_multilines(const Surface *surface, FillParams params, const std::initializer_list<SweepParams> &sweep_params, Polylines &polylines_out);
-
-    // The extended bounding box of the whole object that covers any rotation of every layer.
-    BoundingBox extended_object_bounding_box() const;
 };
 
 class FillAlignedRectilinear : public FillRectilinear
@@ -73,11 +50,11 @@ public:
 	bool no_sort() const override { return true; }
 };
 
-class FillMonotonicLines : public FillRectilinear
+class FillMonotonicLine : public FillRectilinear
 {
 public:
-    Fill* clone() const override { return new FillMonotonicLines(*this); }
-    ~FillMonotonicLines() override = default;
+    Fill* clone() const override { return new FillMonotonicLine(*this); }
+    ~FillMonotonicLine() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
     bool no_sort() const override { return true; }
 };
@@ -88,7 +65,6 @@ public:
     Fill* clone() const override { return new FillGrid(*this); }
     ~FillGrid() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
-    bool is_self_crossing() override { return true; }
 
 protected:
 	// The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
@@ -101,7 +77,6 @@ public:
     Fill* clone() const override { return new FillTriangles(*this); }
     ~FillTriangles() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
-    bool is_self_crossing() override { return true; }
 
 protected:
 	// The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
@@ -114,7 +89,6 @@ public:
     Fill* clone() const override { return new FillStars(*this); }
     ~FillStars() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
-    bool is_self_crossing() override { return true; }
 
 protected:
     // The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
@@ -127,7 +101,6 @@ public:
     Fill* clone() const override { return new FillCubic(*this); }
     ~FillCubic() override = default;
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
-    bool is_self_crossing() override { return true; }
 
 protected:
 	// The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
@@ -146,18 +119,35 @@ protected:
     float _layer_angle(size_t idx) const override { return 0.f; }
 };
 
-class FillZigZag : public FillRectilinear
+// Orca: Introduced FillMonotonicLines from Prusa slicer, inhereting from FillRectilinear
+// This replaces the FillMonotonicLineWGapFill from BBS
+class FillMonotonicLines : public FillRectilinear
 {
 public:
-    Fill* clone() const override { return new FillZigZag(*this); }
-    ~FillZigZag() override = default;
-
-    bool has_consistent_pattern() const override { return true; }
+    Fill* clone() const override { return new FillMonotonicLines(*this); }
+    ~FillMonotonicLines() override = default;
+    Polylines fill_surface(const Surface *surface, const FillParams &params) override;
+    bool no_sort() const override { return true; }
 };
 
-Points sample_grid_pattern(const ExPolygon &expolygon, coord_t spacing, const BoundingBox &global_bounding_box);
-Points sample_grid_pattern(const ExPolygons &expolygons, coord_t spacing, const BoundingBox &global_bounding_box);
-Points sample_grid_pattern(const Polygons &polygons, coord_t spacing, const BoundingBox &global_bounding_box);
+//Orca: Replaced with FillMonotonicLines, inheriting from FillRectilinear
+/*class FillMonotonicLineWGapFill : public Fill
+{
+public:
+    ~FillMonotonicLineWGapFill() override = default;
+    void fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) override;
+
+protected:
+    Fill* clone() const override { return new FillMonotonicLineWGapFill(*this); };
+    bool no_sort() const override { return true; }
+
+private:
+    void fill_surface_by_lines(const Surface* surface, const FillParams& params, Polylines& polylines_out);
+};*/
+
+Points sample_grid_pattern(const ExPolygon& expolygon, coord_t spacing, const BoundingBox& global_bounding_box);
+Points sample_grid_pattern(const ExPolygons& expolygons, coord_t spacing, const BoundingBox& global_bounding_box);
+Points sample_grid_pattern(const Polygons& polygons, coord_t spacing, const BoundingBox& global_bounding_box);
 
 } // namespace Slic3r
 

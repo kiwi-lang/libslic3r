@@ -1,21 +1,10 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2015 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SurfaceCollection_hpp_
 #define slic3r_SurfaceCollection_hpp_
 
-#include <stddef.h>
-#include <initializer_list>
-#include <vector>
-#include <utility>
-#include <cstddef>
-
 #include "libslic3r.h"
 #include "Surface.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Polygon.hpp"
+#include <initializer_list>
+#include <vector>
 
 namespace Slic3r {
 
@@ -29,7 +18,7 @@ public:
     SurfaceCollection(Surfaces &&surfaces) : surfaces(std::move(surfaces)) {};
 
     void simplify(double tolerance);
-    void group(std::vector<SurfacesPtr> *retval) const;
+    void group(std::vector<SurfacesPtr> *retval);
     template <class T> bool any_internal_contains(const T &item) const {
         for (const Surface &surface : this->surfaces) if (surface.is_internal() && surface.expolygon.contains(item)) return true;
         return false;
@@ -44,11 +33,17 @@ public:
     void keep_types(std::initializer_list<SurfaceType> types);
     void remove_type(const SurfaceType type);
     void remove_types(std::initializer_list<SurfaceType> types);
-    void filter_by_type(SurfaceType type, Polygons *polygons) const;
+    void filter_by_type(SurfaceType type, Polygons* polygons) const;
     void remove_type(const SurfaceType type, ExPolygons *polygons);
     void set_type(SurfaceType type) {
     	for (Surface &surface : this->surfaces)
     		surface.surface_type = type;
+    }
+    //BBS
+    void change_to_new_type(SurfaceType old_type, SurfaceType new_type) {
+        for (Surface& surface : this->surfaces)
+            if (surface.surface_type == old_type)
+                surface.surface_type = new_type;
     }
 
     void clear() { surfaces.clear(); }

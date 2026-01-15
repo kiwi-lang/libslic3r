@@ -1,29 +1,16 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) SuperSlicer 2018 - 2019 Remi Durand @supermerill
-///|/
-///|/ ported from lib/Slic3r/Fill/Base.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <boost/log/trivial.hpp>
+#include <stdio.h>
 #include <numeric>
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <cassert>
-#include <cinttypes>
-#include <cstdlib>
 
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/EdgeGrid.hpp"
-#include "libslic3r/Geometry.hpp"
-#include "libslic3r/Geometry/Circle.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/Surface.hpp"
-#include "libslic3r/libslic3r.h"
+#include "../ClipperUtils.hpp"
+#include "../EdgeGrid.hpp"
+#include "../Geometry.hpp"
+#include "../Geometry/Circle.hpp"
+#include "../Point.hpp"
+#include "../PrintConfig.hpp"
+#include "../Surface.hpp"
+#include "../libslic3r.h"
+#include "../VariableWidth.hpp"
+
 #include "FillBase.hpp"
 #include "FillConcentric.hpp"
 #include "FillHoneycomb.hpp"
@@ -34,14 +21,18 @@
 #include "FillRectilinear.hpp"
 #include "FillAdaptive.hpp"
 #include "FillLightning.hpp"
-#include "FillEnsuring.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/ShortestPath.hpp"
+// BBS: new infill pattern header
+#include "FillConcentricInternal.hpp"
+#include "FillCrossHatch.hpp"
 
 // #define INFILL_DEBUG_OUTPUT
 
 namespace Slic3r {
+
+//BBS: 0% of sparse_infill_line_width, no anchor at the start of sparse infill
+float Fill::infill_anchor = 400;
+//BBS: 20mm
+float Fill::infill_anchor_max = 20;
 
 Fill* Fill::new_from_type(const InfillPattern type)
 {
@@ -52,8 +43,8 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipGyroid:              return new FillGyroid();
     case ipRectilinear:         return new FillRectilinear();
     case ipAlignedRectilinear:  return new FillAlignedRectilinear();
+    case ipCrossHatch:          return new FillCrossHatch();
     case ipMonotonic:           return new FillMonotonic();
-    case ipMonotonicLines:      return new FillMonotonicLines();
     case ipLine:                return new FillLine();
     case ipGrid:                return new FillGrid();
     case ipTriangles:           return new FillTriangles();
@@ -66,8 +57,11 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipSupportCubic:        return new FillAdaptive::Filler();
     case ipSupportBase:         return new FillSupportBase();
     case ipLightning:           return new FillLightning::Filler();
-    case ipEnsuring:            return new FillEnsuring();
-    case ipZigZag:              return new FillZigZag();
+    // BBS: for internal solid infill only
+    case ipConcentricInternal:  return new FillConcentricInternal();
+    // BBS: for bottom and top surface only
+    // Orca: Replace BBS implementation with Prusa implementation
+    case ipMonotonicLine:       return new FillMonotonicLines();
     default: throw Slic3r::InvalidArgument("unknown type");
     }
 }
@@ -103,20 +97,137 @@ Polylines Fill::fill_surface(const Surface *surface, const FillParams &params)
     Slic3r::ExPolygons expp = offset_ex(surface->expolygon, float(scale_(this->overlap - 0.5 * this->spacing)));
     // Create the infills for each of the regions.
     Polylines polylines_out;
-    for (ExPolygon &expoly : expp)
-        _fill_surface_single(params, surface->thickness_layers, _infill_direction(surface), std::move(expoly), polylines_out);
+    for (size_t i = 0; i < expp.size(); ++ i)
+        _fill_surface_single(
+            params,
+            surface->thickness_layers,
+            _infill_direction(surface),
+            std::move(expp[i]),
+            polylines_out);
     return polylines_out;
 }
 
-ThickPolylines Fill::fill_surface_arachne(const Surface *surface, const FillParams &params)
+ThickPolylines Fill::fill_surface_arachne(const Surface* surface, const FillParams& params)
 {
     // Perform offset.
     Slic3r::ExPolygons expp = offset_ex(surface->expolygon, float(scale_(this->overlap - 0.5 * this->spacing)));
     // Create the infills for each of the regions.
     ThickPolylines thick_polylines_out;
-    for (ExPolygon &expoly : expp)
+    for (ExPolygon& expoly : expp)
         _fill_surface_single(params, surface->thickness_layers, _infill_direction(surface), std::move(expoly), thick_polylines_out);
     return thick_polylines_out;
+}
+
+// BBS: this method is used to fill the ExtrusionEntityCollection. It call fill_surface by default
+void Fill::fill_surface_extrusion(const Surface* surface, const FillParams& params, ExtrusionEntitiesPtr& out)
+{
+    Polylines polylines;
+    ThickPolylines thick_polylines;
+    try {
+        if (params.use_arachne)
+            thick_polylines = this->fill_surface_arachne(surface, params);
+        else
+            polylines = this->fill_surface(surface, params);
+    }
+    catch (InfillFailedException&) {}
+
+    if (!polylines.empty() || !thick_polylines.empty()) {
+        // calculate actual flow from spacing (which might have been adjusted by the infill
+        // pattern generator)
+        double flow_mm3_per_mm = params.flow.mm3_per_mm();
+        double flow_width = params.flow.width();
+        if (params.using_internal_flow) {
+            // if we used the internal flow we're not doing a solid infill
+            // so we can safely ignore the slight variation that might have
+            // been applied to f->spacing
+        }
+        else {
+            Flow new_flow = params.flow.with_spacing(this->spacing);
+            flow_mm3_per_mm = new_flow.mm3_per_mm();
+            flow_width = new_flow.width();
+        }
+        // Save into layer.
+        ExtrusionEntityCollection* eec = nullptr;
+        out.push_back(eec = new ExtrusionEntityCollection());
+        // Only concentric fills are not sorted.
+        eec->no_sort = this->no_sort();
+        size_t idx   = eec->entities.size();
+        if (params.use_arachne) {
+            Flow new_flow = params.flow.with_spacing(float(this->spacing));
+            variable_width(thick_polylines, params.extrusion_role, new_flow, eec->entities);
+            thick_polylines.clear();
+        }
+        else {
+            extrusion_entities_append_paths(
+                eec->entities, std::move(polylines),
+                params.extrusion_role,
+                flow_mm3_per_mm, float(flow_width), params.flow.height());
+        }
+        if (!params.can_reverse) {
+            for (size_t i = idx; i < eec->entities.size(); i++)
+                eec->entities[i]->set_reverse();
+        }
+        
+        // Orca: run gap fill
+        this->_create_gap_fill(surface, params, eec);
+    }
+}
+
+// Orca: Dedicated function to calculate gap fill lines for the provided surface, according to the print object parameters
+// and append them to the out ExtrusionEntityCollection.
+void Fill::_create_gap_fill(const Surface* surface, const FillParams& params, ExtrusionEntityCollection* out){
+    
+    //Orca: just to be safe, check against null pointer for the print object config and if NULL return.
+    if (this->print_object_config == nullptr) return;
+    
+    // Orca: Enable gap fill as per the user preference. Return early if gap fill is to not be applied.
+    if ((this->print_object_config->gap_fill_target.value == gftNowhere) ||
+        (surface->surface_type == stInternalSolid && this->print_object_config->gap_fill_target.value != gftEverywhere))
+        return;
+    
+    Flow new_flow = params.flow;
+    ExPolygons unextruded_areas;
+    unextruded_areas = diff_ex(this->no_overlap_expolygons, union_ex(out->polygons_covered_by_spacing(10)));
+    ExPolygons gapfill_areas = union_ex(unextruded_areas);
+    if (!this->no_overlap_expolygons.empty())
+        gapfill_areas = intersection_ex(gapfill_areas, this->no_overlap_expolygons);
+    
+    if (gapfill_areas.size() > 0 && params.density >= 1) {
+        double min = 0.2 * new_flow.scaled_spacing() * (1 - INSET_OVERLAP_TOLERANCE);
+        double max = 2. * new_flow.scaled_spacing();
+        ExPolygons gaps_ex = diff_ex(
+                                     opening_ex(gapfill_areas, float(min / 2.)),
+                                     offset2_ex(gapfill_areas, -float(max / 2.), float(max / 2. + ClipperSafetyOffset)));
+        //BBS: sort the gap_ex to avoid mess travel
+        Points ordering_points;
+        ordering_points.reserve(gaps_ex.size());
+        ExPolygons gaps_ex_sorted;
+        gaps_ex_sorted.reserve(gaps_ex.size());
+        for (const ExPolygon &ex : gaps_ex)
+            ordering_points.push_back(ex.contour.first_point());
+        std::vector<Points::size_type> order2 = chain_points(ordering_points);
+        for (size_t i : order2)
+            gaps_ex_sorted.emplace_back(std::move(gaps_ex[i]));
+        
+        ThickPolylines polylines;
+        for (ExPolygon& ex : gaps_ex_sorted) {
+            //BBS: Use DP simplify to avoid duplicated points and accelerate medial-axis calculation as well.
+            ex.douglas_peucker(SCALED_RESOLUTION * 0.1);
+            ex.medial_axis(min, max, &polylines);
+        }
+        
+        if (!polylines.empty() && !is_bridge(params.extrusion_role)) {
+            polylines.erase(std::remove_if(polylines.begin(), polylines.end(),
+                                           [&](const ThickPolyline& p) {
+                return p.length() < scale_(params.config->filter_out_gap_fill.value);
+            }), polylines.end());
+            
+            ExtrusionEntityCollection gap_fill;
+            variable_width(polylines, erGapFill, params.flow, gap_fill.entities);
+            auto gap = std::move(gap_fill.entities);
+            out->append(gap);
+        }
+    }
 }
 
 // Calculate a new spacing to fill width with possibly integer number of lines,
@@ -150,8 +261,8 @@ std::pair<float, Point> Fill::_infill_direction(const Surface *surface) const
     float out_angle = this->angle;
 
 	if (out_angle == FLT_MAX) {
-        assert(false);
-        BOOST_LOG_TRIVIAL(error) << "Using undefined infill angle";
+		//FIXME Vojtech: Add a warning?
+        printf("Using undefined infill angle\n");
         out_angle = 0.f;
     }
 
@@ -932,6 +1043,9 @@ void mark_boundary_segments_touching_infill(
                 BoundingBoxf bbox_seg;
                 bbox_seg.merge(seg_pt1);
                 bbox_seg.merge(seg_pt2);
+#ifdef INFILL_DEBUG_OUTPUT
+                //if (this->infill_bbox.overlap(bbox_seg)) this->perimeter_overlaps.push_back({ segment.first, segment.second });
+#endif // INFILL_DEBUG_OUTPUT
                 if (this->infill_bbox.overlap(bbox_seg) && line_rounded_thick_segment_collision(seg_pt1, seg_pt2, *this->infill_pt1, *this->infill_pt2, this->radius, interval)) {
                     // The boundary segment intersects with the infill segment thickened by radius.
                     // Interval is specified in Euclidian length from seg_pt1 to seg_pt2.
@@ -1087,6 +1201,9 @@ void mark_boundary_segments_touching_infill(
                 assert(grid.bbox().contains(b.cast<coord_t>()));
                 grid.visit_cells_intersecting_line(a.cast<coord_t>(), b.cast<coord_t>(), visitor);
 #endif
+#ifdef INFILL_DEBUG_OUTPUT
+//                export_infill_to_svg(boundary, boundary_parameters, boundary_intersections, infill, distance_colliding * 2, debug_out_path("%s-%03d-%03d-%03d.svg", "FillBase-mark_boundary_segments_touching_infill-step", iRun, iStep, int(point_idx)), { polyline });
+#endif // INFILL_DEBUG_OUTPUT
 			}
 #ifdef INFILL_DEBUG_OUTPUT
             Polylines perimeter_overlaps;
@@ -1543,11 +1660,13 @@ void Fill::connect_infill(Polylines &&infill_ordered, const std::vector<const Po
         double                       arc_length;
     };
     std::vector<Arc> arches;
-    arches.reserve(graph.map_infill_end_point_to_boundary.size());
-    for (ContourIntersectionPoint &cp : graph.map_infill_end_point_to_boundary)
-        if (cp.contour_idx != boundary_idx_unconnected && cp.next_on_contour != &cp && cp.could_connect_next())
-            arches.push_back({ &cp, path_length_along_contour_ccw(&cp, cp.next_on_contour, graph.boundary_params[cp.contour_idx].back()) });
-    std::sort(arches.begin(), arches.end(), [](const auto &l, const auto &r) { return l.arc_length < r.arc_length; });
+    if (!params.dont_sort) {
+        arches.reserve(graph.map_infill_end_point_to_boundary.size());
+        for (ContourIntersectionPoint& cp : graph.map_infill_end_point_to_boundary)
+            if (cp.contour_idx != boundary_idx_unconnected && cp.next_on_contour != &cp && cp.could_connect_next())
+                arches.push_back({ &cp, path_length_along_contour_ccw(&cp, cp.next_on_contour, graph.boundary_params[cp.contour_idx].back()) });
+        std::sort(arches.begin(), arches.end(), [](const auto& l, const auto& r) { return l.arc_length < r.arc_length; });
+    }
 
     //FIXME improve the Traveling Salesman problem with 2-opt and 3-opt local optimization.
     for (Arc &arc : arches)

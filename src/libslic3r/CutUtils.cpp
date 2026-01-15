@@ -1,25 +1,13 @@
-///|/ Copyright (c) Prusa Research 2023 Oleksandra Iushchenko @YuSanka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 
 #include "CutUtils.hpp"
-
-#include <boost/log/trivial.hpp>
-#include <cmath>
-#include <string>
-#include <utility>
-#include <cassert>
-#include <cstddef>
-
 #include "Geometry.hpp"
 #include "libslic3r.h"
 #include "Model.hpp"
 #include "TriangleMeshSlicer.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/TriangleMesh.hpp"
+#include "TriangleSelector.hpp"
+#include "ObjectID.hpp"
+
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r {
 
@@ -406,17 +394,12 @@ static void distribute_modifiers_from_object(ModelObject* from_obj, const int in
             // Don't add modifiers which are processed connectors
             if (vol->cut_info.is_connector && !vol->cut_info.is_processed)
                 continue;
-
-            // Modifiers are not cut, but we still need to add the instance transformation
-            // to the modifier volume transformation to preserve their shape properly.
-            const auto modifier_trafo = Transformation(from_obj->instances[instance_idx]->get_transformation().get_matrix_no_offset() * vol->get_matrix());
-
             auto bb = vol->mesh().transformed_bounding_box(inst_matrix * vol->get_matrix());
             // Don't add modifiers which are not intersecting with solid parts
             if (obj1_bb.intersects(bb))
-                to_obj1->add_volume(*vol)->set_transformation(modifier_trafo);
+                to_obj1->add_volume(*vol);
             if (obj2_bb.intersects(bb))
-                to_obj2->add_volume(*vol)->set_transformation(modifier_trafo);
+                to_obj2->add_volume(*vol);
         }
 }
 
@@ -457,6 +440,11 @@ const ModelObjectPtrs& Cut::perform_by_contour(std::vector<Part> parts, int dowe
     if (m_attributes.has(ModelObjectCutAttribute::KeepUpper)) cut_mo->clone_for_cut(&upper);
     ModelObject* lower{ nullptr };
     if (m_attributes.has(ModelObjectCutAttribute::KeepLower)) cut_mo->clone_for_cut(&lower);
+
+    if (upper && lower) {
+        upper->name = upper->name + "_A";
+        lower->name = lower->name + "_B";
+    }
 
     const size_t cut_parts_cnt = parts.size();
     bool has_modifiers = false;
@@ -540,6 +528,10 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
     ModelObject* lower{ nullptr };
     cut_mo->clone_for_cut(&lower);
 
+    if (upper && lower) {
+        upper->name = upper->name + "_A";
+        lower->name = lower->name + "_B";
+    }
     const double groove_half_depth = 0.5 * double(groove.depth);
 
     Model tmp_model_for_cut = Model();
@@ -640,12 +632,8 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
 
         // add modifiers
         for (const ModelVolume* volume : cut_mo->volumes)
-            if (!volume->is_model_part()) {
-                // Modifiers are not cut, but we still need to add the instance transformation
-                // to the modifier volume transformation to preserve their shape properly.
-                const auto modifier_trafo = Transformation(cut_mo->instances[m_instance]->get_transformation().get_matrix_no_offset() * volume->get_matrix());
-                upper->add_volume(*volume)->set_transformation(modifier_trafo);
-        }
+            if (!volume->is_model_part())
+                upper->add_volume(*volume);
 
         cut_object_ptrs.push_back(upper);
 
@@ -653,11 +641,7 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
         cut_object_ptrs.push_back(lower);
     }
     else {
-        reset_instance_transformation(upper, m_instance, m_cut_matrix);
-        reset_instance_transformation(lower, m_instance, m_cut_matrix);
-
-        // Add modifiers if object has any
-        // Note: make it after all transformations are reset for upper/lower object
+        // add modifiers if object has any
         for (const ModelVolume* volume : cut_mo->volumes)
             if (!volume->is_model_part()) {
                 distribute_modifiers_from_object(cut_mo, m_instance, upper, lower);

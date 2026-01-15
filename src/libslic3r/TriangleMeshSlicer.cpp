@@ -1,33 +1,26 @@
-///|/ Copyright (c) Prusa Research 2021 - 2023 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <boost/log/trivial.hpp>
-#include <ankerl/unordered_dense.h>
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <oneapi/tbb/scalable_allocator.h>
-#include <algorithm>
-#include <cmath>
-#include <mutex>
-#include <utility>
-#include <array>
-#include <iterator>
-#include <limits>
-#include <cassert>
-#include <cstdlib>
-
+#include "ClipperUtils.hpp"
+#include "Geometry.hpp"
 #include "Tesselate.hpp"
 #include "TriangleMesh.hpp"
 #include "TriangleMeshSlicer.hpp"
 #include "Utils.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+// BBS
+#include "MeshBoolean.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <deque>
+#include <queue>
+#include <mutex>
+#include <utility>
+
+#include <boost/log/trivial.hpp>
+
+#include <tbb/parallel_for.h>
+
+#ifndef NDEBUG
+//    #define EXPENSIVE_DEBUG_CHECKS
+#endif // NDEBUG
 
 #if 0
     #define DEBUG
@@ -37,59 +30,30 @@
 // #define SLIC3R_TRIANGLEMESH_DEBUG
 #endif
 
+#include <assert.h>
+#include <boost/thread/mutex.hpp>
 #include <boost/thread/lock_guard.hpp>
 
-#if defined(__cpp_lib_hardware_interference_size) && ! defined(__APPLE__)
-    using std::hardware_destructive_interference_size;
-#else
-    // 64 bytes on x86-64 │ L1_CACHE_BYTES │ L1_CACHE_SHIFT │ __cacheline_aligned │ ...
-    constexpr std::size_t hardware_destructive_interference_size = 64;
-#endif
-
 // #define SLIC3R_DEBUG_SLICE_PROCESSING
-
-#ifdef SLIC3R_DEBUG_SLICE_PROCESSING
-    #define DEBUG_INTERSECTIONLINE
-#endif
 
 #if defined(SLIC3R_DEBUG) || defined(SLIC3R_DEBUG_SLICE_PROCESSING)
 #include "SVG.hpp"
 #endif
 
 namespace Slic3r {
-
-template<AdditionalMeshInfo mesh_info> struct PolygonsType;
-
-template<> struct PolygonsType<AdditionalMeshInfo::None>
+const float epson = 1e-3;
+bool is_equal(float lh, float rh)
 {
-    using type = Polygons;
-};
+    return abs(lh - rh) <= epson;
+}
 
-template<> struct PolygonsType<AdditionalMeshInfo::Color>
-{
-    using type = ColorPolygons;
-};
+bool is_equal_for_sort(float lh, float rh) {
+    return abs(lh - rh) <= 1e-8;
+}
 
-template<AdditionalMeshInfo mesh_info> struct FacetColorFunctor;
-
-template<> struct FacetColorFunctor<AdditionalMeshInfo::None>
-{
-    constexpr ColorPolygon::Color operator()(size_t facet_idx) const { return 0; }
-};
-
-template<> struct FacetColorFunctor<AdditionalMeshInfo::Color>
-{
-    FacetColorFunctor() = delete;
-    explicit FacetColorFunctor(const ColorPolygon::Colors &colors) : colors(colors) {}
-
-    ColorPolygon::Color operator()(size_t facet_idx) const {
-        assert(facet_idx < this->colors.size());
-        return this->colors[facet_idx];
-    }
-
-private:
-    const ColorPolygon::Colors &colors;
-};
+bool is_equal(const Vec3f &lh, const Vec3f &rh) { 
+    return is_equal(lh[0], rh[0]) && is_equal(lh[1], rh[1]) && is_equal(lh[2], rh[2]);
+}
 
 class IntersectionReference
 {
@@ -112,12 +76,6 @@ public:
     IntersectionPoint(const IntersectionReference &ir, const Point &pt) : IntersectionReference(ir), Point(pt) {}
     // Inherits coord_t x, y
 };
-
-#if (! defined(NDEBUG) || defined(SLIC3R_DEBUG_SLICE_PROCESSING))
-    #define DEBUG_INTERSECTION_LINE 1
-#else
-    #define DEBUG_INTERSECTION_LINE 0
-#endif
 
 class IntersectionLine : public Line
 {
@@ -174,22 +132,19 @@ public:
         NO_SEED             = 0x100,
         SKIP                = 0x200,
     };
+    uint32_t        flags { 0 };
 
-    uint16_t        flags { 0 };
-    // Color id of sliced facet.
-    uint8_t         color { 0 };
-
-#ifdef DEBUG_INTERSECTIONLINE
+#ifndef NDEBUG
     enum class Source {
         BottomPlane,
         TopPlane,
         Slab,
     };
     Source          source { Source::BottomPlane };
-#endif
+#endif // NDEBUG
 };
 
-using IntersectionLines = std::vector<IntersectionLine, tbb::scalable_allocator<IntersectionLine>>;
+using IntersectionLines = std::vector<IntersectionLine>;
 
 enum class FacetSliceType {
     NoSlice = 0,
@@ -197,42 +152,18 @@ enum class FacetSliceType {
     Cutting = 2
 };
 
-// Convert an int32_t scaled coordinate into an unscaled 3D floating point coordinate (mesh vertex).
-template<typename T>
-inline Vec3f contour_point_to_v3f(const Point &pt, const T z)
-{
-    return to_3d(
-        // unscale using doubles for higher accuracy
-        unscaled<double>(pt).
-            // then convert to floats
-            cast<float>(),
-        float(z));
-}
-
-// Convert 2D projection of an int32_t scaled coordinate into an unscaled 3D floating point coordinate (mesh vertex).
-template<typename Derived>
-inline Point v3f_scaled_to_contour_point(const Eigen::MatrixBase<Derived> &v)
-{
-    static_assert(Derived::IsVectorAtCompileTime && int(Derived::SizeAtCompileTime) >= 2, "v3f_scaled_to_contour_point(): Not a 2D or 3D vector.");
-    using T = typename Derived::Scalar;
-    return { coord_t(std::floor(v.x() + T(0.5))), coord_t(std::floor(v.y() + T(0.5))) };
-}
-
 // Return true, if the facet has been sliced and line_out has been filled.
-template<typename T>
-inline FacetSliceType slice_facet(
+static FacetSliceType slice_facet(
     // Z height of the slice in XY plane. Scaled or unscaled (same as vertices[].z()).
-    T                                               slice_z,
+    float                                slice_z,
     // 3 vertices of the triangle, XY scaled. Z scaled or unscaled (same as slice_z).
-    const Eigen::Matrix<T, 3, 1, Eigen::DontAlign> *vertices,
-    const stl_triangle_vertex_indices              &indices,
-    const Vec3i                                    &edge_ids,
-    const int                                       idx_vertex_lowest,
-    const bool                                      horizontal,
-    const ColorPolygon::Color                       facet_color,
-    IntersectionLine                               &line_out)
+    const stl_vertex                    *vertices,
+    const stl_triangle_vertex_indices   &indices,
+    const Vec3i32                         &edge_ids,
+    const int                            idx_vertex_lowest,
+    const bool                           horizontal,
+    IntersectionLine                    &line_out)
 {
-    using             Vector = Eigen::Matrix<T, 3, 1, Eigen::DontAlign>;
     IntersectionPoint points[3];
     size_t            num_points = 0;
     auto              point_on_layer = size_t(-1);
@@ -242,7 +173,7 @@ inline FacetSliceType slice_facet(
     // (external on the right of the line)
     for (int j = 0; j < 3; ++ j) {  // loop through facet edges
         int               edge_id;
-        const Vector     *a, *b;
+        const stl_vertex *a, *b, *c;
         int               a_id, b_id;
         {
             int   k = (idx_vertex_lowest + j) % 3;
@@ -252,22 +183,23 @@ inline FacetSliceType slice_facet(
             a       = vertices + k;
             b_id    = indices[l];
             b       = vertices + l;
+            c       = vertices + (k + 2) % 3;
         }
 
         // Is edge or face aligned with the cutting plane?
         if (a->z() == slice_z && b->z() == slice_z) {
             // Edge is horizontal and belongs to the current layer.
             // The following rotation of the three vertices may not be efficient, but this branch happens rarely.
-            const Vector &v0 = vertices[0];
-            const Vector &v1 = vertices[1];
-            const Vector &v2 = vertices[2];
+            const stl_vertex &v0 = vertices[0];
+            const stl_vertex &v1 = vertices[1];
+            const stl_vertex &v2 = vertices[2];
             // We may ignore this edge for slicing purposes, but we may still use it for object cutting.
             FacetSliceType    result = FacetSliceType::Slicing;
             if (horizontal) {
                 // All three vertices are aligned with slice_z.
                 line_out.edge_type = IntersectionLine::FacetEdgeType::Horizontal;
                 result = FacetSliceType::Cutting;
-                double normal = cross2((to_2d(v1) - to_2d(v0)).template cast<double>(), (to_2d(v2) - to_2d(v1)).template cast<double>());
+                double normal = (v1.x() - v0.x()) * (v2.y() - v1.y()) - (v1.y() - v0.y()) * (v2.x() - v1.x());
                 if (normal < 0) {
                     // If normal points downwards this is a bottom horizontal facet so we reverse its point order.
                     std::swap(a, b);
@@ -289,11 +221,12 @@ inline FacetSliceType slice_facet(
                 } else
                     line_out.edge_type = IntersectionLine::FacetEdgeType::Bottom;
             }
-            line_out.a      = v3f_scaled_to_contour_point(*a);
-            line_out.b      = v3f_scaled_to_contour_point(*b);
+            line_out.a.x()  = a->x();
+            line_out.a.y()  = a->y();
+            line_out.b.x()  = b->x();
+            line_out.b.y()  = b->y();
             line_out.a_id   = a_id;
             line_out.b_id   = b_id;
-            line_out.color  = facet_color;
             assert(line_out.a != line_out.b);
             return result;
         }
@@ -303,7 +236,8 @@ inline FacetSliceType slice_facet(
             if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != a_id) {
                 point_on_layer = num_points;
                 IntersectionPoint &point = points[num_points ++];
-                static_cast<Point&>(point) = v3f_scaled_to_contour_point(*a);
+                point.x()      = a->x();
+                point.y()      = a->y();
                 point.point_id = a_id;
             }
         } else if (b->z() == slice_z) {
@@ -311,7 +245,8 @@ inline FacetSliceType slice_facet(
             if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != b_id) {
                 point_on_layer = num_points;
                 IntersectionPoint &point = points[num_points ++];
-                static_cast<Point&>(point) = v3f_scaled_to_contour_point(*b);
+                point.x()      = b->x();
+                point.y()      = b->y();
                 point.point_id = b_id;
             }
         } else if ((a->z() < slice_z && b->z() > slice_z) || (b->z() < slice_z && a->z() > slice_z)) {
@@ -323,12 +258,7 @@ inline FacetSliceType slice_facet(
                 std::swap(a, b);
             }
             IntersectionPoint &point = points[num_points];
-            double t = (double(slice_z) - double(a->z())) / (double(b->z()) - double(a->z()));
-#if 0
-            // If the intersection point falls into one of the end points, mark it with the end point identifier.
-            // While this sounds like a good idea, it likely breaks the chaining by logical addresses of the intersection points
-            // and the branch for 0 < t < 1 does not guarantee uniqness of the interection point anyways.
-            // Thus this branch is only kept for reference and it is not used in production code.
+            double t = (double(slice_z) - double(b->z())) / (double(a->z()) - double(b->z()));
             if (t <= 0.) {
                 if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != a_id) {
                     point.x() = a->x();
@@ -344,20 +274,11 @@ inline FacetSliceType slice_facet(
                     point.point_id = b_id;
                 }
             } else {
-                point.x() = coord_t(floor(double(a->x()) + (double(b->x()) - double(a->x())) * t + 0.5));
-                point.y() = coord_t(floor(double(a->y()) + (double(b->y()) - double(a->y())) * t + 0.5));
+                point.x() = coord_t(floor(double(b->x()) + (double(a->x()) - double(b->x())) * t + 0.5));
+                point.y() = coord_t(floor(double(b->y()) + (double(a->y()) - double(b->y())) * t + 0.5));
                 point.edge_id = edge_id;
                 ++ num_points;
             }
-#else
-            // Just clamp the intersection point to source triangle edge.
-            static_cast<Point&>(point) =
-                t <= 0. ? v3f_scaled_to_contour_point(*a) :
-                t >= 1. ? v3f_scaled_to_contour_point(*b) :
-                v3f_scaled_to_contour_point(a->template head<2>().template cast<double>() * (1. - t) + b->template head<2>().template cast<double>() * t + Vec2d(0.5, 0.5));
-            point.edge_id = edge_id;
-            ++ num_points;
-#endif
         }
     }
 
@@ -371,7 +292,6 @@ inline FacetSliceType slice_facet(
         line_out.b_id       = points[0].point_id;
         line_out.edge_a_id  = points[1].edge_id;
         line_out.edge_b_id  = points[0].edge_id;
-        line_out.color      = facet_color;
         // Not a zero lenght edge.
         //FIXME slice_facet() may create zero length edges due to rounding of doubles into coord_t.
         //assert(line_out.a != line_out.b);
@@ -380,11 +300,6 @@ inline FacetSliceType slice_facet(
         assert(line_out.edge_a_id != -1 || line_out.edge_b_id != -1);
         // General slicing position, use the segment for both slicing and object cutting.
 #if 0
-        // See the discussion on calculating the intersection point on a triangle edge.
-        // Even if the intersection point is clamped to one of the end points of the triangle edge,
-        // the intersection point is still marked as "on edge", not "on vertex". Such implementation
-        // may produce degenerate triangles, but is topologically correct.
-        // Therefore this block for solving snapping of an intersection edge to triangle vertices is not used.
         if (line_out.a_id != -1 && line_out.b_id != -1) {
             // Solving a degenerate case, where both the intersections snapped to an edge.
             // Correctly classify the face as below or above based on the position of the 3rd point.
@@ -404,20 +319,158 @@ inline FacetSliceType slice_facet(
     return FacetSliceType::NoSlice;
 }
 
-class LinesMutexes {
-public:
-    std::mutex& operator()(size_t slice_id) {
-        ankerl::unordered_dense::hash<size_t> hash;
-        return m_mutexes[hash(slice_id) % m_mutexes.size()].mutex;
+// Return true, if the facet has been sliced and line_out has been filled.
+static FacetSliceType slice_facet_for_cut_mesh(
+    // Z height of the slice in XY plane. Scaled or unscaled (same as vertices[].z()).
+    float slice_z,
+    // 3 vertices of the triangle, XY scaled. Z scaled or unscaled (same as slice_z).
+    const stl_vertex *                 vertices,
+    const stl_triangle_vertex_indices &indices,
+    const Vec3i32 &                      edge_ids,
+    const int                          idx_vertex_lowest,
+    const bool                         horizontal,
+    IntersectionLine &                 line_out)
+{
+    IntersectionPoint points[3];
+    size_t            num_points     = 0;
+    auto              point_on_layer = size_t(-1);
+
+    // Reorder vertices so that the first one is the one with lowest Z.
+    // This is needed to get all intersection lines in a consistent order
+    // (external on the right of the line)
+    for (int j = 0; j < 3; ++j) { // loop through facet edges
+        int               edge_id;
+        const stl_vertex *a, *b, *c;
+        int               a_id, b_id;
+        {
+            int k   = (idx_vertex_lowest + j) % 3;
+            int l   = (k + 1) % 3;
+            edge_id = edge_ids(k);
+            a_id    = indices[k];
+            a       = vertices + k;
+            b_id    = indices[l];
+            b       = vertices + l;
+            c       = vertices + (k + 2) % 3;
+        }
+
+        // Is edge or face aligned with the cutting plane?
+        if (is_equal(a->z(), slice_z) && is_equal(b->z(), slice_z)) {
+            // Edge is horizontal and belongs to the current layer.
+            // The following rotation of the three vertices may not be efficient, but this branch happens rarely.
+            const stl_vertex &v0 = vertices[0];
+            const stl_vertex &v1 = vertices[1];
+            const stl_vertex &v2 = vertices[2];
+            // We may ignore this edge for slicing purposes, but we may still use it for object cutting.
+            FacetSliceType result = FacetSliceType::Slicing;
+            if (horizontal) {
+                // All three vertices are aligned with slice_z.
+                line_out.edge_type = IntersectionLine::FacetEdgeType::Horizontal;
+                result             = FacetSliceType::Cutting;
+                double normal      = (v1.x() - v0.x()) * (v2.y() - v1.y()) - (v1.y() - v0.y()) * (v2.x() - v1.x());
+                if (normal < 0) {
+                    // If normal points downwards this is a bottom horizontal facet so we reverse its point order.
+                    std::swap(a, b);
+                    std::swap(a_id, b_id);
+                }
+            } else {
+                // Two vertices are aligned with the cutting plane, the third vertex is below or above the cutting plane.
+                // Is the third vertex below the cutting plane?
+                bool third_below = c->z() < slice_z;
+                // Two vertices on the cutting plane, the third vertex is below the plane. Consider the edge to be part of the slice
+                // only if it is the upper edge.
+                // (the bottom most edge resp. vertex of a triangle is not owned by the triangle, but the top most edge resp. vertex is part of the triangle
+                // in respect to the cutting plane).
+                result = third_below ? FacetSliceType::Slicing : FacetSliceType::Cutting;
+                if (third_below) {
+                    line_out.edge_type = IntersectionLine::FacetEdgeType::Top;
+                    std::swap(a, b);
+                    std::swap(a_id, b_id);
+                } else
+                    line_out.edge_type = IntersectionLine::FacetEdgeType::Bottom;
+            }
+            line_out.a.x() = a->x();
+            line_out.a.y() = a->y();
+            line_out.b.x() = b->x();
+            line_out.b.y() = b->y();
+            line_out.a_id  = a_id;
+            line_out.b_id  = b_id;
+            assert(line_out.a != line_out.b);
+            return result;
+        }
+
+        if (is_equal(a->z(), slice_z)) {
+            // Only point a alings with the cutting plane.
+            if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != a_id) {
+                point_on_layer           = num_points;
+                IntersectionPoint &point = points[num_points++];
+                point.x()                = a->x();
+                point.y()                = a->y();
+                point.point_id           = a_id;
+            }
+        } else if (is_equal(b->z(), slice_z)) {
+            // Only point b alings with the cutting plane.
+            if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != b_id) {
+                point_on_layer           = num_points;
+                IntersectionPoint &point = points[num_points++];
+                point.x()                = b->x();
+                point.y()                = b->y();
+                point.point_id           = b_id;
+            }
+        } else if ((a->z() < slice_z && b->z() > slice_z) || (b->z() < slice_z && a->z() > slice_z)) {
+            // A general case. The face edge intersects the cutting plane. Calculate the intersection point.
+            assert(a_id != b_id);
+            // Sort the edge to give a consistent answer.
+            if (a_id > b_id) {
+                std::swap(a_id, b_id);
+                std::swap(a, b);
+            }
+            IntersectionPoint &point = points[num_points];
+            double             t     = (double(slice_z) - double(b->z())) / (double(a->z()) - double(b->z()));
+            if (t <= 0.) {
+                if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != a_id) {
+                    point.x()      = a->x();
+                    point.y()      = a->y();
+                    point_on_layer = num_points++;
+                    point.point_id = a_id;
+                }
+            } else if (t >= 1.) {
+                if (point_on_layer == size_t(-1) || points[point_on_layer].point_id != b_id) {
+                    point.x()      = b->x();
+                    point.y()      = b->y();
+                    point_on_layer = num_points++;
+                    point.point_id = b_id;
+                }
+            } else {
+                point.x()     = coord_t(floor(double(b->x()) + (double(a->x()) - double(b->x())) * t + 0.5));
+                point.y()     = coord_t(floor(double(b->y()) + (double(a->y()) - double(b->y())) * t + 0.5));
+                point.edge_id = edge_id;
+                ++num_points;
+            }
+        }
     }
 
-private:
-    struct CacheLineAlignedMutex
-    {
-        alignas(hardware_destructive_interference_size) std::mutex mutex;
-    };
-    std::array<CacheLineAlignedMutex, 64> m_mutexes;
-};
+    // Facets must intersect each plane 0 or 2 times, or it may touch the plane at a single vertex only.
+    assert(num_points < 3);
+    if (num_points == 2) {
+        line_out.edge_type = IntersectionLine::FacetEdgeType::General;
+        line_out.a         = static_cast<const Point &>(points[1]);
+        line_out.b         = static_cast<const Point &>(points[0]);
+        line_out.a_id      = points[1].point_id;
+        line_out.b_id      = points[0].point_id;
+        line_out.edge_a_id = points[1].edge_id;
+        line_out.edge_b_id = points[0].edge_id;
+        // Not a zero lenght edge.
+        // FIXME slice_facet() may create zero length edges due to rounding of doubles into coord_t.
+        // assert(line_out.a != line_out.b);
+        // The plane cuts at least one edge in a general position.
+        assert(line_out.a_id == -1 || line_out.b_id == -1);
+        assert(line_out.edge_a_id != -1 || line_out.edge_b_id != -1);
+        // General slicing position, use the segment for both slicing and object cutting.
+
+        return FacetSliceType::Slicing;
+    }
+    return FacetSliceType::NoSlice;
+}
 
 template<typename TransformVertex>
 void slice_facet_at_zs(
@@ -425,91 +478,85 @@ void slice_facet_at_zs(
     const std::vector<Vec3f>                         &mesh_vertices,
     const TransformVertex                            &transform_vertex_fn,
     const stl_triangle_vertex_indices                &indices,
-    const Vec3i                                      &edge_ids,
-    const ColorPolygon::Color                         facet_color,
+    const Vec3i32                                      &edge_ids,
     // Scaled or unscaled zs. If vertices have their zs scaled or transform_vertex_fn scales them, then zs have to be scaled as well.
     const std::vector<float>                         &zs,
     std::vector<IntersectionLines>                   &lines,
-    LinesMutexes                                     &lines_mutex)
+    std::array<std::mutex, 64>                       &lines_mutex)
 {
     stl_vertex vertices[3] { transform_vertex_fn(mesh_vertices[indices(0)]), transform_vertex_fn(mesh_vertices[indices(1)]), transform_vertex_fn(mesh_vertices[indices(2)]) };
 
     // find facet extents
     const float min_z = fminf(vertices[0].z(), fminf(vertices[1].z(), vertices[2].z()));
     const float max_z = fmaxf(vertices[0].z(), fmaxf(vertices[1].z(), vertices[2].z()));
-    
+
     // find layer extents
     auto min_layer = std::lower_bound(zs.begin(), zs.end(), min_z); // first layer whose slice_z is >= min_z
     auto max_layer = std::upper_bound(min_layer, zs.end(), max_z); // first layer whose slice_z is > max_z
     int  idx_vertex_lowest = (vertices[1].z() == min_z) ? 1 : ((vertices[2].z() == min_z) ? 2 : 0);
-    
+
     for (auto it = min_layer; it != max_layer; ++ it) {
         IntersectionLine il;
         // Ignore horizontal triangles. Any valid horizontal triangle must have a vertical triangle connected, otherwise the part has zero volume.
-        if (min_z != max_z && slice_facet(*it, vertices, indices, edge_ids, idx_vertex_lowest, false, facet_color, il) == FacetSliceType::Slicing) {
+        if (min_z != max_z && slice_facet(*it, vertices, indices, edge_ids, idx_vertex_lowest, false, il) == FacetSliceType::Slicing) {
             assert(il.edge_type != IntersectionLine::FacetEdgeType::Horizontal);
             size_t slice_id = it - zs.begin();
-            boost::lock_guard<std::mutex> l(lines_mutex(slice_id));
+            boost::lock_guard<std::mutex> l(lines_mutex[slice_id % lines_mutex.size()]);
             lines[slice_id].emplace_back(il);
         }
     }
 }
 
-template<AdditionalMeshInfo mesh_info, typename TransformVertex, typename ThrowOnCancel>
+template<typename TransformVertex, typename ThrowOnCancel>
 static inline std::vector<IntersectionLines> slice_make_lines(
     const std::vector<stl_vertex>                   &vertices,
     const TransformVertex                           &transform_vertex_fn,
     const std::vector<stl_triangle_vertex_indices>  &indices,
-    const std::vector<Vec3i>                        &face_edge_ids,
-    const FacetColorFunctor<mesh_info>              &facet_color_fn,
+    const std::vector<Vec3i32>                        &face_edge_ids,
     const std::vector<float>                        &zs,
     const ThrowOnCancel                              throw_on_cancel_fn)
 {
-    std::vector<IntersectionLines> lines(zs.size(), IntersectionLines{});
-    LinesMutexes                   lines_mutex;
+    std::vector<IntersectionLines>  lines(zs.size(), IntersectionLines());
+    std::array<std::mutex, 64>      lines_mutex;
     tbb::parallel_for(
         tbb::blocked_range<int>(0, int(indices.size())),
-        [&vertices, &transform_vertex_fn, &indices, &face_edge_ids, &facet_color_fn, &zs, &lines, &lines_mutex, throw_on_cancel_fn](const tbb::blocked_range<int> &range) {
+        [&vertices, &transform_vertex_fn, &indices, &face_edge_ids, &zs, &lines, &lines_mutex, throw_on_cancel_fn](const tbb::blocked_range<int> &range) {
             for (int face_idx = range.begin(); face_idx < range.end(); ++ face_idx) {
                 if ((face_idx & 0x0ffff) == 0)
                     throw_on_cancel_fn();
-                slice_facet_at_zs(vertices, transform_vertex_fn, indices[face_idx], face_edge_ids[face_idx], facet_color_fn(face_idx), zs, lines, lines_mutex);
+                slice_facet_at_zs(vertices, transform_vertex_fn, indices[face_idx], face_edge_ids[face_idx], zs, lines, lines_mutex);
             }
         }
     );
-
     return lines;
 }
 
-template<AdditionalMeshInfo mesh_info, typename TransformVertex, typename FaceFilter>
+template<typename TransformVertex, typename FaceFilter>
 static inline IntersectionLines slice_make_lines(
     const std::vector<stl_vertex>                   &mesh_vertices,
     const TransformVertex                           &transform_vertex_fn,
     const std::vector<stl_triangle_vertex_indices>  &mesh_faces,
-    const std::vector<Vec3i>                        &face_edge_ids,
-    const FacetColorFunctor<mesh_info>              &facet_color_fn,
-    const float                                      plane_z,
+    const std::vector<Vec3i32>                        &face_edge_ids,
+    const float                                      plane_z, 
     FaceFilter                                       face_filter)
 {
     IntersectionLines lines;
-    for (int face_idx = 0; face_idx < int(mesh_faces.size()); ++ face_idx) {
+    for (int face_idx = 0; face_idx < int(mesh_faces.size()); ++ face_idx)
         if (face_filter(face_idx)) {
-            const Vec3i &indices = mesh_faces[face_idx];
+            const Vec3i32 &indices = mesh_faces[face_idx];
             stl_vertex vertices[3] { transform_vertex_fn(mesh_vertices[indices(0)]), transform_vertex_fn(mesh_vertices[indices(1)]), transform_vertex_fn(mesh_vertices[indices(2)]) };
             // find facet extents
             const float min_z = fminf(vertices[0].z(), fminf(vertices[1].z(), vertices[2].z()));
             const float max_z = fmaxf(vertices[0].z(), fmaxf(vertices[1].z(), vertices[2].z()));
             assert(min_z <= plane_z && max_z >= plane_z);
-            int idx_vertex_lowest = (vertices[1].z() == min_z) ? 1 : ((vertices[2].z() == min_z) ? 2 : 0);
+            int              idx_vertex_lowest = (vertices[1].z() == min_z) ? 1 : ((vertices[2].z() == min_z) ? 2 : 0);
             IntersectionLine il;
             // Ignore horizontal triangles. Any valid horizontal triangle must have a vertical triangle connected, otherwise the part has zero volume.
-            if (min_z != max_z && slice_facet(plane_z, vertices, indices, face_edge_ids[face_idx], idx_vertex_lowest, false, facet_color_fn(face_idx), il) == FacetSliceType::Slicing) {
+            if (min_z != max_z && slice_facet(plane_z, vertices, indices, face_edge_ids[face_idx], idx_vertex_lowest, false, il) == FacetSliceType::Slicing) {
                 assert(il.edge_type != IntersectionLine::FacetEdgeType::Horizontal);
                 lines.emplace_back(il);
             }
         }
-    }
-
     return lines;
 }
 
@@ -519,7 +566,7 @@ struct SlabLines {
     std::vector<IntersectionLines>  at_slice;
     // Projections of triangle set boundary lines into layer below (for projection from the top)
     // or into layer above (for projection from the bottom).
-    // In both cases the intersection liens are CCW oriented.
+    // In both cases the intersection lines are CCW oriented.
     std::vector<IntersectionLines>  between_slices;
 };
 
@@ -542,14 +589,14 @@ void slice_facet_with_slabs(
     const std::vector<Vec3f>                         &mesh_vertices,
     const std::vector<stl_triangle_vertex_indices>   &mesh_triangles,
     const size_t                                      facet_idx,
-    const Vec3i                                      &facet_neighbors,
-    const Vec3i                                      &facet_edge_ids,
+    const Vec3i32                                      &facet_neighbors,
+    const Vec3i32                                      &facet_edge_ids,
     // Increase edge_ids at the top plane of the slab edges by num_edges to allow chaining
     // from bottom plane of the slab to the top plane of the slab and vice versa.
     const int                                         num_edges,
     const std::vector<float>                         &zs,
     SlabLines                                        &lines,
-    LinesMutexes                                     &lines_mutex)
+    std::array<std::mutex, 64>                       &lines_mutex)
 {
     const stl_triangle_vertex_indices &indices = mesh_triangles[facet_idx];
     stl_vertex vertices[3] { mesh_vertices[indices(0)], mesh_vertices[indices(1)], mesh_vertices[indices(2)] };
@@ -558,7 +605,7 @@ void slice_facet_with_slabs(
     const float min_z = fminf(vertices[0].z(), fminf(vertices[1].z(), vertices[2].z()));
     const float max_z = fmaxf(vertices[0].z(), fmaxf(vertices[1].z(), vertices[2].z()));
     const bool  horizontal = min_z == max_z;
-    
+
     // find layer extents
     auto min_layer = std::lower_bound(zs.begin(), zs.end(), min_z); // first layer whose slice_z is >= min_z
     auto max_layer = std::upper_bound(min_layer, zs.end(), max_z); // first layer whose slice_z is > max_z
@@ -568,7 +615,7 @@ void slice_facet_with_slabs(
     auto emit_slab_edge = [&lines, &lines_mutex](IntersectionLine il, size_t slab_id, bool reverse) {
         if (reverse)
             il.reverse();
-        boost::lock_guard<std::mutex> l(lines_mutex(slab_id));
+        boost::lock_guard<std::mutex> l(lines_mutex[(slab_id + lines_mutex.size() / 2) % lines_mutex.size()]);
         lines.between_slices[slab_id].emplace_back(il);
     };
 
@@ -604,7 +651,7 @@ void slice_facet_with_slabs(
                         };
                         // Don't flip the FacetEdgeType::Top edge, it will be flipped when chaining.
                         // if (! ProjectionFromTop) il.reverse();
-                        boost::lock_guard<std::mutex> l(lines_mutex(line_id));
+                        boost::lock_guard<std::mutex> l(lines_mutex[line_id % lines_mutex.size()]);
                         lines.at_slice[line_id].emplace_back(il);
                     }
         } else {
@@ -651,7 +698,7 @@ void slice_facet_with_slabs(
         IntersectionLine il_prev;
         for (auto it = min_layer; it != max_layer; ++ it) {
             IntersectionLine il;
-            auto type = slice_facet(*it, vertices, indices, facet_edge_ids, idx_vertex_lowest, false, 0, il);
+            auto type = slice_facet(*it, vertices, indices, facet_edge_ids, idx_vertex_lowest, false, il);
             if (type == FacetSliceType::NoSlice) {
                 // One and exactly one vertex is touching the slicing plane.
             } else {
@@ -723,7 +770,7 @@ void slice_facet_with_slabs(
                     if (! ProjectionFromTop)
                         il.reverse();
                     size_t line_id = it - zs.begin();
-                    boost::lock_guard<std::mutex> l(lines_mutex(line_id));
+                    boost::lock_guard<std::mutex> l(lines_mutex[line_id % lines_mutex.size()]);
                     lines.at_slice[line_id].emplace_back(il);
                 }
             }
@@ -864,8 +911,8 @@ template<typename ThrowOnCancel>
 inline std::pair<SlabLines, SlabLines> slice_slabs_make_lines(
     const std::vector<stl_vertex>                   &vertices,
     const std::vector<stl_triangle_vertex_indices>  &indices,
-    const std::vector<Vec3i>                        &face_neighbors,
-    const std::vector<Vec3i>                        &face_edge_ids,
+    const std::vector<Vec3i32>                        &face_neighbors,
+    const std::vector<Vec3i32>                        &face_edge_ids,
     // Total number of edges. All face_edge_ids are lower than num_edges.
     // num_edges will be used to distinguish between intersections with the top and bottom plane.
     const int                                        num_edges,
@@ -878,8 +925,8 @@ inline std::pair<SlabLines, SlabLines> slice_slabs_make_lines(
     std::pair<SlabLines, SlabLines> out;
     SlabLines   &lines_top      = out.first;
     SlabLines   &lines_bottom   = out.second;
-    LinesMutexes lines_mutex_top;
-    LinesMutexes lines_mutex_bottom;
+    std::array<std::mutex, 64> lines_mutex_top;
+    std::array<std::mutex, 64> lines_mutex_bottom;
 
     if (top) {
         lines_top.at_slice.assign(zs.size(), IntersectionLines());
@@ -898,9 +945,9 @@ inline std::pair<SlabLines, SlabLines> slice_slabs_make_lines(
                 if ((face_idx & 0x0ffff) == 0)
                     throw_on_cancel_fn();
                 FaceOrientation fo       = face_orientation[face_idx];
-                Vec3i           edge_ids = face_edge_ids[face_idx];
+                Vec3i32           edge_ids = face_edge_ids[face_idx];
                 if (top && (fo == FaceOrientation::Up || fo == FaceOrientation::Degenerate)) {
-                    Vec3i neighbors = face_neighbors[face_idx];
+                    Vec3i32 neighbors = face_neighbors[face_idx];
                     // Reset neighborship of this triangle in case the other triangle is oriented backwards from this one.
                     for (int i = 0; i < 3; ++ i)
                         if (neighbors(i) != -1) {
@@ -910,8 +957,9 @@ inline std::pair<SlabLines, SlabLines> slice_slabs_make_lines(
                         }
                     slice_facet_with_slabs<true>(vertices, indices, face_idx, neighbors, edge_ids, num_edges, zs, lines_top, lines_mutex_top);
                 }
+                // BBS: add vertical faces option
                 if (bottom && (fo == FaceOrientation::Down || fo == FaceOrientation::Degenerate)) {
-                    Vec3i neighbors = face_neighbors[face_idx];
+                    Vec3i32 neighbors = face_neighbors[face_idx];
                     // Reset neighborship of this triangle in case the other triangle is oriented backwards from this one.
                     for (int i = 0; i < 3; ++ i)
                         if (neighbors(i) != -1) {
@@ -995,8 +1043,8 @@ static inline void remove_tangent_edges(std::vector<IntersectionLine> &lines)
 
 struct OpenPolyline {
     OpenPolyline() = default;
-    OpenPolyline(const IntersectionReference &start, const IntersectionReference &end, Points &&points, ColorPolygon::Colors &&colors) :
-        start(start), end(end), points(std::move(points)), colors(std::move(colors)), length(Slic3r::length(this->points)), consumed(false) {}
+    OpenPolyline(const IntersectionReference &start, const IntersectionReference &end, Points &&points) : 
+        start(start), end(end), points(std::move(points)), consumed(false) { this->length = Slic3r::length(this->points); }
     void reverse() {
         std::swap(start, end);
         std::reverse(points.begin(), points.end());
@@ -1004,17 +1052,13 @@ struct OpenPolyline {
     IntersectionReference   start;
     IntersectionReference   end;
     Points                  points;
-    ColorPolygon::Colors    colors;
     double                  length;
     bool                    consumed;
 };
 
 // called by make_loops() to connect sliced triangles into closed loops and open polylines by the triangle connectivity.
 // Only connects segments crossing triangles of the same orientation.
-template<AdditionalMeshInfo mesh_info>
-static void chain_lines_by_triangle_connectivity(IntersectionLines                     &lines,
-                                                 typename PolygonsType<mesh_info>::type &loops,
-                                                 std::vector<OpenPolyline>              &open_polylines)
+static void chain_lines_by_triangle_connectivity(IntersectionLines &lines, Polygons &loops, std::vector<OpenPolyline> &open_polylines)
 {
     // Build a map of lines by edge_a_id and a_id.
     std::vector<IntersectionLine*> by_edge_a_id;
@@ -1046,24 +1090,17 @@ static void chain_lines_by_triangle_connectivity(IntersectionLines              
             }
         if (first_line == nullptr)
             break;
-
         first_line->set_skip();
         Points loop_pts;
         loop_pts.emplace_back(first_line->a);
-
-        ColorPolygon::Colors loop_colors;
-        if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-            loop_colors.emplace_back(first_line->color);
-        }
-
         IntersectionLine *last_line = first_line;
-
+        
         /*
         printf("first_line edge_a_id = %d, edge_b_id = %d, a_id = %d, b_id = %d, a = %d,%d, b = %d,%d\n", 
             first_line->edge_a_id, first_line->edge_b_id, first_line->a_id, first_line->b_id,
             first_line->a.x, first_line->a.y, first_line->b.x, first_line->b.y);
         */
-
+        
         IntersectionLine key;
         for (;;) {
             // find a line starting where last one finishes
@@ -1098,13 +1135,7 @@ static void chain_lines_by_triangle_connectivity(IntersectionLines              
                     (first_line->a_id      != -1 && first_line->a_id      == last_line->b_id)) {
                     // The current loop is complete. Add it to the output.
                     assert(first_line->a == last_line->b);
-
-                    if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-                        loops.emplace_back(std::move(loop_pts), std::move(loop_colors));
-                    } else {
-                        loops.emplace_back(std::move(loop_pts));
-                    }
-
+                    loops.emplace_back(std::move(loop_pts));
                     #ifdef SLIC3R_TRIANGLEMESH_DEBUG
                     printf("  Discovered %s polygon of %d points\n", (p.is_counter_clockwise() ? "ccw" : "cw"), (int)p.points.size());
                     #endif
@@ -1113,7 +1144,7 @@ static void chain_lines_by_triangle_connectivity(IntersectionLines              
                     loop_pts.emplace_back(last_line->b);
                     open_polylines.emplace_back(OpenPolyline(
                         IntersectionReference(first_line->a_id, first_line->edge_a_id), 
-                        IntersectionReference(last_line->b_id, last_line->edge_b_id), std::move(loop_pts), std::move(loop_colors)));
+                        IntersectionReference(last_line->b_id, last_line->edge_b_id), std::move(loop_pts)));
                 }
                 break;
             }
@@ -1124,11 +1155,6 @@ static void chain_lines_by_triangle_connectivity(IntersectionLines              
             */
             assert(last_line->b == next_line->a);
             loop_pts.emplace_back(next_line->a);
-
-            if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-                loop_colors.emplace_back(next_line->color);
-            }
-
             last_line = next_line;
             next_line->set_skip();
         }
@@ -1151,10 +1177,7 @@ std::vector<OpenPolyline*> open_polylines_sorted(std::vector<OpenPolyline> &open
 
 // called by make_loops() to connect remaining open polylines across shared triangle edges and vertices.
 // Depending on "try_connect_reversed", it may or may not connect segments crossing triangles of opposite orientation.
-template<AdditionalMeshInfo mesh_info>
-static void chain_open_polylines_exact(std::vector<OpenPolyline>              &open_polylines,
-                                       typename PolygonsType<mesh_info>::type &loops,
-                                       bool                                    try_connect_reversed)
+static void chain_open_polylines_exact(std::vector<OpenPolyline> &open_polylines, Polygons &loops, bool try_connect_reversed)
 {
     // Store the end points of open_polylines into vectors sorted
     struct OpenPolylineEnd {
@@ -1179,7 +1202,7 @@ static void chain_open_polylines_exact(std::vector<OpenPolyline>              &o
     }
     std::sort(by_id.begin(), by_id.end(), by_id_lower);
     // Find an iterator to by_id_lower for the particular end of OpenPolyline (by comparing the OpenPolyline pointer and the start attribute).
-    auto find_polyline_end = [&by_id, by_id_lower](const OpenPolylineEnd &end) -> typename std::vector<OpenPolylineEnd>::iterator {
+    auto find_polyline_end = [&by_id, by_id_lower](const OpenPolylineEnd &end) -> std::vector<OpenPolylineEnd>::iterator {
         for (auto it = std::lower_bound(by_id.begin(), by_id.end(), end, by_id_lower);
                   it != by_id.end() && it->id() == end.id(); ++ it)
             if (*it == end)
@@ -1205,20 +1228,15 @@ static void chain_open_polylines_exact(std::vector<OpenPolyline>              &o
         found:
             // Attach this polyline to the end of the initial polyline.
             if (it_next_start->start) {
-                auto pt_it    = it_next_start->polyline->points.begin();
-                auto color_it = it_next_start->polyline->colors.begin();
-                std::copy(++pt_it, it_next_start->polyline->points.end(), back_inserter(opl->points));
-                std::copy(color_it, it_next_start->polyline->colors.end(), back_inserter(opl->colors));
+                auto it = it_next_start->polyline->points.begin();
+                std::copy(++ it, it_next_start->polyline->points.end(), back_inserter(opl->points));
             } else {
-                auto pt_it = it_next_start->polyline->points.rbegin();
-                auto color_it = it_next_start->polyline->colors.rbegin();
-                std::copy(++pt_it, it_next_start->polyline->points.rend(), back_inserter(opl->points));
-                std::copy(color_it, it_next_start->polyline->colors.rend(), back_inserter(opl->colors));
+                auto it = it_next_start->polyline->points.rbegin();
+                std::copy(++ it, it_next_start->polyline->points.rend(), back_inserter(opl->points));
             }
             opl->length += it_next_start->polyline->length;
             // Mark the next polyline as consumed.
             it_next_start->polyline->points.clear();
-            it_next_start->polyline->colors.clear();
             it_next_start->polyline->length = 0.;
             it_next_start->polyline->consumed = true;
             if (try_connect_reversed) {
@@ -1238,26 +1256,16 @@ static void chain_open_polylines_exact(std::vector<OpenPolyline>              &o
                 //assert(opl->points.front().point_id == opl->points.back().point_id);
                 //assert(opl->points.front().edge_id  == opl->points.back().edge_id);
                 // Remove the duplicate last point.
-                // Contrary to the points, the assigned colors will not be duplicated, so we will not remove them.
                 opl->points.pop_back();
                 if (opl->points.size() >= 3) {
-                    if (try_connect_reversed && area(opl->points) < 0) {
+                    if (try_connect_reversed && area(opl->points) < 0)
                         // The closed polygon is patched from pieces with messed up orientation, therefore
                         // the orientation of the patched up polygon is not known.
                         // Orient the patched up polygons CCW. This heuristic may close some holes and cavities.
                         std::reverse(opl->points.begin(), opl->points.end());
-                        std::reverse(opl->colors.begin(), opl->colors.end());
-                    }
-
-                    if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-                        loops.emplace_back(std::move(opl->points), std::move(opl->colors));
-                    } else {
-                        loops.emplace_back(std::move(opl->points));
-                    }
+                    loops.emplace_back(std::move(opl->points));
                 }
-
                 opl->points.clear();
-                opl->colors.clear();
                 break;
             }
             // Continue with the current loop.
@@ -1265,41 +1273,10 @@ static void chain_open_polylines_exact(std::vector<OpenPolyline>              &o
     }
 }
 
-// The midpoint is inserted when color differs on both endpoints.
-// Return true when a midpoint is inserted.
-template<AdditionalMeshInfo mesh_info>
-bool handle_color_at_gap_between_open_polylines(OpenPolyline              &opl,
-                                                const Point               &next_polyline_first_pt,
-                                                const ColorPolygon::Color &next_polyline_first_color)
-{
-    if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-        bool midpoint_inserted = false;
-        if (opl.colors.back() == next_polyline_first_color) {
-            // Both endpoints around the gap have the same color, so we also use the same color for the gap.
-            opl.colors.emplace_back(opl.colors.back());
-        } else {
-            // Endpoints around the gap have different colors, so we split the gap into two pieces,
-            // each with a different color.
-            opl.points.emplace_back(line_alg::midpoint(opl.points.back(), next_polyline_first_pt));
-            opl.colors.emplace_back(opl.colors.back());
-            opl.colors.emplace_back(next_polyline_first_color);
-            midpoint_inserted = true;
-        }
-
-        return midpoint_inserted;
-    }
-
-    return false;
-}
-
-// called by make_loops() to connect remaining open polylines across shared triangle edges and vertices,
+// called by make_loops() to connect remaining open polylines across shared triangle edges and vertices, 
 // possibly closing small gaps.
 // Depending on "try_connect_reversed", it may or may not connect segments crossing triangles of opposite orientation.
-template<AdditionalMeshInfo mesh_info>
-static void chain_open_polylines_close_gaps(std::vector<OpenPolyline>              &open_polylines,
-                                            typename PolygonsType<mesh_info>::type &loops,
-                                            double                                  max_gap,
-                                            bool                                    try_connect_reversed)
+static void chain_open_polylines_close_gaps(std::vector<OpenPolyline> &open_polylines, Polygons &loops, double max_gap, bool try_connect_reversed)
 {
     const coord_t max_gap_scaled = (coord_t)scale_(max_gap);
 
@@ -1330,13 +1307,10 @@ static void chain_open_polylines_close_gaps(std::vector<OpenPolyline>           
     for (OpenPolyline *opl : sorted_by_length) {
         if (opl->consumed)
             continue;
-
         OpenPolylineEnd end(opl, false);
-        if (try_connect_reversed) {
+        if (try_connect_reversed)
             // The end point of this polyline will be modified, thus the following entry will become invalid. Remove it.
             closest_end_point_lookup.erase(end);
-        }
-
         opl->consumed = true;
         size_t n_segments_joined = 1;
         for (;;) {
@@ -1345,7 +1319,7 @@ static void chain_open_polylines_close_gaps(std::vector<OpenPolyline>           
             const OpenPolylineEnd *next_start = next_start_and_dist.first;
             // Check whether we closed this loop.
             double current_loop_closing_distance2 = (opl->points.back() - opl->points.front()).cast<double>().squaredNorm();
-            bool   loop_closed = current_loop_closing_distance2 < Slic3r::sqr(coordf_t(max_gap_scaled));
+            bool   loop_closed = current_loop_closing_distance2 < coordf_t(max_gap_scaled) * coordf_t(max_gap_scaled);
             if (next_start != nullptr && loop_closed && current_loop_closing_distance2 < next_start_and_dist.second) {
                 // Heuristics to decide, whether to close the loop, or connect another polyline.
                 // One should avoid closing loops shorter than max_gap_scaled.
@@ -1356,37 +1330,21 @@ static void chain_open_polylines_close_gaps(std::vector<OpenPolyline>           
                 // Mark the current segment as not consumed, otherwise the closest_end_point_lookup.erase() would fail.
                 opl->consumed = false;
                 closest_end_point_lookup.erase(OpenPolylineEnd(opl, true));
-
-                bool midpoint_inserted = false;
                 if (current_loop_closing_distance2 == 0.) {
                     // Remove the duplicate last point.
                     opl->points.pop_back();
                 } else {
                     // The end points are different, keep both of them.
-                    if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-                        midpoint_inserted = handle_color_at_gap_between_open_polylines<mesh_info>(*opl, opl->points.front(), opl->colors.front());
-                    }
                 }
-
-                // When we split the gap into two pieces by adding a midpoint, then a valid polygon has at least 4 points.
-                if (opl->points.size() >= (3 + size_t(midpoint_inserted))) {
-                    if (try_connect_reversed && n_segments_joined > 1 && area(opl->points) < 0) {
+                if (opl->points.size() >= 3) {
+                    if (try_connect_reversed && n_segments_joined > 1 && area(opl->points) < 0)
                         // The closed polygon is patched from pieces with messed up orientation, therefore
                         // the orientation of the patched up polygon is not known.
                         // Orient the patched up polygons CCW. This heuristic may close some holes and cavities.
                         std::reverse(opl->points.begin(), opl->points.end());
-                        std::reverse(opl->colors.begin(), opl->colors.end());
-                    }
-
-                    if constexpr (mesh_info == AdditionalMeshInfo::Color) {
-                        loops.emplace_back(std::move(opl->points), std::move(opl->colors));
-                    } else {
-                        loops.emplace_back(std::move(opl->points));
-                    }
+                    loops.emplace_back(std::move(opl->points));
                 }
-
                 opl->points.clear();
-                opl->colors.clear();
                 opl->consumed = true;
                 break;
             }
@@ -1398,56 +1356,36 @@ static void chain_open_polylines_close_gaps(std::vector<OpenPolyline>           
                     closest_end_point_lookup.insert(OpenPolylineEnd(opl, false));
                 break;
             }
-
             // Attach this polyline to the end of the initial polyline.
             if (next_start->start) {
-                auto pt_it    = next_start->polyline->points.begin();
-                auto color_it = next_start->polyline->colors.begin();
-                if (*pt_it == opl->points.back()) {
-                    ++pt_it;
-                } else {
-                    handle_color_at_gap_between_open_polylines<mesh_info>(*opl, *pt_it, *color_it);
-                }
-
-                std::copy(pt_it, next_start->polyline->points.end(), back_inserter(opl->points));
-                std::copy(color_it, next_start->polyline->colors.end(), back_inserter(opl->colors));
+                auto it = next_start->polyline->points.begin();
+                if (*it == opl->points.back())
+                    ++ it;
+                std::copy(it, next_start->polyline->points.end(), back_inserter(opl->points));
             } else {
-                auto pt_it    = next_start->polyline->points.rbegin();
-                auto color_it = next_start->polyline->colors.rbegin();
-                if (*pt_it == opl->points.back()) {
-                    ++pt_it;
-                } else {
-                    handle_color_at_gap_between_open_polylines<mesh_info>(*opl, *pt_it, *color_it);
-                }
-
-                std::copy(pt_it, next_start->polyline->points.rend(), back_inserter(opl->points));
-                std::copy(color_it, next_start->polyline->colors.rend(), back_inserter(opl->colors));
+                auto it = next_start->polyline->points.rbegin();
+                if (*it == opl->points.back())
+                    ++ it;
+                std::copy(it, next_start->polyline->points.rend(), back_inserter(opl->points));
             }
-
-            ++n_segments_joined;
+            ++ n_segments_joined;
             // Remove the end points of the consumed polyline segment from the lookup.
             OpenPolyline *opl2 = next_start->polyline;
             closest_end_point_lookup.erase(OpenPolylineEnd(opl2, true));
-            if (try_connect_reversed) {
+            if (try_connect_reversed)
                 closest_end_point_lookup.erase(OpenPolylineEnd(opl2, false));
-            }
-
             opl2->points.clear();
-            opl2->colors.clear();
             opl2->consumed = true;
             // Continue with the current loop.
         }
     }
 }
 
-template<AdditionalMeshInfo mesh_info>
-static typename PolygonsType<mesh_info>::type make_loops(
+static Polygons make_loops(
     // Lines will have their flags modified.
-    IntersectionLines &lines
-) {
-    using PolygonsType = typename PolygonsType<mesh_info>::type;
-
-    PolygonsType loops;
+    IntersectionLines   &lines)
+{
+    Polygons loops;
 #if 0
 //FIXME slice_facet() may create zero length edges due to rounding of doubles into coord_t.
 //#ifdef _DEBUG
@@ -1475,7 +1413,7 @@ static typename PolygonsType<mesh_info>::type make_loops(
 #endif /* SLIC3R_DEBUG_SLICE_PROCESSING */
 
     std::vector<OpenPolyline> open_polylines;
-    chain_lines_by_triangle_connectivity<mesh_info>(lines, loops, open_polylines);
+    chain_lines_by_triangle_connectivity(lines, loops, open_polylines);
 
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
         {
@@ -1491,8 +1429,8 @@ static typename PolygonsType<mesh_info>::type make_loops(
     // Now process the open polylines.
     // Do it in two rounds, first try to connect in the same direction only,
     // then try to connect the open polylines in reversed order as well.
-    chain_open_polylines_exact<mesh_info>(open_polylines, loops, false);
-    chain_open_polylines_exact<mesh_info>(open_polylines, loops, true);
+    chain_open_polylines_exact(open_polylines, loops, false);
+    chain_open_polylines_exact(open_polylines, loops, true);
 
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
     {
@@ -1520,8 +1458,8 @@ static typename PolygonsType<mesh_info>::type make_loops(
     }
 #else
     const double max_gap = 2.; //mm
-    chain_open_polylines_close_gaps<mesh_info>(open_polylines, loops, max_gap, false);
-    chain_open_polylines_close_gaps<mesh_info>(open_polylines, loops, max_gap, true);
+    chain_open_polylines_close_gaps(open_polylines, loops, max_gap, false);
+    chain_open_polylines_close_gaps(open_polylines, loops, max_gap, true);
 #endif
 
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
@@ -1543,17 +1481,14 @@ static typename PolygonsType<mesh_info>::type make_loops(
     return loops;
 }
 
-template<AdditionalMeshInfo mesh_info, typename ThrowOnCancel>
-static std::vector<typename PolygonsType<mesh_info>::type> make_loops(
+template<typename ThrowOnCancel>
+static std::vector<Polygons> make_loops(
     // Lines will have their flags modified.
     std::vector<IntersectionLines> &lines, 
     const MeshSlicingParams        &params, 
     ThrowOnCancel                   throw_on_cancel)
 {
-    using PolygonsType = typename PolygonsType<mesh_info>::type;
-    using PolygonType  = typename PolygonsType::value_type;
-
-    std::vector<PolygonsType> layers;
+    std::vector<Polygons> layers;
     layers.resize(lines.size());
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, lines.size()),
@@ -1562,33 +1497,31 @@ static std::vector<typename PolygonsType<mesh_info>::type> make_loops(
                 if ((line_idx & 0x0ffff) == 0)
                     throw_on_cancel();
 
-                PolygonsType &polygons = layers[line_idx];
-                polygons = make_loops<mesh_info>(lines[line_idx]);
+                Polygons &polygons = layers[line_idx];
+                polygons = make_loops(lines[line_idx]);
 
                 auto this_mode = line_idx < params.slicing_mode_normal_below_layer ? params.mode_below : params.mode;
                 if (! polygons.empty()) {
                     if (this_mode == MeshSlicingParams::SlicingMode::Positive) {
                         // Reorient all loops to be CCW.
-                        for (PolygonType &p : polygons) {
+                        for (Polygon& p : polygons)
                             p.make_counter_clockwise();
-                        }
-                    } else if (this_mode == MeshSlicingParams::SlicingMode::PositiveLargestContour) {
+                    }
+                    else if (this_mode == MeshSlicingParams::SlicingMode::PositiveLargestContour) {
                         // Keep just the largest polygon, make it CCW.
-                        double       max_area = 0.;
-                        PolygonType *max_area_polygon = nullptr;
-                        for (PolygonType &p : polygons) {
-                            if (const double a = p.area(); std::abs(a) > std::abs(max_area)) {
-                                max_area         = a;
+                        double   max_area = 0.;
+                        Polygon* max_area_polygon = nullptr;
+                        for (Polygon& p : polygons) {
+                            double a = p.area();
+                            if (std::abs(a) > std::abs(max_area)) {
+                                max_area = a;
                                 max_area_polygon = &p;
                             }
                         }
-
                         assert(max_area_polygon != nullptr);
-                        if (max_area < 0.) {
+                        if (max_area < 0.)
                             max_area_polygon->reverse();
-                        }
-
-                        PolygonType p(std::move(*max_area_polygon));
+                        Polygon p(std::move(*max_area_polygon));
                         polygons.clear();
                         polygons.emplace_back(std::move(p));
                     }
@@ -1639,24 +1572,24 @@ static std::vector<Polygons> make_slab_loops(
                         for (const IntersectionLine &l : lines.at_slice[slice_below])
                             if (l.edge_type != IntersectionLine::FacetEdgeType::Top) {
                                 in.emplace_back(l);
-#ifdef DEBUG_INTERSECTIONLINE
+#ifndef NDEBUG
                                 in.back().source = IntersectionLine::Source::BottomPlane;
-#endif // DEBUG_INTERSECTIONLINE
+#endif // NDEBUG
                             }
                     }
                     {
                         // Edges in between slice_below and slice_above.
-#ifdef DEBUG_INTERSECTIONLINE
+#ifndef NDEBUG
                         size_t old_size = in.size();
-#endif // DEBUG_INTERSECTIONLINE
+#endif // NDEBUG
                         // Edge IDs of end points on in-between lines that touch the layer above are already increased with num_edges.
                         append(in, lines.between_slices[line_idx]);
-#ifdef DEBUG_INTERSECTIONLINE
+#ifndef NDEBUG
                         for (auto it = in.begin() + old_size; it != in.end(); ++ it) {
                             assert(it->edge_type == IntersectionLine::FacetEdgeType::Slab);
                             it->source = IntersectionLine::Source::Slab;
                         }
-#endif // DEBUG_INTERSECTIONLINE
+#endif // NDEBUG
                     }
                     if (has_slice_above) {
                         for (const IntersectionLine &lsrc : lines.at_slice[slice_above])
@@ -1669,9 +1602,9 @@ static std::vector<Polygons> make_slab_loops(
                                     l.edge_a_id += num_edges;
                                 if (l.edge_b_id >= 0)
                                     l.edge_b_id += num_edges;
-#ifdef DEBUG_INTERSECTIONLINE
+#ifndef NDEBUG
                                 l.source = IntersectionLine::Source::TopPlane;
-#endif // DEBUG_INTERSECTIONLINE
+#endif // NDEBUG
                             }
                     }
                     if (! in.empty()) {
@@ -1694,7 +1627,7 @@ static std::vector<Polygons> make_slab_loops(
 #endif /* SLIC3R_DEBUG_SLICE_PROCESSING */
                         Polygons &loops = layers[line_idx];
                         std::vector<OpenPolyline> open_polylines;
-                        chain_lines_by_triangle_connectivity<AdditionalMeshInfo::None>(in, loops, open_polylines);
+                        chain_lines_by_triangle_connectivity(in, loops, open_polylines);
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
                         {
                             SVG svg(debug_out_path("make_slab_loops-out-%d-%d-%s.svg", iRun, line_idx, ProjectionFromTop ? "top" : "bottom").c_str(), bbox_svg);
@@ -1729,12 +1662,12 @@ static std::vector<Polygons> make_slab_loops(
 }
 
 // Used to cut the mesh into two halves.
-static ExPolygons make_expolygons_simple(IntersectionLines &lines)
+static ExPolygons make_expolygons_simple(std::vector<IntersectionLine> &lines)
 {
     ExPolygons slices;
     Polygons holes;
 
-    for (Polygon &loop : make_loops<AdditionalMeshInfo::None>(lines))
+    for (Polygon &loop : make_loops(lines))
         if (loop.area() >= 0.)
             slices.emplace_back(std::move(loop));
         else
@@ -1895,7 +1828,7 @@ static void make_expolygons(const Polygons &loops, const float closing_radius, c
 static inline Transform3f make_trafo_for_slicing(const Transform3d &trafo)
 {
     auto t = trafo;
-    static constexpr const double s = 1. / SCALING_FACTOR;
+    const double s = 1. / SCALING_FACTOR;
     t.prescale(Vec3d(s, s, 1.));
     return t.cast<float>();
 }
@@ -1905,12 +1838,11 @@ static inline bool is_identity(const Transform3d &trafo)
     return trafo.matrix() == Transform3d::Identity().matrix();
 }
 
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None>
-static std::vector<stl_vertex> transform_mesh_vertices_for_slicing(const typename IndexedTriangleSetType<mesh_info>::type &mesh, const Transform3d &trafo)
+static std::vector<stl_vertex> transform_mesh_vertices_for_slicing(const indexed_triangle_set &mesh, const Transform3d &trafo)
 {
     // Copy and scale vertices in XY, don't scale in Z.
     // Possibly apply the transformation.
-    static constexpr const double   s = 1. / SCALING_FACTOR;
+    const double   s = 1. / SCALING_FACTOR;
     std::vector<stl_vertex>         out(mesh.vertices);
     if (is_identity(trafo)) {
         // Identity.
@@ -1930,23 +1862,13 @@ static std::vector<stl_vertex> transform_mesh_vertices_for_slicing(const typenam
     return out;
 }
 
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None>
-std::vector<typename PolygonsType<mesh_info>::type> slice_mesh(
-    const typename IndexedTriangleSetType<mesh_info>::type &mesh,
+std::vector<Polygons> slice_mesh(
+    const indexed_triangle_set       &mesh,
     // Unscaled Zs
-    const std::vector<float>                               &zs,
-    const MeshSlicingParams                                &params,
-    std::function<void()>                                   throw_on_cancel)
+    const std::vector<float>         &zs,
+    const MeshSlicingParams          &params,
+    std::function<void()>             throw_on_cancel)
 {
-    using PolygonsType = typename PolygonsType<mesh_info>::type;
-
-    const FacetColorFunctor<mesh_info> facet_color_fn = [&] {
-        if constexpr (mesh_info == AdditionalMeshInfo::Color)
-            return FacetColorFunctor<mesh_info>(mesh.colors);
-        else
-            return FacetColorFunctor<mesh_info>();
-    }();
-
     BOOST_LOG_TRIVIAL(debug) << "slice_mesh to polygons";
        
     std::vector<IntersectionLines> lines;
@@ -1956,29 +1878,29 @@ std::vector<typename PolygonsType<mesh_info>::type> slice_mesh(
         // Instead of edge identifiers, one shall use a sorted pair of edge vertex indices.
         // However facets_edges assigns a single edge ID to two triangles only, thus when factoring facets_edges out, one will have
         // to make sure that no code relies on it.
-        std::vector<Vec3i> face_edge_ids = its_face_edge_ids<mesh_info>(mesh);
+        std::vector<Vec3i32> face_edge_ids = its_face_edge_ids(mesh);
         if (zs.size() <= 1) {
             // It likely is not worthwile to copy the vertices. Apply the transformation in place.
             if (is_identity(params.trafo)) {
                 lines = slice_make_lines(
                     mesh.vertices, [](const Vec3f &p) { return Vec3f(scaled<float>(p.x()), scaled<float>(p.y()), p.z()); }, 
-                    mesh.indices, face_edge_ids, facet_color_fn, zs, throw_on_cancel);
+                    mesh.indices, face_edge_ids, zs, throw_on_cancel);
             } else {
                 // Transform the vertices, scale up in XY, not in Z.
                 Transform3f tf = make_trafo_for_slicing(params.trafo);
-                lines = slice_make_lines(mesh.vertices, [tf](const Vec3f &p) { return tf * p; }, mesh.indices, face_edge_ids, facet_color_fn, zs, throw_on_cancel);
+                lines = slice_make_lines(mesh.vertices, [tf](const Vec3f &p) { return tf * p; }, mesh.indices, face_edge_ids, zs, throw_on_cancel);
             }
         } else {
             // Copy and scale vertices in XY, don't scale in Z. Possibly apply the transformation.
             lines = slice_make_lines(
-                transform_mesh_vertices_for_slicing<mesh_info>(mesh, params.trafo),
-                [](const Vec3f &p) { return p; },  mesh.indices, face_edge_ids, facet_color_fn, zs, throw_on_cancel);
+                transform_mesh_vertices_for_slicing(mesh, params.trafo), 
+                [](const Vec3f &p) { return p; },  mesh.indices, face_edge_ids, zs, throw_on_cancel);
         }
     }
 
     throw_on_cancel();
 
-    std::vector<PolygonsType> layers = make_loops<mesh_info>(lines, params, throw_on_cancel);
+    std::vector<Polygons> layers = make_loops(lines, params, throw_on_cancel);
 
 #ifdef SLIC3R_DEBUG
     {
@@ -2016,49 +1938,19 @@ std::vector<typename PolygonsType<mesh_info>::type> slice_mesh(
     return layers;
 }
 
-std::vector<Polygons> slice_mesh(
+// Specialized version for a single slicing plane only, running on a single thread.
+Polygons slice_mesh(
     const indexed_triangle_set       &mesh,
     // Unscaled Zs
-    const std::vector<float>         &zs,
-    const MeshSlicingParams          &params,
-    std::function<void()>             throw_on_cancel)
+    const float                       plane_z,
+    const MeshSlicingParams          &params)
 {
-    return slice_mesh<AdditionalMeshInfo::None>(mesh, zs, params, throw_on_cancel);
-}
-
-std::vector<ColorPolygons> slice_mesh(
-    const indexed_triangle_set_with_color &mesh,
-    // Unscaled Zs
-    const std::vector<float>              &zs,
-    const MeshSlicingParams               &params,
-    std::function<void()>                  throw_on_cancel)
-{
-    return slice_mesh<AdditionalMeshInfo::Color>(mesh, zs, params, throw_on_cancel);
-}
-
-// Specialized version for a single slicing plane only, running on a single thread.
-template<AdditionalMeshInfo mesh_info = AdditionalMeshInfo::None>
-typename PolygonsType<mesh_info>::type slice_mesh(
-    const typename IndexedTriangleSetType<mesh_info>::type &mesh,
-    // Unscaled Zs
-    const float                                             plane_z,
-    const MeshSlicingParams                                &params)
-{
-    using PolygonsType = typename PolygonsType<mesh_info>::type;
-
-    const FacetColorFunctor<mesh_info> facet_color_fn = [&] {
-        if constexpr (mesh_info == AdditionalMeshInfo::Color)
-            return FacetColorFunctor<mesh_info>(mesh.colors);
-        else
-            return FacetColorFunctor<mesh_info>();
-    }();
-
     std::vector<IntersectionLines> lines;
 
     {
         bool                trafo_identity = is_identity(params.trafo);
         Transform3f         tf;
-        std::vector<char>   face_mask(mesh.indices.size(), 0);
+        std::vector<bool>   face_mask(mesh.indices.size(), false);
 
         {
             // 1) Mark vertices as below or above the slicing plane.
@@ -2081,50 +1973,32 @@ typename PolygonsType<mesh_info>::type slice_mesh(
 
             // 2) Mark faces crossing the plane.
             for (size_t i = 0; i < mesh.indices.size(); ++ i) {
-                const Vec3i &face = mesh.indices[i];
+                const Vec3i32 &face = mesh.indices[i];
                 int sides[3] = { vertex_side[face(0)], vertex_side[face(1)], vertex_side[face(2)] };
                 face_mask[i] = sides[0] * sides[1] <= 0 || sides[1] * sides[2] <= 0 || sides[0] * sides[2] <= 0;
             }
         }
 
         // 3) Calculate face neighbors for just the faces in face_mask.
-        std::vector<Vec3i> face_edge_ids = its_face_edge_ids<mesh_info>(mesh, face_mask);
+        std::vector<Vec3i32> face_edge_ids = its_face_edge_ids(mesh, face_mask);
 
         // 4) Slice "face_mask" triangles, collect line segments.
         // It likely is not worthwile to copy the vertices. Apply the transformation in place.
         if (trafo_identity) {
-            lines.emplace_back(slice_make_lines<mesh_info>(
+            lines.emplace_back(slice_make_lines(
                 mesh.vertices, [](const Vec3f &p) { return Vec3f(scaled<float>(p.x()), scaled<float>(p.y()), p.z()); }, 
-                mesh.indices, face_edge_ids, facet_color_fn, plane_z, [&face_mask](int face_idx) { return face_mask[face_idx]; }));
+                mesh.indices, face_edge_ids, plane_z, [&face_mask](int face_idx) { return face_mask[face_idx]; }));
         } else {
             // Transform the vertices, scale up in XY, not in Z.
-            lines.emplace_back(slice_make_lines<mesh_info>(mesh.vertices, [tf](const Vec3f& p) { return tf * p; }, mesh.indices, face_edge_ids, facet_color_fn, plane_z,
+            lines.emplace_back(slice_make_lines(mesh.vertices, [tf](const Vec3f& p) { return tf * p; }, mesh.indices, face_edge_ids, plane_z,
                 [&face_mask](int face_idx) { return face_mask[face_idx]; }));
         }
     }
 
     // 5) Chain the line segments.
-    std::vector<PolygonsType> layers = make_loops<mesh_info>(lines, params, [](){});
+    std::vector<Polygons> layers = make_loops(lines, params, [](){});
     assert(layers.size() == 1);
     return layers.front();
-}
-
-Polygons slice_mesh(
-    const indexed_triangle_set &mesh,
-    // Unscaled Zs
-    const float                 plane_z,
-    const MeshSlicingParams    &params)
-{
-    return slice_mesh<AdditionalMeshInfo::None>(mesh, plane_z, params);
-}
-
-ColorPolygons slice_mesh(
-    const indexed_triangle_set_with_color &mesh,
-    // Unscaled Zs
-    const float                            plane_z,
-    const MeshSlicingParams               &params)
-{
-    return slice_mesh<AdditionalMeshInfo::Color>(mesh, plane_z, params);
 }
 
 std::vector<ExPolygons> slice_mesh_ex(
@@ -2159,26 +2033,6 @@ std::vector<ExPolygons> slice_mesh_ex(
                     this_mode == MeshSlicingParams::SlicingMode::EvenOdd ? ClipperLib::pftEvenOdd : 
                     this_mode == MeshSlicingParams::SlicingMode::PositiveLargestContour ? ClipperLib::pftPositive : ClipperLib::pftNonZero,
                     &expolygons);
-
-#if 0
-//#ifndef NDEBUG
-                // Test whether the expolygons in a single layer overlap.
-                for (size_t i = 0; i < expolygons.size(); ++ i)
-                    for (size_t j = i + 1; j < expolygons.size(); ++ j) {
-                        Polygons overlap = intersection(expolygons[i], expolygons[j]);
-                        assert(overlap.empty());
-                    }
-#endif
-#if 0
-//#ifndef NDEBUG
-                for (const ExPolygon &ex : expolygons) {
-                    assert(! has_duplicate_points(ex.contour));
-                    for (const Polygon &hole : ex.holes)
-                        assert(! has_duplicate_points(hole));
-                    assert(! has_duplicate_points(ex));
-                }
-                assert(!has_duplicate_points(expolygons));
-#endif // NDEBUG
                 //FIXME simplify
                 if (this_mode == MeshSlicingParams::SlicingMode::PositiveLargestContour)
                     keep_largest_contour_only(expolygons);
@@ -2189,16 +2043,6 @@ std::vector<ExPolygons> slice_mesh_ex(
                         append(simplified, ex.simplify(resolution));
                     expolygons = std::move(simplified);
                 }
-#if 0
-//#ifndef NDEBUG
-                for (const ExPolygon &ex : expolygons) {
-                    assert(! has_duplicate_points(ex.contour));
-                    for (const Polygon &hole : ex.holes)
-                        assert(! has_duplicate_points(hole));
-                    assert(! has_duplicate_points(ex));
-                }
-                assert(! has_duplicate_points(expolygons));
-#endif // NDEBUG
             }
         });
 //    BOOST_LOG_TRIVIAL(debug) << "slice_mesh make_expolygons in parallel - end";
@@ -2293,9 +2137,9 @@ void slice_mesh_slabs(
         face_orientation[&tri - mesh.indices.data()] = fo;
     }
 
-    std::vector<Vec3i> face_neighbors = its_face_neighbors_par(mesh);
+    std::vector<Vec3i32> face_neighbors = its_face_neighbors_par(mesh);
     int                num_edges;
-    std::vector<Vec3i> face_edge_ids  = its_face_edge_ids(mesh, face_neighbors, true, &num_edges);
+    std::vector<Vec3i32> face_edge_ids  = its_face_edge_ids(mesh, face_neighbors, true, &num_edges);
     std::pair<SlabLines, SlabLines> lines = slice_slabs_make_lines(
         vertices_transformed, mesh.indices, face_neighbors, face_edge_ids, num_edges, face_orientation, zs, 
         out_top != nullptr, out_bottom != nullptr, throw_on_cancel);
@@ -2310,15 +2154,16 @@ void slice_mesh_slabs(
 
 // Remove duplicates of slice_vertices, optionally triangulate the cut.
 static void triangulate_slice(
-    indexed_triangle_set    &its, 
-    IntersectionLines       &lines, 
+    indexed_triangle_set    &its,
+    IntersectionLines       &lines,
     std::vector<int>        &slice_vertices,
     // Vertices of the original (unsliced) mesh. Newly added vertices are those on the slice.
     int                      num_original_vertices,
     // Z height of the slice.
-    float                    z, 
-    bool                     triangulate, 
-    bool                     normals_down)
+    float                    z,
+    bool                     triangulate,
+    bool                     normals_down,
+    const std::map<int, Vec3f*> &section_vertices_map)
 {
     sort_remove_duplicates(slice_vertices);
 
@@ -2328,11 +2173,12 @@ static void triangulate_slice(
     map_vertex_to_index.reserve(slice_vertices.size());
     for (int i : slice_vertices)
         map_vertex_to_index.emplace_back(to_2d(its.vertices[i]), i);
-    std::sort(map_vertex_to_index.begin(), map_vertex_to_index.end(), 
-        [](const std::pair<Vec2f, int> &l, const std::pair<Vec2f, int> &r) { 
+    std::sort(map_vertex_to_index.begin(), map_vertex_to_index.end(),
+        [](const std::pair<Vec2f, int> &l, const std::pair<Vec2f, int> &r) {
             return l.first.x() < r.first.x() || 
-                   (l.first.x() == r.first.x() && (l.first.y() < r.first.y() || 
-                                                   (l.first.y() == r.first.y() && l.second < r.second))); });
+                   (is_equal_for_sort(l.first.x(), r.first.x()) && (l.first.y()< r.first.y() || 
+                                                          (is_equal_for_sort(l.first.y(), r.first.y()) && l.second < r.second)));
+    });
 
     // 2) Discover duplicate points on the slice. Remap duplicate vertices to a vertex with a lowest index.
     //    Remove denegerate triangles, if they happen to be created by merging duplicate vertices.
@@ -2348,7 +2194,7 @@ static void triangulate_slice(
                 // map to itself
                 map_duplicate_vertex[iidx - num_original_vertices] = iidx;
             int j = i;
-            for (++ j; j < int(map_vertex_to_index.size()) && ipos.x() == map_vertex_to_index[j].first.x() && ipos.y() == map_vertex_to_index[j].first.y(); ++ j) {
+            for (++ j; j < int(map_vertex_to_index.size()) && is_equal(ipos.x(), map_vertex_to_index[j].first.x()) && is_equal(ipos.y(), map_vertex_to_index[j].first.y()); ++ j) {
                 const int jidx = map_vertex_to_index[j].second;
                 assert(jidx >= num_original_vertices);
                 if (jidx >= num_original_vertices)
@@ -2381,12 +2227,42 @@ static void triangulate_slice(
             stl_triangle_vertex_indices facet;
             for (size_t j = 0; j < 3; ++ j) {
                 Vec3f v = triangles[i ++].cast<float>();
-                auto it = lower_bound_by_predicate(map_vertex_to_index.begin(), map_vertex_to_index.end(), 
-                    [&v](const std::pair<Vec2f, int> &l) { return l.first.x() < v.x() || (l.first.x() == v.x() && l.first.y() < v.y()); });
+                auto it = lower_bound_by_predicate(map_vertex_to_index.begin(), map_vertex_to_index.end(),
+                    [&v](const std::pair<Vec2f, int> &l) {
+                    return l.first.x() < v.x() || (is_equal_for_sort(l.first.x(), v.x()) && l.first.y() < v.y());
+                    });
+                auto  back_it = it;
                 int   idx = -1;
-                if (it != map_vertex_to_index.end() && it->first.x() == v.x() && it->first.y() == v.y())
-                    idx = it->second;
-                else {
+                bool exist = false;
+                for (auto iter = section_vertices_map.begin(); iter != section_vertices_map.end(); iter++) {
+                    if (is_equal(v, *iter->second)) {
+                        idx   = iter->first;
+                        exist = true;
+                        break;
+                    }
+                }
+                // go on finding
+                if (!exist) {
+                    for (; it != map_vertex_to_index.end(); it++) {
+                        if (is_equal(it->first.x(), v.x()) && is_equal(it->first.y(), v.y())) {
+                            idx   = it->second;
+                            exist = true;
+                            break;
+                        }
+                    }
+                }
+                // go on finding
+                if (!exist) {
+                    it = back_it;
+                    for (; it != map_vertex_to_index.begin(); it--) {
+                        if (is_equal(it->first.x(), v.x()) && is_equal(it->first.y(), v.y())) {
+                            idx   = it->second;
+                            exist = true;
+                            break;
+                        }
+                    }
+                }
+                if (!exist){
                     // Try to find the vertex in the list of newly added vertices. Those vertices are not matched on the cut and they shall be rare.
                     for (size_t k = idx_vertex_new_first; k < its.vertices.size(); ++ k)
                         if (its.vertices[k] == v) {
@@ -2436,21 +2312,14 @@ Polygons project_mesh(
     std::vector<Polygons> top, bottom;
     std::vector<float>    zs { -1e10, 1e10 };
     slice_mesh_slabs(mesh, zs, trafo, &top, &bottom, throw_on_cancel);
-
-    // We typically perform a union operation on a lot of overlapping polygons, which can be slow in some cases.
-    // To address this, we use parallel reduction, which can be significantly faster in such cases.
-    return union_(union_parallel_reduce(top.front()), union_parallel_reduce(bottom.back()));
+    return union_(top.front(), bottom.back());
 }
 
-void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *upper, indexed_triangle_set *lower, bool triangulate_caps)
+void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* upper, indexed_triangle_set* lower, bool triangulate_caps)
 {
     assert(upper || lower);
     if (upper == nullptr && lower == nullptr)
         return;
-
-#ifndef NDEBUG
-    const size_t had_degenerate_faces = its_num_degenerate_faces(mesh);
-#endif // NDEBUG
 
     BOOST_LOG_TRIVIAL(trace) << "cut_mesh - slicing object";
 
@@ -2473,67 +2342,57 @@ void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *u
     // To triangulate the caps after slicing.
     IntersectionLines  upper_lines, lower_lines;
     std::vector<int>   upper_slice_vertices, lower_slice_vertices;
-    std::vector<Vec3i> facets_edge_ids = its_face_edge_ids(mesh);
+    std::vector<Vec3i32> facets_edge_ids = its_face_edge_ids(mesh);
+    std::map<int, Vec3f *> section_vertices_map;
 
     for (int facet_idx = 0; facet_idx < int(mesh.indices.size()); ++ facet_idx) {
         const stl_triangle_vertex_indices &facet = mesh.indices[facet_idx];
         Vec3f vertices[3] { mesh.vertices[facet(0)], mesh.vertices[facet(1)], mesh.vertices[facet(2)] };
         float min_z = std::min(vertices[0].z(), std::min(vertices[1].z(), vertices[2].z()));
         float max_z = std::max(vertices[0].z(), std::max(vertices[1].z(), vertices[2].z()));
-        
+
+        for (size_t i = 0; i < 3; i++) {
+            if (is_equal(z, vertices[i].z()) && section_vertices_map[facet(i)] == nullptr) {
+                section_vertices_map[facet(i)] = new Vec3f(vertices[i].x(), vertices[i].y(), vertices[i].z());
+            }
+        }
         // intersect facet with cutting plane
         IntersectionLine line;
-        int              idx_vertex_lowest = (vertices[1].z() == min_z) ? 1 : ((vertices[2].z() == min_z) ? 2 : 0);
+        int              idx_vertex_lowest = is_equal(vertices[1].z(), min_z) ? 1 : (is_equal(vertices[2].z() , min_z) ? 2 : 0);
         FacetSliceType   slice_type = FacetSliceType::NoSlice;
         if (z > min_z - EPSILON && z < max_z + EPSILON) {
-            Vec3d vertices_scaled[3];
+            Vec3f vertices_scaled[3];
             for (int i = 0; i < 3; ++ i) {
                 const Vec3f &src = vertices[i];
-                Vec3d       &dst = vertices_scaled[i];
-                dst.x() = scaled<double>(src.x());
-                dst.y() = scaled<double>(src.y());
+                Vec3f       &dst = vertices_scaled[i];
+                dst.x() = scale_(src.x());
+                dst.y() = scale_(src.y());
                 dst.z() = src.z();
             }
-            slice_type = slice_facet(double(z), vertices_scaled, mesh.indices[facet_idx], facets_edge_ids[facet_idx], idx_vertex_lowest, min_z == max_z, 0, line);
+            slice_type = slice_facet_for_cut_mesh(z, vertices_scaled, mesh.indices[facet_idx], facets_edge_ids[facet_idx], idx_vertex_lowest, is_equal(min_z, max_z), line);
         }
 
         if (slice_type != FacetSliceType::NoSlice) {
             // Save intersection lines for generating correct triangulations.
             if (line.edge_type == IntersectionLine::FacetEdgeType::Top) {
+                lower_lines.emplace_back(line);
                 lower_slice_vertices.emplace_back(line.a_id);
                 lower_slice_vertices.emplace_back(line.b_id);
-                if (lower) {
-                    lower_lines.emplace_back(line);
-                    if (triangulate_caps) {
-                        // Snap these vertices to coord_t grid, so that they will be matched with the vertices produced
-                        // by triangulating opening on the cut.
-                        lower->vertices[line.a_id] = contour_point_to_v3f(line.a, z);
-                        lower->vertices[line.b_id] = contour_point_to_v3f(line.b, z);
-                    }
-                }
             } else if (line.edge_type == IntersectionLine::FacetEdgeType::Bottom) {
+                upper_lines.emplace_back(line);
                 upper_slice_vertices.emplace_back(line.a_id);
                 upper_slice_vertices.emplace_back(line.b_id);
-                if (upper) {
-                    upper_lines.emplace_back(line);
-                    if (triangulate_caps) {
-                        // Snap these vertices to coord_t grid, so that they will be matched with the vertices produced
-                        // by triangulating opening on the cut.
-                        upper->vertices[line.a_id] = contour_point_to_v3f(line.a, z);
-                        upper->vertices[line.b_id] = contour_point_to_v3f(line.b, z);
-                    }
-                }
-            } else if (line.edge_type == IntersectionLine::FacetEdgeType::General && triangulate_caps) {
+            } else if (line.edge_type == IntersectionLine::FacetEdgeType::General) {
                 lower_lines.emplace_back(line);
                 upper_lines.emplace_back(line);
             }
         }
-        
-        if (min_z > z || (min_z == z && max_z > z)) {
+
+        if (min_z > z || (is_equal(min_z , z) && max_z > z)) {
             // facet is above the cut plane and does not belong to it
             if (upper != nullptr)
                 upper->indices.emplace_back(facet);
-        } else if (max_z < z || (max_z == z && min_z < z)) {
+        } else if (max_z < z || (is_equal(max_z, z) && min_z < z)) {
             // facet is below the cut plane and does not belong to it
             if (lower != nullptr)
                 lower->indices.emplace_back(facet);
@@ -2545,21 +2404,56 @@ void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *u
             assert(line.edge_b_id != -1);
 
             // look for the vertex on whose side of the slicing plane there are no other vertices
-            int isolated_vertex = 
-                (vertices[0].z() > z) == (vertices[1].z() > z) ? 2 :
-                (vertices[1].z() > z) == (vertices[2].z() > z) ? 0 : 1;
-            
-            // get vertices starting from the isolated one
-            int iv = isolated_vertex;
-            stl_vertex v0v1, v2v0;
-            assert(facets_edge_ids[facet_idx](iv) == line.edge_a_id || facets_edge_ids[facet_idx](iv) == line.edge_b_id);
-            if (facets_edge_ids[facet_idx](iv) == line.edge_a_id) {
-                // Unscale to doubles first, then to floats to reach the same accuracy as triangulate_expolygons_2d().
-                v0v1 = contour_point_to_v3f(line.a, z);
-                v2v0 = contour_point_to_v3f(line.b, z);
+            int              isolated_vertex, isolated_vertex_option = -1;
+            std::vector<int> list{0, 1, 2};
+            auto             get_third = [&list](int isolated_vertex, int temp) {// not use vertex data
+                for (size_t i = 0; i < list.size(); i++) {
+                    if (list[i] != isolated_vertex && list[i] != temp) {
+                        return list[i];
+                    }
+                }
+                return -1;
+            };
+            if (is_equal(vertices[0].z(), z)) {
+                isolated_vertex        = vertices[1].z() > z ? 1 : 2;
+                isolated_vertex_option = get_third(isolated_vertex, 0);
+            } else if (is_equal(vertices[1].z(), z)) {
+                isolated_vertex        = vertices[2].z() > z ? 2 : 0;
+                isolated_vertex_option = get_third(isolated_vertex, 1);
+            } else if (is_equal(vertices[2].z(), z)) {
+                isolated_vertex        = vertices[0].z() > z ? 0 : 1;
+                isolated_vertex_option = get_third(isolated_vertex, 2);
             } else {
-                v0v1 = contour_point_to_v3f(line.b, z);
-                v2v0 = contour_point_to_v3f(line.a, z);
+                isolated_vertex = (vertices[0].z() > z) == (vertices[1].z() > z) ? 2 : (vertices[1].z() > z) == (vertices[2].z() > z) ? 0 : 1;
+            }
+            // get vertices starting from the isolated one
+            stl_vertex v0v1, v2v0;
+            auto       calc_isolated_vertex = [&v0v1, &v2v0, &line, &facet_idx, &facets_edge_ids, &z](int iv, bool &is_find) {
+                assert(facets_edge_ids[facet_idx](iv) == line.edge_a_id || facets_edge_ids[facet_idx](iv) == line.edge_b_id);
+                is_find = true;
+                if (facets_edge_ids[facet_idx](iv) == line.edge_a_id) {
+                    // Unscale to doubles first, then to floats to reach the same accuracy as triangulate_expolygons_2d().
+                    v0v1 = to_3d(unscaled<double>(line.a).cast<float>().eval(), z);
+                    v2v0 = to_3d(unscaled<double>(line.b).cast<float>().eval(), z);
+                } else if (facets_edge_ids[facet_idx](iv) == line.edge_b_id) {
+                    v0v1 = to_3d(unscaled<double>(line.b).cast<float>().eval(), z);
+                    v2v0 = to_3d(unscaled<double>(line.a).cast<float>().eval(), z);
+                } else {
+                    is_find = false;
+                }
+            };
+            bool find_isolated_vertex;
+            int  iv;
+            calc_isolated_vertex(isolated_vertex, find_isolated_vertex);
+            if (!find_isolated_vertex && isolated_vertex_option != -1) {
+                calc_isolated_vertex(isolated_vertex_option, find_isolated_vertex);
+                if (!find_isolated_vertex) {
+                    BOOST_LOG_TRIVIAL(trace) << "cut_mesh:error:could not find isolated_vertex";
+                    continue;
+                }
+                iv = isolated_vertex_option;
+            } else {
+                iv = isolated_vertex;
             }
             const stl_vertex &v0  = vertices[iv];
             const int         iv0 = facet[iv];
@@ -2573,67 +2467,71 @@ void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *u
             const int         iv2 = facet[iv];
 
             // intersect v0-v1 and v2-v0 with cutting plane and make new vertices
-            auto new_vertex = [upper, lower, &upper_slice_vertices, &lower_slice_vertices](const Vec3f &a, const int ia, const Vec3f &b, const int ib, const Vec3f &c) {
+            auto new_vertex = [upper, lower, &upper_slice_vertices, &lower_slice_vertices](const Vec3f &a, const int ia, const Vec3f &b, const int ib, const Vec3f &c,
+                                                                                           const int ic, const Vec3f &new_pt, bool &is_new_vertex) {
                 int iupper, ilower;
-                if (c == a)
+                is_new_vertex = false;
+                if (is_equal(new_pt, a))
                     iupper = ilower = ia;
-                else if (c == b)
+                else if (is_equal(new_pt, b))
                     iupper = ilower = ib;
+                else if (is_equal(new_pt, c))
+                    iupper = ilower = ic;
                 else {
                     // Insert a new vertex into upper / lower.
+                    is_new_vertex = true;
                     if (upper) {
                         iupper = int(upper->vertices.size());
-                        upper->vertices.emplace_back(c);
+                        upper->vertices.emplace_back(new_pt);
                         upper_slice_vertices.emplace_back(iupper);
                     }
                     if (lower) {
                         ilower = int(lower->vertices.size());
-                        lower->vertices.emplace_back(c);
+                        lower->vertices.emplace_back(new_pt);
                         lower_slice_vertices.emplace_back(ilower);
                     }
                 }
                 return std::make_pair(iupper, ilower);
             };
-            auto [iv0v1_upper, iv0v1_lower] = new_vertex(v1, iv1, v0, iv0, v0v1);
-            auto [iv2v0_upper, iv2v0_lower] = new_vertex(v2, iv2, v0, iv0, v2v0);
-            auto new_face = [](indexed_triangle_set *its, int i, int j, int k) {
-                if (its != nullptr && i != j && i != k && j != k)
-                    its->indices.emplace_back(i, j, k);
+            bool is_new_vertex_v0v1;
+            bool is_new_vertex_v2v0;
+            auto [iv0v1_upper, iv0v1_lower] = new_vertex(v1, iv1, v0, iv0, v2, iv2, v0v1, is_new_vertex_v0v1);
+            auto [iv2v0_upper, iv2v0_lower] = new_vertex(v2, iv2, v0, iv0, v1, iv1, v2v0, is_new_vertex_v2v0);
+            auto new_face                   = [](indexed_triangle_set *its, int i, int j, int k) {
+                if (its != nullptr && i != j && i != k && j != k) its->indices.emplace_back(i, j, k);
             };
-
-            if (v0.z() > z) {
-                new_face(upper, iv0, iv0v1_upper, iv2v0_upper);
-                new_face(lower, iv1, iv2, iv0v1_lower);
-                new_face(lower, iv2, iv2v0_lower, iv0v1_lower);
-            } else {
-                new_face(upper, iv1, iv2, iv0v1_upper);
-                new_face(upper, iv2, iv2v0_upper, iv0v1_upper);
-                new_face(lower, iv0, iv0v1_lower, iv2v0_lower);
+            if (is_new_vertex_v0v1 && is_new_vertex_v2v0) {
+                if (v0.z() > z) {
+                    new_face(upper, iv0, iv0v1_upper, iv2v0_upper);
+                    new_face(lower, iv1, iv2, iv0v1_lower);
+                    new_face(lower, iv2, iv2v0_lower, iv0v1_lower);
+                } else {
+                    new_face(upper, iv1, iv2, iv0v1_upper);
+                    new_face(upper, iv2, iv2v0_upper, iv0v1_upper);
+                    new_face(lower, iv0, iv0v1_lower, iv2v0_lower);
+                }
+            } else if (is_new_vertex_v0v1) {
+                if (v0.z() > z) {
+                    new_face(upper, iv0, iv0v1_upper, iv2);
+                    new_face(lower, iv1, iv2, iv0v1_lower);
+                } else {
+                    new_face(lower, iv0, iv0v1_lower, iv2);
+                    new_face(upper, iv1, iv2, iv0v1_upper);
+                }
+            } else if (is_new_vertex_v2v0) {
+                if (v0.z() > z) {
+                    new_face(upper, iv0, iv1, iv2v0_upper);
+                    new_face(lower, iv1, iv2, iv2v0_lower);
+                } else {
+                    new_face(lower, iv0, iv1, iv2v0_lower);
+                    new_face(upper, iv1, iv2, iv2v0_upper);
+                }
             }
         }
-
-/*
-        char buf[2048];
-        static int irun = 0;
-        ++irun;
-        temp.indices.emplace_back(int(temp.vertices.size()), int(temp.vertices.size() + 1), int(temp.vertices.size() + 2));
-        temp.vertices.emplace_back(vertices[0]);
-        temp.vertices.emplace_back(vertices[1]);
-        temp.vertices.emplace_back(vertices[2]);
-        sprintf(buf, "D:\\temp\\test\\temp-%d.obj", irun);
-        its_write_obj(temp, buf);
-        sprintf(buf, "D:\\temp\\test\\upper-%d.obj", irun);
-        its_write_obj(*upper, buf);
-        sprintf(buf, "D:\\temp\\test\\lower-%d.obj", irun);
-        its_write_obj(*lower, buf);
-*/
     }
 
-    assert(had_degenerate_faces || ! upper || its_num_degenerate_faces(*upper) == 0);
-    assert(had_degenerate_faces || ! lower || its_num_degenerate_faces(*lower) == 0);
-
     if (upper != nullptr) {
-        triangulate_slice(*upper, upper_lines, upper_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_DOWN);
+        triangulate_slice(*upper, upper_lines, upper_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_DOWN, section_vertices_map);
 #ifndef NDEBUG
         if (triangulate_caps) {
             size_t num_open_edges_new = its_num_open_edges(*upper);
@@ -2643,7 +2541,7 @@ void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *u
     }
 
     if (lower != nullptr) {
-        triangulate_slice(*lower, lower_lines, lower_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_UP);
+        triangulate_slice(*lower, lower_lines, lower_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_UP, section_vertices_map);
 #ifndef NDEBUG
         if (triangulate_caps) {
             size_t num_open_edges_new = its_num_open_edges(*lower);
@@ -2651,9 +2549,7 @@ void cut_mesh(const indexed_triangle_set &mesh, float z, indexed_triangle_set *u
         }
 #endif // NDEBUG
     }
-
-    assert(had_degenerate_faces || ! upper || its_num_degenerate_faces(*upper) == 0);
-    assert(had_degenerate_faces || ! lower || its_num_degenerate_faces(*lower) == 0);
+    std::map<int, Vec3f*>().swap(section_vertices_map);
 }
 
 } // namespace Slic3r

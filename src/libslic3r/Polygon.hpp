@@ -1,30 +1,9 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Oleksandra Iushchenko @YuSanka
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/Polygon.pm:
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Polygon_hpp_
 #define slic3r_Polygon_hpp_
 
-#include <assert.h>
-#include <math.h>
-#include <oneapi/tbb/scalable_allocator.h>
+#include "libslic3r.h"
 #include <vector>
 #include <string>
-#include <algorithm>
-#include <cstddef>
-#include <initializer_list>
-#include <iterator>
-#include <utility>
-#include <cassert>
-#include <cmath>
-
-#include "libslic3r.h"
 #include "Line.hpp"
 #include "Point.hpp"
 #include "MultiPoint.hpp"
@@ -33,14 +12,9 @@
 namespace Slic3r {
 
 class Polygon;
-class BoundingBox;
-class ColorPolygon;
-
-using Polygons          = std::vector<Polygon, PointsAllocator<Polygon>>;
-using PolygonPtrs       = std::vector<Polygon*, PointsAllocator<Polygon*>>;
-using ConstPolygonPtrs  = std::vector<const Polygon*, PointsAllocator<const Polygon*>>;
-
-using ColorPolygons     = std::vector<ColorPolygon>;
+using Polygons          = std::vector<Polygon>;
+using PolygonPtrs       = std::vector<Polygon*>;
+using ConstPolygonPtrs  = std::vector<const Polygon*>;
 
 // Returns true if inside. Returns border_result if on boundary.
 bool contains(const Polygon& polygon, const Point& p, bool border_result = true);
@@ -102,7 +76,8 @@ public:
 
     bool intersection(const Line& line, Point* intersection) const;
     bool first_intersection(const Line& line, Point* intersection) const;
-    bool intersections(const Line &line, Points *intersections) const;
+    bool intersections(const Line& line, Points* intersections) const;
+    bool overlaps(const Polygons& other) const;
 
     // Considering CCW orientation of this polygon, find all convex resp. concave points
     // with the angle at the vertex larger than a threshold.
@@ -112,6 +87,9 @@ public:
     // Projection of a point onto the polygon.
     Point point_projection(const Point &point) const;
     std::vector<float> parameter_by_length() const;
+    
+    //BBS
+    Polygon transform(const Transform3d& trafo) const;
 
     using iterator = Points::iterator;
     using const_iterator = Points::const_iterator;
@@ -179,7 +157,6 @@ inline void polygons_append(Polygons &dst, Polygons &&src)
     }
 }
 
-Polygons polygons_simplify(Polygons &&polys, double tolerance, bool strictly_simple = true);
 Polygons polygons_simplify(const Polygons &polys, double tolerance, bool strictly_simple = true);
 
 inline void polygons_rotate(Polygons &polys, double angle)
@@ -325,47 +302,12 @@ struct PolygonPoint
 };
 using PolygonPoints = std::vector<PolygonPoint>;
 
-// To replace reserve_vector where it's used for Polygons
-template<class I> IntegerOnly<I, Polygons> reserve_polygons(I cap)
-{
-    return reserve_vector<Polygon, I, typename Polygons::allocator_type>(cap);
-}
-
-class ColorPolygon : public Polygon
-{
-public:
-    using Color  = uint8_t;
-    using Colors = std::vector<Color>;
-
-    Colors colors;
-
-    ColorPolygon() = default;
-    explicit ColorPolygon(const Points &points, const Colors &colors) : Polygon(points), colors(colors) {}
-    ColorPolygon(std::initializer_list<Point> points, std::initializer_list<Color> colors) : Polygon(points), colors(colors) {}
-    ColorPolygon(const ColorPolygon &other) : ColorPolygon(other.points, other.colors) {}
-    ColorPolygon(ColorPolygon &&other) noexcept : ColorPolygon(std::move(other.points), std::move(other.colors)) {}
-    ColorPolygon(Points &&points, Colors &&colors) : Polygon(std::move(points)), colors(std::move(colors)) {}
-
-    void reverse() override {
-        Polygon::reverse();
-        std::reverse(this->colors.begin(), this->colors.end());
-    }
-
-    ColorPolygon &operator=(const ColorPolygon &other) {
-        this->points = other.points;
-        this->colors = other.colors;
-        return *this;
-    }
-};
-
-using ColorPolygons = std::vector<ColorPolygon>;
-
-} // namespace Slic3r
+bool overlaps(const Polygons& polys1, const Polygons& polys2);
+} // Slic3r
 
 // start Boost
 #include <boost/polygon/polygon.hpp>
-
-namespace boost::polygon {
+namespace boost { namespace polygon {
     template <>
     struct geometry_concept<Slic3r::Polygon>{ typedef polygon_concept type; };
 
@@ -443,7 +385,7 @@ namespace boost::polygon {
           polygons.assign(input_begin, input_end);
         }
     };
-} // namespace boost::polygon
+} }
 // end Boost
 
 #endif

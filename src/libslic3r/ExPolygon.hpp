@@ -1,40 +1,15 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Pavel Mikuš @Godrak, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966, Filip Sykala @Jony01, Lukáš Hejl @hejllukas, Tomáš Mészáros @tamasmeszaros
-///|/ Copyright (c) 2016 Sakari Kapanen @Flannelhead
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/ExPolygon.pm:
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2012 Mark Hindess
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_ExPolygon_hpp_
 #define slic3r_ExPolygon_hpp_
-
-#include <assert.h>
-#include <oneapi/tbb/scalable_allocator.h>
-#include <stdint.h>
-#include <vector>
-#include <algorithm>
-#include <cstddef>
-#include <initializer_list>
-#include <iterator>
-#include <utility>
-#include <cassert>
-#include <cinttypes>
 
 #include "Point.hpp"
 #include "libslic3r.h"
 #include "Polygon.hpp"
 #include "Polyline.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Line.hpp"
+#include <vector>
 
 namespace Slic3r {
 
 class ExPolygon;
-
 using ExPolygons = std::vector<ExPolygon>;
 
 class ExPolygon
@@ -460,7 +435,7 @@ inline void expolygons_rotate(ExPolygons &expolys, double angle)
         expoly.rotate(angle);
 }
 
-inline bool expolygons_contain(const ExPolygons &expolys, const Point &pt, bool border_result = true)
+inline bool expolygons_contain(ExPolygons &expolys, const Point &pt, bool border_result = true)
 {
     for (const ExPolygon &expoly : expolys)
         if (expoly.contains(pt, border_result))
@@ -480,6 +455,10 @@ inline ExPolygons expolygons_simplify(const ExPolygons &expolys, double toleranc
 // Do expolygons match? If they match, they must have the same topology,
 // however their contours may be rotated.
 bool expolygons_match(const ExPolygon &l, const ExPolygon &r);
+
+bool overlaps(const ExPolygons& expolys1, const ExPolygons& expolys2);
+
+Point projection_onto(const ExPolygons& expolys, const Point& pt);
 
 BoundingBox get_extents(const ExPolygon &expolygon);
 BoundingBox get_extents(const ExPolygons &expolygons);
@@ -507,7 +486,6 @@ bool        remove_small_and_small_holes(ExPolygons &expolygons, double min_area
 
 // start Boost
 #include <boost/polygon/polygon.hpp>
-
 namespace boost { namespace polygon {
     template <>
         struct polygon_traits<Slic3r::ExPolygon> {

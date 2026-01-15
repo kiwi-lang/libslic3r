@@ -1,16 +1,10 @@
-///|/ Copyright (c) Prusa Research 2019 - 2022 Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "AABBMesh.hpp"
+#include <Execution/ExecutionTBB.hpp>
 
 #include <libslic3r/AABBTreeIndirect.hpp>
 #include <libslic3r/TriangleMesh.hpp>
-#include <igl/Hit.h>
-#include <algorithm>
 
-#include "admesh/stl.h"
-#include "libslic3r/Point.hpp"
+#include <numeric>
 
 #ifdef SLIC3R_HOLE_RAYCASTER
 #include <libslic3r/SLA/Hollowing.hpp>
@@ -128,7 +122,7 @@ const std::vector<Vec3f>& AABBMesh::vertices() const
 
 
 
-const std::vector<Vec3i>& AABBMesh::indices()  const
+const std::vector<Vec3i32>& AABBMesh::indices()  const
 {
     return m_tm->indices;
 }
@@ -142,7 +136,7 @@ const Vec3f& AABBMesh::vertices(size_t idx) const
 
 
 
-const Vec3i& AABBMesh::indices(size_t idx) const
+const Vec3i32& AABBMesh::indices(size_t idx) const
 {
     return m_tm->indices[idx];
 }

@@ -1,31 +1,12 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_EdgeGrid_hpp_
 #define slic3r_EdgeGrid_hpp_
 
 #include <stdint.h>
 #include <math.h>
-#include <assert.h>
-#include <stdlib.h>
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <string>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstdlib>
 
 #include "Point.hpp"
 #include "BoundingBox.hpp"
 #include "ExPolygon.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 namespace EdgeGrid {
@@ -36,7 +17,7 @@ public:
 	Contour() = default;
 	Contour(const Slic3r::Point *begin, const Slic3r::Point *end, bool open) : m_begin(begin), m_end(end), m_open(open) {}
 	Contour(const Slic3r::Point *data, size_t size, bool open) : Contour(data, data + size, open) {}
-	Contour(const Points &pts, bool open) : Contour(pts.data(), pts.size(), open) {}
+	Contour(const std::vector<Slic3r::Point> &pts, bool open) : Contour(pts.data(), pts.size(), open) {}
 
     const Slic3r::Point *begin()  const { return m_begin; }
     const Slic3r::Point *end()    const { return m_end; }

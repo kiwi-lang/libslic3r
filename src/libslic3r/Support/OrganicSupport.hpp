@@ -1,16 +1,8 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_OrganicSupport_hpp
 #define slic3r_OrganicSupport_hpp
 
-#include <functional>
-#include <vector>
-
 #include "SupportCommon.hpp"
 #include "TreeSupport.hpp"
-#include "libslic3r/Support/SupportLayer.hpp"
 
 namespace Slic3r
 {
@@ -21,8 +13,6 @@ namespace FFFTreeSupport
 {
 
 class TreeModelVolumes;
-class InterfacePlacer;
-struct TreeSupportSettings;
 
 // Organic specific: Smooth branches and produce one cummulative mesh to be sliced.
 void organic_draw_branches(

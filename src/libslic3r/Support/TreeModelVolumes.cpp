@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Tree supports by Thomas Rahm, losely based on Tree Supports by CuraEngine.
 // Original source of Thomas Rahm's tree supports:
 // https://github.com/ThomasRahm/CuraEngine
@@ -11,31 +7,24 @@
 // CuraEngine is released under the terms of the AGPLv3 or higher.
 
 #include "TreeModelVolumes.hpp"
-
-#include <boost/log/trivial.hpp>
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <oneapi/tbb/task_arena.h>
-#include <oneapi/tbb/task_group.h>
-#include <algorithm>
-#include <chrono>
-#include <limits>
-#include <numeric>
-#include <string>
-#include <unordered_map>
-#include <cmath>
-#include <string_view>
-
 #include "TreeSupportCommon.hpp"
+
 #include "../BuildVolume.hpp"
+#include "../ClipperUtils.hpp"
+#include "../Flow.hpp"
 #include "../Layer.hpp"
 #include "../Point.hpp"
 #include "../Print.hpp"
+#include "../PrintConfig.hpp"
 #include "../Utils.hpp"
 #include "../format.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Polygon.hpp"
+
+#include <string_view>
+
+#include <boost/log/trivial.hpp>
+
+#include <tbb/parallel_for.h>
+#include <tbb/task_group.h>
 
 namespace Slic3r::FFFTreeSupport
 {

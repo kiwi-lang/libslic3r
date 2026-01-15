@@ -1,17 +1,9 @@
-///|/ Copyright (c) Prusa Research 2019 - 2020 Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef ZIPPER_HPP
 #define ZIPPER_HPP
 
-#include <stddef.h>
 #include <cstdint>
 #include <string>
 #include <memory>
-#include <type_traits>
-#include <utility>
-#include <cstddef>
 
 namespace Slic3r {
 
@@ -27,7 +19,6 @@ public:
 
 private:
     class Impl;
-
     std::unique_ptr<Impl> m_impl;
     std::string m_data;
     std::string m_entry;

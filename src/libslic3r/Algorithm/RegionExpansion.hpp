@@ -1,18 +1,10 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 #define SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 
+#include <cstdint>
 #include <libslic3r/Point.hpp>
 #include <libslic3r/Polygon.hpp>
 #include <libslic3r/ExPolygon.hpp>
-#include <stddef.h>
-#include <cstdint>
-#include <algorithm>
-#include <vector>
-#include <cstddef>
 
 namespace Slic3r {
 namespace Algorithm {

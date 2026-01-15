@@ -1,21 +1,11 @@
-///|/ Copyright (c) Prusa Research 2018 - 2021 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966
-///|/ Copyright (c) SuperSlicer 2018 - 2019 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <cmath>
-#include <algorithm>
-#include <vector>
-#include <cstddef>
-
 #include "../ClipperUtils.hpp"
 #include "../ShortestPath.hpp"
+#include "../Surface.hpp"
+#include <cmath>
+#include <algorithm>
+#include <iostream>
+
 #include "FillGyroid.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 

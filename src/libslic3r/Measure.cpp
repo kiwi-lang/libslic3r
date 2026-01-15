@@ -1,25 +1,13 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <boost/container/small_vector.hpp>
-#include <algorithm>
-#include <array>
-#include <iterator>
-#include <limits>
-#include <set>
-#include <cinttypes>
-
 #include "libslic3r/libslic3r.h"
 #include "Measure.hpp"
 #include "MeasureUtils.hpp"
+
 #include "libslic3r/Geometry/Circle.hpp"
 #include "libslic3r/SurfaceMesh.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/TriangleMesh.hpp"
+
+
+#include <numeric>
+#include <tbb/parallel_for.h>
 
 #define DEBUG_EXTRACT_ALL_FEATURES_AT_ONCE 0
 
@@ -122,7 +110,7 @@ void MeasuringImpl::update_planes()
     const size_t             num_of_facets = m_its.indices.size();
     m_face_to_plane.resize(num_of_facets, size_t(-1));
     const std::vector<Vec3f> face_normals = its_face_normals(m_its);
-    const std::vector<Vec3i> face_neighbors = its_face_neighbors(m_its);
+    const std::vector<Vec3i32> face_neighbors = its_face_neighbors(m_its);
     std::vector<int>         facet_queue(num_of_facets, 0);
     int                      facet_queue_cnt = 0;
     const stl_normal*        normal_ptr      = nullptr;
@@ -157,7 +145,7 @@ void MeasuringImpl::update_planes()
             int facet_idx = facet_queue[-- facet_queue_cnt];
             const stl_normal& this_normal = face_normals[facet_idx];
             if (is_same_normal(this_normal, *normal_ptr)) {
-//                const Vec3i& face = m_its.indices[facet_idx];
+//                const Vec3i32& face = m_its.indices[facet_idx];
 
                 m_face_to_plane[facet_idx] = m_planes.size() - 1;
                 m_planes.back().facets.emplace_back(facet_idx);
@@ -1133,7 +1121,7 @@ MeasurementResult get_measurement(const SurfaceFeature& a, const SurfaceFeature&
             else {
                 ClosestInfo& info = candidates[0];
             
-                double N0dD = n0.dot(D);
+                const double N0dD = n0.dot(D);
                 const Vec3d normProj = N0dD * n0;
                 const Vec3d compProj = D - normProj;
                 Vec3d U = compProj;
@@ -1194,7 +1182,6 @@ MeasurementResult get_measurement(const SurfaceFeature& a, const SurfaceFeature&
                         distance = (c1 - c0).norm();
                         info.circle0Closest = c0;
                         info.circle1Closest = c1;
-                        N0dD = 0.0;
                     }
                 }
 

@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 - 2022 Pavel Mikuš @Godrak, Tomáš Mészáros @tamasmeszaros, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // KD tree built upon external data set, referencing the external data by integer indices.
 
 #ifndef slic3r_KDTreeIndirect_hpp_
@@ -40,10 +36,7 @@ public:
     KDTreeIndirect(KDTreeIndirect &&rhs) : m_nodes(std::move(rhs.m_nodes)), coordinate(std::move(rhs.coordinate)) {}
     KDTreeIndirect& operator=(KDTreeIndirect &&rhs) { m_nodes = std::move(rhs.m_nodes); coordinate = std::move(rhs.coordinate); return *this; }
     void clear() { m_nodes.clear(); }
-    const std::vector<size_t> &get_nodes() const { return m_nodes; } 
-    // NOTE: Copy constructor cause failing FDM tests but not each run only from time to time.
-    // KDTreeIndirect(const KDTreeIndirect &rhs) : m_nodes(rhs.m_nodes), coordinate(rhs.coordinate) {}
-    KDTreeIndirect get_copy() const { KDTreeIndirect copy(coordinate); copy.m_nodes = m_nodes; return copy; }
+
     void build(size_t num_indices)
     {
         std::vector<size_t> indices;
@@ -66,10 +59,10 @@ public:
     }
 
     template<typename CoordType>
-    unsigned int descent_mask(const CoordType &point_coord, const double &search_radius, size_t idx, size_t dimension) const
+    unsigned int descent_mask(const CoordType &point_coord, const CoordType &search_radius, size_t idx, size_t dimension) const
     {
         CoordType dist = point_coord - this->coordinate(idx, dimension);
-        return (double(dist) * dist < search_radius + EPSILON) ?
+        return (dist * dist < search_radius + CoordType(EPSILON)) ?
                                                                     // The plane intersects a hypersphere centered at point_coord of search_radius.
                    ((unsigned int)(VisitorReturnMask::CONTINUE_LEFT) | (unsigned int)(VisitorReturnMask::CONTINUE_RIGHT)) :
                    // The plane does not intersect the hypersphere.
@@ -216,43 +209,44 @@ std::array<size_t, K> find_closest_points(
         const Tree      &kdtree;
         const PointType &point;
         const FilterFn   filter;
-        struct Result {
-            size_t index;
-            double distance_sq;
-        };
-        std::array<Result, K> results;
+
+        std::array<std::pair<size_t, CoordT>, K> results;
 
         Visitor(const Tree &kdtree, const PointType &point, FilterFn filter)
             : kdtree(kdtree), point(point), filter(filter)
         {
-            results.fill(Result{Tree::npos, std::numeric_limits<double>::max()});
+            results.fill(std::make_pair(Tree::npos,
+                                        std::numeric_limits<CoordT>::max()));
         }
         unsigned int operator()(size_t idx, size_t dimension)
         {
             if (this->filter(idx)) {
-                double distance_sq = 0.;
+                auto dist = CoordT(0);
                 for (size_t i = 0; i < D; ++i) {
                     CoordT d = point[i] - kdtree.coordinate(idx, i);
-                    distance_sq += double(d) * d;
+                    dist += d * d;
                 }
 
-                Result res{idx, distance_sq};
-                auto lower_distance = [](const Result &r1, const Result &r2) {
-                    return r1.distance_sq < r2.distance_sq; };
-                auto it = std::lower_bound(results.begin(), results.end(), res, lower_distance);
+                auto res = std::make_pair(idx, dist);
+                auto it  = std::lower_bound(results.begin(), results.end(),
+                                            res, [](auto &r1, auto &r2) {
+                                               return r1.second < r2.second;
+                                            });
+
                 if (it != results.end()) {
                     std::rotate(it, std::prev(results.end()), results.end());
                     *it = res;
                 }
             }
-            return kdtree.descent_mask(point[dimension], results.front().distance_sq, idx, dimension);
+            return kdtree.descent_mask(point[dimension],
+                                       results.front().second, idx,
+                                       dimension);
         }
     } visitor(kdtree, point, filter);
 
     kdtree.visit(visitor);
     std::array<size_t, K> ret;
-    for (size_t i = 0; i < K; i++)
-        ret[i] = visitor.results[i].index;
+    for (size_t i = 0; i < K; i++) ret[i] = visitor.results[i].first;
 
     return ret;
 }
@@ -292,20 +286,20 @@ std::vector<size_t> find_nearby_points(const KDTreeIndirectType &kdtree, const P
     struct Visitor {
         const KDTreeIndirectType &kdtree;
         const PointType center;
-        const double max_distance_squared;
+        const CoordType max_distance_squared;
         const FilterFn filter;
         std::vector<size_t> result;
 
         Visitor(const KDTreeIndirectType &kdtree, const PointType& center, const CoordType &max_distance,
                 FilterFn filter) :
-            kdtree(kdtree), center(center), max_distance_squared(double(max_distance)*max_distance), filter(filter) {
+            kdtree(kdtree), center(center), max_distance_squared(max_distance*max_distance), filter(filter) {
         }
         unsigned int operator()(size_t idx, size_t dimension) {
             if (this->filter(idx)) {
-                double dist = 0.;
+                auto dist = CoordType(0);
                 for (size_t i = 0; i < KDTreeIndirectType::NumDimensions; ++i) {
                     CoordType d = center[i] - kdtree.coordinate(idx, i);
-                    dist += double(d) * d;
+                    dist += d * d;
                 }
                 if (dist < max_distance_squared) {
                     result.push_back(idx);

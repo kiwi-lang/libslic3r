@@ -1,33 +1,21 @@
-///|/ Copyright (c) Prusa Research 2019 - 2023 Tomáš Mészáros @tamasmeszaros
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "MinAreaBoundingBox.hpp"
 
 #include <libslic3r/ExPolygon.hpp>
-#include <libslic3r/BoundingBox.hpp>
 
 #if defined(_MSC_VER) && defined(__clang__)
 #define BOOST_NO_CXX17_HDR_STRING_VIEW
 #endif
 
 #include <boost/rational.hpp>
-#include <Int128.hpp>
+
+#include <libslic3r/Int128.hpp>
 
 #if !defined(HAS_INTRINSIC_128_TYPE) || defined(__APPLE__)
 #include <boost/multiprecision/integer.hpp>
 #endif
 
-#include <libnest2d/backends/libslic3r/geometries.hpp> // IWYU pragma: keep
+#include <libnest2d/backends/libslic3r/geometries.hpp>
 #include <libnest2d/utils/rotcalipers.hpp>
-#include <cmath>
-#include <cinttypes>
-#include <cstdlib>
-
-#include "libnest2d/common.hpp"
-#include "libnest2d/geometry_traits.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -115,16 +103,4 @@ void remove_collinear_points(ExPolygon &p)
 {
     p = libnest2d::removeCollinearPoints<ExPolygon>(p, Unit(0));
 }
-
-double fit_into_box_rotation(const Polygon &shape, const BoundingBox &bb)
-{
-    using namespace libnest2d;
-
-    _Box<Point> box{{bb.min.x(), bb.min.y()}, {bb.max.x(), bb.max.y()}};
-
-    return fitIntoBoxRotation<Polygon, TCompute<Polygon>, Rational>(shape,
-                                                                    box,
-                                                                    EPSILON);
-}
-
 } // namespace Slic3r

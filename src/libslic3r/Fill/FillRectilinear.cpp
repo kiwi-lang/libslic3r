@@ -1,35 +1,23 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) 2017 Eyal Soha
-///|/
-///|/ ported from lib/Slic3r/Fill/PlanePath.pm:
-///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
-#include <boost/container/small_vector.hpp>
-#include <boost/log/trivial.hpp>
-#include <oneapi/tbb/scalable_allocator.h>
-#include <boost/container/vector.hpp>
+#include <stdlib.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <random>
-#include <cstdint>
-#include <numeric>
-#include <string>
-#include <utility>
-#include <vector>
-#include <cstdlib>
 
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Geometry.hpp"
-#include "libslic3r/Surface.hpp"
-#include "libslic3r/ShortestPath.hpp"
+#include <boost/container/small_vector.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/static_assert.hpp>
+
+#include "../ClipperUtils.hpp"
+#include "../ExPolygon.hpp"
+#include "../Geometry.hpp"
+#include "../Surface.hpp"
+#include "../ShortestPath.hpp"
+#include "../VariableWidth.hpp"
+
 #include "FillRectilinear.hpp"
-#include "libslic3r/Fill/FillBase.hpp"
-#include "libslic3r/Utils.hpp"
 
 // #define SLIC3R_DEBUG
 // #define INFILL_DEBUG_OUTPUT
@@ -41,13 +29,13 @@
 #endif
 
 #if defined(SLIC3R_DEBUG) || defined(INFILL_DEBUG_OUTPUT)
-    #include "libslic3r/SVG.hpp"
+    #include "SVG.hpp"
 #endif
 
 #include <cassert>
 
 // We want our version of assert.
-#include "libslic3r/libslic3r.h"
+#include "../libslic3r.h"
 
 namespace Slic3r {
 
@@ -421,7 +409,7 @@ public:
         //double miterLimit = 10.;
         // FIXME: Resolve properly the cases when it is constructed with aoffset1 = 0 and aoffset2 = 0,
         //        that is used in sample_grid_pattern() for Lightning infill.
-        // assert(aoffset1 < 0);
+        //assert(aoffset1 < 0);
         assert(aoffset2 <= 0);
         // assert(aoffset2 == 0 || aoffset2 < aoffset1);
 //        bool sticks_removed = 
@@ -1363,11 +1351,8 @@ static SegmentIntersection& end_of_vertical_run(SegmentedIntersectionLine &il, S
 	return const_cast<SegmentIntersection&>(end_of_vertical_run(std::as_const(il), std::as_const(start)));
 }
 
-static void traverse_graph_generate_polylines(const ExPolygonWithOffset              &poly_with_offset,
-                                              const FillParams                       &params,
-                                              std::vector<SegmentedIntersectionLine> &segs,
-                                              const bool                              consistent_pattern,
-                                              Polylines                              &polylines_out)
+static void traverse_graph_generate_polylines(
+	const ExPolygonWithOffset& poly_with_offset, const FillParams& params, const coord_t link_max_length, std::vector<SegmentedIntersectionLine>& segs, Polylines& polylines_out)
 {
     // For each outer only chords, measure their maximum distance to the bow of the outer contour.
     // Mark an outer only chord as consumed, if the distance is low.
@@ -1401,28 +1386,34 @@ static void traverse_graph_generate_polylines(const ExPolygonWithOffset         
         pointLast = polylines_out.back().points.back();
     for (;;) {
         if (i_intersection == -1) {
-            // The path has been interrupted. Find a next starting point.
-            for (int i_vline2 = 0; i_vline2 < int(segs.size()); ++i_vline2) {
+            // The path has been interrupted. Find a next starting point, closest to the previous extruder position.
+            coordf_t dist2min = std::numeric_limits<coordf_t>().max();
+            for (int i_vline2 = 0; i_vline2 < int(segs.size()); ++ i_vline2) {
                 const SegmentedIntersectionLine &vline = segs[i_vline2];
-                if (!vline.intersections.empty()) {
+                if (! vline.intersections.empty()) {
                     assert(vline.intersections.size() > 1);
                     // Even number of intersections with the loops.
                     assert((vline.intersections.size() & 1) == 0);
                     assert(vline.intersections.front().type == SegmentIntersection::OUTER_LOW);
-
-                    // For infill that needs to be consistent between layers (like Zig Zag),
-                    // we are switching between forward and backward passes based on the line index.
-                    const bool forward_pass = !consistent_pattern || (i_vline2 % 2 == 0);
-                    for (int i = 0; i < int(vline.intersections.size()); ++i) {
-                        const int                  intrsctn_idx = forward_pass ? i : int(vline.intersections.size()) - i - 1;
-                        const SegmentIntersection &intrsctn     = vline.intersections[intrsctn_idx];
+                    for (int i = 0; i < int(vline.intersections.size()); ++ i) {
+                        const SegmentIntersection& intrsctn = vline.intersections[i];
                         if (intrsctn.is_outer()) {
-                            assert(intrsctn.is_low() || intrsctn_idx > 0);
-                            const bool consumed = intrsctn.is_low() ? intrsctn.consumed_vertical_up : vline.intersections[intrsctn_idx - 1].consumed_vertical_up;
-                            if (!consumed) {
-                                i_vline        = i_vline2;
-                                i_intersection = intrsctn_idx;
-                                goto found;
+                            assert(intrsctn.is_low() || i > 0);
+                            bool consumed = intrsctn.is_low() ?
+                                intrsctn.consumed_vertical_up :
+                                vline.intersections[i - 1].consumed_vertical_up;
+                            if (! consumed) {
+                                coordf_t dist2 = sqr(coordf_t(pointLast(0) - vline.pos)) + sqr(coordf_t(pointLast(1) - intrsctn.pos()));
+                                if (dist2 < dist2min) {
+                                    dist2min = dist2;
+                                    i_vline = i_vline2;
+                                    i_intersection = i;
+                                    //FIXME We are taking the first left point always. Verify, that the caller chains the paths
+                                    // by a shortest distance, while reversing the paths if needed.
+                                    //if (polylines_out.empty())
+                                        // Initial state, take the first line, which is the first from the left.
+                                    goto found;
+                                }
                             }
                         }
                     }
@@ -1495,13 +1486,9 @@ static void traverse_graph_generate_polylines(const ExPolygonWithOffset         
             // 1) Find possible connection points on the previous / next vertical line.
         	int  i_prev = it->left_horizontal();
         	int  i_next = it->right_horizontal();
-
-            // To ensure pattern consistency between layers for Zig Zag infill, we always
-            // try to connect to the next vertical line and never to the previous vertical line.
-            bool intersection_prev_valid = intersection_on_prev_vertical_line_valid(segs, i_vline, i_intersection) && !consistent_pattern;
+            bool intersection_prev_valid = intersection_on_prev_vertical_line_valid(segs, i_vline, i_intersection);
             bool intersection_next_valid = intersection_on_next_vertical_line_valid(segs, i_vline, i_intersection);
             bool intersection_horizontal_valid = intersection_prev_valid || intersection_next_valid;
-
             // Mark both the left and right connecting segment as consumed, because one cannot go to this intersection point as it has been consumed.
             if (i_prev != -1)
                 segs[i_vline - 1].intersections[i_prev].consumed_perimeter_right = true;
@@ -2407,7 +2394,7 @@ static std::vector<MonotonicRegionLink> chain_monotonic_regions(
 
     // Probability (unnormalized) of traversing a link between two monotonic regions.
 	auto path_probability = [
-#if !defined(__APPLE__) && !defined(__clang__)
+#ifndef __APPLE__
         // clang complains when capturing constexpr constants.
         pheromone_alpha, pheromone_beta
 #endif // __APPLE__
@@ -2749,17 +2736,6 @@ static void polylines_from_paths(const std::vector<MonotonicRegionLink> &path, c
     }
 }
 
-// The extended bounding box of the whole object that covers any rotation of every layer.
-BoundingBox FillRectilinear::extended_object_bounding_box() const {
-    BoundingBox out = this->bounding_box;
-    out.merge(Point(out.min.y(), out.min.x()));
-    out.merge(Point(out.max.y(), out.max.x()));
-
-    // The bounding box is scaled by sqrt(2.) to ensure that the bounding box
-    // covers any possible rotations.
-    return out.scaled(sqrt(2.));
-}
-
 bool FillRectilinear::fill_surface_by_lines(const Surface *surface, const FillParams &params, float angleBase, float pattern_shift, Polylines &polylines_out)
 {
     // At the end, only the new polylines will be rotated back.
@@ -2789,14 +2765,11 @@ bool FillRectilinear::fill_surface_by_lines(const Surface *surface, const FillPa
         return true;
     }
 
-    // For infill that needs to be consistent between layers (like Zig Zag),
-    // we use bounding box of whole object to match vertical lines between layers.
-    BoundingBox bounding_box_src = poly_with_offset.bounding_box_src();
-    BoundingBox bounding_box     = this->has_consistent_pattern() ? this->extended_object_bounding_box() : bounding_box_src;
+    BoundingBox bounding_box = poly_with_offset.bounding_box_src();
 
     // define flow spacing according to requested density
     if (params.full_infill() && !params.dont_adjust) {
-        line_spacing = this->_adjust_solid_spacing(bounding_box_src.size().x(), line_spacing);
+        line_spacing = this->_adjust_solid_spacing(bounding_box.size()(0), line_spacing);
         this->spacing = unscale<double>(line_spacing);
     } else {
         // extend bounding box so that our pattern will be aligned with other layers
@@ -2874,9 +2847,8 @@ bool FillRectilinear::fill_surface_by_lines(const Surface *surface, const FillPa
 		    std::vector<MonotonicRegionLink> path = chain_monotonic_regions(regions, poly_with_offset, segs, rng);
 		    polylines_from_paths(path, poly_with_offset, segs, polylines_out);
         }
-	} else {
-		traverse_graph_generate_polylines(poly_with_offset, params, segs, this->has_consistent_pattern(), polylines_out);
-    }
+	} else
+		traverse_graph_generate_polylines(poly_with_offset, params, this->link_max_length, segs, polylines_out);
 
 #ifdef SLIC3R_DEBUG
     {
@@ -2999,18 +2971,18 @@ Polylines FillMonotonic::fill_surface(const Surface *surface, const FillParams &
     params2.monotonic = true;
     Polylines polylines_out;
     if (! fill_surface_by_lines(surface, params2, 0.f, 0.f, polylines_out))
-        BOOST_LOG_TRIVIAL(error) << "FillMonotonic::fill_surface() failed to fill a region.";
+        BOOST_LOG_TRIVIAL(error) << "FillMonotonous::fill_surface() failed to fill a region.";
     return polylines_out;
 }
 
-Polylines FillMonotonicLines::fill_surface(const Surface *surface, const FillParams &params)
+Polylines FillMonotonicLine::fill_surface(const Surface* surface, const FillParams& params)
 {
     FillParams params2 = params;
     params2.monotonic = true;
     params2.anchor_length_max = 0.0f;
     Polylines polylines_out;
     if (! fill_surface_by_lines(surface, params2, 0.f, 0.f, polylines_out))
-        BOOST_LOG_TRIVIAL(error) << "FillMonotonicLines::fill_surface() failed to fill a region.";
+        BOOST_LOG_TRIVIAL(error) << "Failed to fill a region by MonotonicLine pattern";
     return polylines_out;
 }
 
@@ -3022,6 +2994,10 @@ Polylines FillGrid::fill_surface(const Surface *surface, const FillParams &param
             { { 0.f, 0.f }, { float(M_PI / 2.), 0.f } },
             polylines_out))
         BOOST_LOG_TRIVIAL(error) << "FillGrid::fill_surface() failed to fill a region.";
+
+    if (this->layer_id % 2 == 1)
+        for (int i = 0; i < polylines_out.size(); i++)
+            std::reverse(polylines_out[i].begin(), polylines_out[i].end());
     return polylines_out;
 }
 
@@ -3088,7 +3064,7 @@ Polylines FillSupportBase::fill_surface(const Surface *surface, const FillParams
 // BoundingBox for whole layers instead of bounding box just around processing ExPolygon.
 // Using just BoundingBox around processing ExPolygon could produce two points closer
 // than spacing (in cases where two ExPolygon are closer than spacing).
-Points sample_grid_pattern(const ExPolygon &expolygon, coord_t spacing, const BoundingBox &global_bounding_box)
+Points sample_grid_pattern(const ExPolygon& expolygon, coord_t spacing, const BoundingBox& global_bounding_box)
 {
     ExPolygonWithOffset poly_with_offset(expolygon, 0, 0, 0);
     std::vector<SegmentedIntersectionLine> segs = slice_region_by_vertical_lines(
@@ -3110,17 +3086,210 @@ Points sample_grid_pattern(const ExPolygon &expolygon, coord_t spacing, const Bo
     return out;
 }
 
-Points sample_grid_pattern(const ExPolygons &expolygons, coord_t spacing, const BoundingBox &global_bounding_box)
+Points sample_grid_pattern(const ExPolygons& expolygons, coord_t spacing, const BoundingBox& global_bounding_box)
 {
     Points out;
-    for (const ExPolygon &expoly : expolygons)
+    for (const ExPolygon& expoly : expolygons)
         append(out, sample_grid_pattern(expoly, spacing, global_bounding_box));
     return out;
 }
 
-Points sample_grid_pattern(const Polygons &polygons, coord_t spacing, const BoundingBox &global_bounding_box)
+Points sample_grid_pattern(const Polygons& polygons, coord_t spacing, const BoundingBox& global_bounding_box)
 {
     return sample_grid_pattern(union_ex(polygons), spacing, global_bounding_box);
 }
+
+// Orca: Introduced FillMonotonicLines from Prusa slicer, inhereting from FillRectilinear
+// This replaces the FillMonotonicLineWGapFill from BBS
+Polylines FillMonotonicLines::fill_surface(const Surface *surface, const FillParams &params)
+{
+    FillParams params2 = params;
+    params2.monotonic = true;
+    params2.anchor_length_max = 0.0f;
+    Polylines polylines_out;
+    if (! fill_surface_by_lines(surface, params2, 0.f, 0.f, polylines_out))
+        BOOST_LOG_TRIVIAL(error) << "FillMonotonicLines::fill_surface() failed to fill a region.";
+    return polylines_out;
+}
+    
+// Orca: Replaced with FillMonotonicLines from Prusa slicer. Moved gap fill algorithm to
+// FillBase to perform gap fill for all fill types.
+/*void FillMonotonicLineWGapFill::fill_surface_extrusion(const Surface* surface, const FillParams& params, ExtrusionEntitiesPtr& out)
+{
+    ExtrusionEntityCollection *coll_nosort = new ExtrusionEntityCollection();
+    coll_nosort->no_sort = this->no_sort();
+
+    Polylines polylines_rectilinear;
+    Surface rectilinear_surface{ *surface };
+    FillParams params2 = params;
+    params2.monotonic = true;
+    params2.anchor_length_max = 0.0f;
+    //BBS: always don't adjust the spacing of top surface infill
+    params2.dont_adjust = true;
+
+    //BBS: always use no overlap expolygons to avoid overflow in top surface
+    //for (const ExPolygon &rectilinear_area : this->no_overlap_expolygons) {
+    //    rectilinear_surface.expolygon = rectilinear_area;
+    //    fill_surface_by_lines(&rectilinear_surface, params2, polylines_rectilinear);
+    //}
+    
+    // Orca: The above causes pockmarks in top layer surfaces with a properly calibrated printer with PA and EM tuned.
+    // Revert implementation to the prusa slicer approach that respects the infill/wall overlap setting
+    // while retaining the gap fill logic below. The user can adjust the overlap calue to reduce overflow if needed.
+    fill_surface_by_lines(surface, params2, polylines_rectilinear);
+    ExPolygons unextruded_areas;
+    Flow new_flow = params.flow;
+    if (!polylines_rectilinear.empty()) {
+        // calculate actual flow from spacing (which might have been adjusted by the infill
+        // pattern generator)
+        double flow_mm3_per_mm = params.flow.mm3_per_mm();
+        double flow_width = params.flow.width();
+        if (params.using_internal_flow) {
+            // if we used the internal flow we're not doing a solid infill
+            // so we can safely ignore the slight variation that might have
+            // been applied to f->spacing
+        }
+        else {
+            new_flow = params.flow.with_spacing(this->spacing);
+            flow_mm3_per_mm = new_flow.mm3_per_mm();
+            flow_width = new_flow.width();
+        }
+
+        extrusion_entities_append_paths_with_wipe(
+                coll_nosort->entities, std::move(polylines_rectilinear),
+                params.extrusion_role,
+                flow_mm3_per_mm, float(flow_width), params.flow.height());
+        unextruded_areas = diff_ex(this->no_overlap_expolygons, union_ex(coll_nosort->polygons_covered_by_spacing(10)));
+    }
+    else
+        unextruded_areas = this->no_overlap_expolygons;
+
+    //gapfill
+    ExPolygons gapfill_areas = union_ex(unextruded_areas);
+    if (!this->no_overlap_expolygons.empty())
+            gapfill_areas = intersection_ex(gapfill_areas, this->no_overlap_expolygons);
+    if (gapfill_areas.size() > 0 && params.density >= 1) {
+        double min = 0.2 * new_flow.scaled_spacing() * (1 - INSET_OVERLAP_TOLERANCE);
+        double max = 2. * new_flow.scaled_spacing();
+        ExPolygons gaps_ex = diff_ex(
+            opening_ex(gapfill_areas, float(min / 2.)),
+            offset2_ex(gapfill_areas, -float(max / 2.), float(max / 2. + ClipperSafetyOffset)));
+        //BBS: sort the gap_ex to avoid mess travel
+        Points ordering_points;
+        ordering_points.reserve(gaps_ex.size());
+        ExPolygons gaps_ex_sorted;
+        gaps_ex_sorted.reserve(gaps_ex.size());
+        for (const ExPolygon &ex : gaps_ex)
+            ordering_points.push_back(ex.contour.first_point());
+        std::vector<Points::size_type> order = chain_points(ordering_points);
+        for (size_t i : order)
+            gaps_ex_sorted.emplace_back(std::move(gaps_ex[i]));
+
+        ThickPolylines polylines;
+        for (ExPolygon& ex : gaps_ex_sorted) {
+            //BBS: Use DP simplify to avoid duplicated points and accelerate medial-axis calculation as well.
+            ex.douglas_peucker(SCALED_RESOLUTION * 0.1);
+            ex.medial_axis(min, max, &polylines);
+        }
+
+        if (!polylines.empty() && !is_bridge(params.extrusion_role)) {
+            polylines.erase(std::remove_if(polylines.begin(), polylines.end(),
+                [&](const ThickPolyline& p) {
+                    return p.length() < scale_(params.config->filter_out_gap_fill.value);
+                }), polylines.end());
+
+            ExtrusionEntityCollection gap_fill;
+            variable_width(polylines, erGapFill, params.flow, gap_fill.entities);
+            coll_nosort->append(std::move(gap_fill.entities));
+
+        }
+    }
+
+    if (!coll_nosort->empty()) {
+        out.push_back(coll_nosort);
+    } else {
+        delete coll_nosort;
+    }
+}
+
+void FillMonotonicLineWGapFill::fill_surface_by_lines(const Surface* surface, const FillParams& params, Polylines& polylines_out)
+{
+    // At the end, only the new polylines will be rotated back.
+    size_t n_polylines_out_initial = polylines_out.size();
+
+    // Shrink the input polygon a bit first to not push the infill lines out of the perimeters.
+//    const float INFILL_OVERLAP_OVER_SPACING = 0.3f;
+    const float INFILL_OVERLAP_OVER_SPACING = 0.45f;
+    assert(INFILL_OVERLAP_OVER_SPACING > 0 && INFILL_OVERLAP_OVER_SPACING < 0.5f);
+
+    // Rotate polygons so that we can work with vertical lines here
+    std::pair<float, Point> rotate_vector = this->_infill_direction(surface);
+
+    assert(params.full_infill());
+    coord_t line_spacing = params.flow.scaled_spacing();
+
+    // On the polygons of poly_with_offset, the infill lines will be connected.
+    ExPolygonWithOffset poly_with_offset(
+        surface->expolygon,
+        - rotate_vector.first, 
+        float(scale_(0 - (0.5 - INFILL_OVERLAP_OVER_SPACING) * params.flow.spacing())),
+        float(scale_(0 - 0.5f * params.flow.spacing())));
+    if (poly_with_offset.n_contours_inner == 0) {
+        // Not a single infill line fits.
+        //FIXME maybe one shall trigger the gap fill here?
+        return;
+    }
+
+    BoundingBox bounding_box = poly_with_offset.bounding_box_src();
+
+    // define flow spacing according to requested density
+    if (params.full_infill() && !params.dont_adjust) {
+        line_spacing = this->_adjust_solid_spacing(bounding_box.size()(0), line_spacing);
+        this->spacing = unscale<double>(line_spacing);
+    } else {
+        // extend bounding box so that our pattern will be aligned with other layers
+        // Transform the reference point to the rotated coordinate system.
+        Point refpt = rotate_vector.second.rotated(-rotate_vector.first);
+        bounding_box.merge(align_to_grid(
+            bounding_box.min,
+            Point(line_spacing, line_spacing),
+            refpt));
+    }
+
+    // Intersect a set of euqally spaced vertical lines wiht expolygon.
+    size_t  n_vlines = (bounding_box.max(0) - bounding_box.min(0) + line_spacing - 1) / line_spacing;
+	coord_t x0 = bounding_box.min(0);
+	if (params.full_infill())
+		x0 += (line_spacing + coord_t(SCALED_EPSILON)) / 2;
+
+    std::vector<SegmentedIntersectionLine> segs = slice_region_by_vertical_lines(poly_with_offset, n_vlines, x0, line_spacing);
+    // Connect by horizontal / vertical links, classify the links based on link_max_length as too long.
+	connect_segment_intersections_by_contours(poly_with_offset, segs, params, link_max_length);
+
+    // Sometimes the outer contour pinches the inner contour from both sides along a single vertical line.
+    // This situation is not handled correctly by generate_montonous_regions().
+    // Insert phony OUTER_HIGH / OUTER_LOW pairs at the position where the contour is pinched.
+    pinch_contours_insert_phony_outer_intersections(segs);
+	std::vector<MonotonicRegion> regions = generate_montonous_regions(segs);
+
+	connect_monotonic_regions(regions, poly_with_offset, segs);
+    if (! regions.empty()) {
+		std::mt19937_64 rng;
+		std::vector<MonotonicRegionLink> path = chain_monotonic_regions(regions, poly_with_offset, segs, rng);
+		polylines_from_paths(path, poly_with_offset, segs, polylines_out);
+    }
+
+    // paths must be rotated back
+    for (Polylines::iterator it = polylines_out.begin() + n_polylines_out_initial; it != polylines_out.end(); ++ it) {
+        // No need to translate, the absolute position is irrelevant.
+        // it->translate(- rotate_vector.second(0), - rotate_vector.second(1));
+        assert(! it->has_duplicate_points());
+        it->rotate(rotate_vector.first);
+        //FIXME rather simplify the paths to avoid very short edges?
+        //assert(! it->has_duplicate_points());
+        it->remove_duplicate_points();
+    }
+}*/
+
 
 } // namespace Slic3r

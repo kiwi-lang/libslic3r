@@ -1,28 +1,16 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportCommon_hpp_
 #define slic3r_SupportCommon_hpp_
-
-#include <algorithm>
-#include <utility>
-#include <vector>
 
 #include "../Layer.hpp"
 #include "../Polygon.hpp"
 #include "../Print.hpp"
 #include "SupportLayer.hpp"
 #include "SupportParameters.hpp"
-#include "libslic3r/PrintConfig.hpp"
 
 namespace Slic3r {
 
 class PrintObject;
 class SupportLayer;
-class Layer;
-class LayerRegion;
-struct SlicingParameters;
 
 namespace FFFSupport {
 

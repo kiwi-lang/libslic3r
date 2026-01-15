@@ -1,16 +1,7 @@
-///|/ Copyright (c) Prusa Research 2016 - 2019 David Kocík @kocikdav, Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Based on implementation by @platsch
 
 #ifndef slic3r_SlicingAdaptive_hpp_
 #define slic3r_SlicingAdaptive_hpp_
-
-#include <stddef.h>
-#include <utility>
-#include <vector>
-#include <cstddef>
 
 #include "Slicing.hpp"
 #include "admesh/stl.h"
@@ -19,7 +10,6 @@ namespace Slic3r
 {
 
 class ModelVolume;
-class ModelObject;
 
 class SlicingAdaptive
 {

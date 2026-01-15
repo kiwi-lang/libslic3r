@@ -1,28 +1,15 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas
-///|/ Copyright (c) SuperSlicer 2023 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_GCode_PressureEqualizer_hpp_
 #define slic3r_GCode_PressureEqualizer_hpp_
 
-#include <assert.h>
-#include <stddef.h>
-#include <queue>
-#include <algorithm>
-#include <cmath>
-#include <string>
-#include <vector>
-#include <cassert>
-#include <cstddef>
+#include "../libslic3r.h"
+#include "../PrintConfig.hpp"
 
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/ExtrusionRole.hpp"
+#include <queue>
 
 namespace Slic3r {
 
 struct LayerResult;
+
 class GCodeG1Formatter;
 
 //#define PRESSURE_EQUALIZER_STATISTIC
@@ -77,7 +64,7 @@ private:
         float positive;
         float negative;
     };
-    ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(GCodeExtrusionRole::Count)];
+    ExtrusionRateSlope              m_max_volumetric_extrusion_rate_slopes[size_t(ExtrusionRole::erCount)];
     float                           m_max_volumetric_extrusion_rate_slope_positive;
     float                           m_max_volumetric_extrusion_rate_slope_negative;
 
@@ -89,11 +76,13 @@ private:
     // X,Y,Z,E,F
     float                           m_current_pos[5];
     size_t                          m_current_extruder;
-    GCodeExtrusionRole              m_current_extrusion_role;
-    // Set only for external and internal perimeters. The external perimeter has value 0, the first internal perimeter has 1, and so on.
-    std::optional<uint16_t>         m_current_perimeter_index;
+    ExtrusionRole     m_current_extrusion_role;
     bool                            m_retracted;
     bool                            m_use_relative_e_distances;
+
+	// Maximum segment length to split a long segment if the initial and the final flow rate differ.
+	// Smaller value means a smoother transition between two different flow rates.
+    float                           m_max_segment_length;
 
     // Indicate if extrude set speed block was opened using the tag ";_EXTRUDE_SET_SPEED"
     // or not (not opened, or it was closed using the tag ";_EXTRUDE_END").
@@ -137,9 +126,9 @@ private:
         float       feedrate()      const { return pos_end[4]; }
         float       time()          const { return dist_xyz() / feedrate(); }
         float       time_inv()      const { return feedrate() / dist_xyz(); }
-        float       volumetric_correction_avg() const {
-            // Cap the correction to 0.05 - 1.00000001 to avoid zero feedrate.
-            float avg_correction = std::max(0.05f, 0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate);
+        float       volumetric_correction_avg() const { 
+        // Orca: cap the correction to 0.05 - 1.00000001 to avoid zero feedrate
+            float avg_correction = std::max(0.05f,0.5f * (volumetric_extrusion_rate_start + volumetric_extrusion_rate_end) / volumetric_extrusion_rate); 
             assert(avg_correction > 0.f);
             assert(avg_correction <= 1.00000001f);
             return avg_correction;
@@ -164,10 +153,7 @@ private:
         // Index of the active extruder.
         size_t      extruder_id;
         // Extrusion role of this segment.
-        GCodeExtrusionRole extrusion_role;
-
-        // Set only for external and internal perimeters. The external perimeter has value 0, the first internal perimeter has 1, and so on.
-        std::optional<uint16_t> perimeter_index;
+        ExtrusionRole extrusion_role;
 
         // Current volumetric extrusion rate.
         float       volumetric_extrusion_rate;
@@ -183,12 +169,9 @@ private:
 
         bool        adjustable_flow       = false;
 
-        void        update_end_position(const float *position_end, const bool *position_provided_original);
-        void        update_end_position(const float *position_start, const float *position_end, float t, const bool *position_provided_original);
+        bool        extrude_set_speed_tag = false;
+        bool        extrude_end_tag       = false;
     };
-
-    using GCodeLines = std::vector<GCodeLine>;
-    using GCodeLinesConstIt = GCodeLines::const_iterator;
 
     // Output buffer will only grow. It will not be reallocated over and over.
     std::vector<char>               output_buffer;
@@ -201,9 +184,8 @@ private:
 #endif
 
     bool process_line(const char *line, const char *line_end, GCodeLine &buf);
+    long advance_segment_beyond_small_gap(long idx_cur_pos);
     void output_gcode_line(size_t line_idx);
-
-    GCodeLinesConstIt advance_segment_beyond_small_gap(const GCodeLinesConstIt &last_extruding_line_it) const;
 
     // Go back from the current circular_buffer_pos and lower the feedtrate to decrease the slope of the extrusion rate changes.
     // Then go forward and adjust the feedrate to decrease the slope of the extrusion rate changes.

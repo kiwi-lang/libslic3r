@@ -1,16 +1,12 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportLayer_hpp_
 #define slic3r_SupportLayer_hpp_
 
 #include <oneapi/tbb/scalable_allocator.h>
 #include <oneapi/tbb/spin_mutex.h>
 // for Slic3r::deque
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Polygon.hpp"
+#include "../libslic3r.h"
+#include "../ClipperUtils.hpp"
+#include "../Polygon.hpp"
 
 namespace Slic3r::FFFSupport {
 
