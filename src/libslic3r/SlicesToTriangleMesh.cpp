@@ -2,17 +2,18 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <boost/log/trivial.hpp>
-#include <cassert>
-#include <cstddef>
+#include <numeric>
 
 #include "SlicesToTriangleMesh.hpp"
+
 #include "libslic3r/Execution/ExecutionTBB.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/Tesselate.hpp"
-#include "libslic3r/Execution/Execution.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/TriangleMesh.hpp"
+
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/parallel_reduce.h>
+
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r {
 

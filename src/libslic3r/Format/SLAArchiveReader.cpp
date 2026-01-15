@@ -5,7 +5,7 @@
 #include "SLAArchiveReader.hpp"
 #include "SL1.hpp"
 #include "SL1_SVG.hpp"
-#include "libslic3r/I18N.hpp"
+#include "I18N.hpp"
 
 #include "libslic3r/SlicesToTriangleMesh.hpp"
 
@@ -21,7 +21,7 @@ namespace Slic3r {
 
 std::unique_ptr<SLAArchiveReader> SLAArchiveReader::create(
     const std::string       &fname,
-    const std::string       &format_id,
+    OutputFormat             format_id,
     SLAImportQuality         quality,
     const ProgrFn & progr)
 {
@@ -37,28 +37,30 @@ std::unique_ptr<SLAArchiveReader> SLAArchiveReader::create(
 
     std::unique_ptr<SLAArchiveReader> ret;
 
-    auto registry = registered_sla_archives();
+    const std::map<OutputFormat, ArchiveEntry> &registry = registered_sla_archives();
 
-    auto arch_from = registry.begin();
-    auto arch_to   = registry.end();
+    //auto arch_from = registry.begin();
+    //auto arch_to   = registry.end();
 
-    auto arch_it = registry.find(ArchiveEntry{format_id.c_str()});
+    auto arch_it = registry.find(format_id);
     if (arch_it != registry.end()) {
-        arch_from = arch_it;
-        arch_to   = arch_it;
+        const ArchiveEntry &archive = arch_it->second;
+        if (archive.rdfactoryfn) {
+            return archive.rdfactoryfn(fname, quality, progr);
+        }
     }
 
     if (!ext.empty()) {
         if (ext.front() == '.')
             ext.erase(ext.begin());
 
-        for (auto it = arch_from; !ret && it != arch_to; ++it) {
-            const auto &entry = *it;
-            if (entry.rdfactoryfn) {
-                auto extensions = get_extensions(entry);
+        for (arch_it = registry.begin(); arch_it != registry.end(); ++arch_it) {
+            const ArchiveEntry &archive = arch_it->second;
+            if (archive.rdfactoryfn) {
+                auto extensions = get_extensions(archive);
                 for (const std::string& supportedext : extensions) {
                     if (ext == supportedext) {
-                        ret = entry.rdfactoryfn(fname, quality, progr);
+                        ret = archive.rdfactoryfn(fname, quality, progr);
                         break;
                     }
                 }
@@ -79,11 +81,11 @@ static SliceParams get_slice_params(const DynamicPrintConfig &cfg)
     if (!opt_layerh || !opt_init_layerh)
         throw MissingProfileError("Invalid SL1 / SL1S file");
 
-    return SliceParams{opt_layerh->getFloat(), opt_init_layerh->getFloat()};
+    return SliceParams{opt_layerh->value, opt_init_layerh->value};
 }
 
 ConfigSubstitutions import_sla_archive(const std::string       &zipfname,
-                                       const std::string       &format_id,
+                                       OutputFormat             format_id,
                                        indexed_triangle_set    &out,
                                        DynamicPrintConfig      &profile,
                                        SLAImportQuality         quality,
@@ -108,7 +110,7 @@ ConfigSubstitutions import_sla_archive(const std::string       &zipfname,
 }
 
 ConfigSubstitutions import_sla_archive(const std::string  &zipfname,
-                                       const std::string  &format_id,
+                                       OutputFormat        format_id,
                                        DynamicPrintConfig &out)
 {
     ConfigSubstitutions ret;

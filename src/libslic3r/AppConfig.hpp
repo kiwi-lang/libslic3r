@@ -10,6 +10,10 @@
 #include <string>
 
 #include <boost/algorithm/string/trim_all.hpp>
+#include <boost/filesystem/path.hpp>
+#ifdef WIN32
+#include <boost/nowide/fstream.hpp>
+#endif
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Semver.hpp"
@@ -24,6 +28,63 @@ public:
 		Editor,
 		GCodeViewer
 	};
+	enum class EAppColorType : unsigned char
+	{
+		Platter,
+		Main,
+		Highlight,
+	};
+
+	enum HardwareType : uint8_t
+	{
+		//first 4 bits for cpu
+		hHasCpu = uint8_t(0x0F),
+		hCpuIntel = 1,
+		hCpuAmd = 2,
+		hCpuApple = 3,
+		hCpuArmGeneric = 4,
+		hCpuOther = 5,
+		//last 4 bits for gpu
+		hHasGpu = uint8_t(0xF0),
+		hGpuIntel = 1 << 4,
+		hGpuAmd = 2 << 4,
+		hGpuApple = 3 << 4,
+		hGpuArmGeneric = 4 << 4,
+		hGpuOther = 5 << 4,
+		hGpuNvidia = 6 << 4,
+	};
+
+	struct ConfigFileInfo {
+		bool correct_checksum{ false };
+		bool contains_null{ false };
+	};
+
+	struct LayoutEntry {
+		std::string name;
+		std::string description;
+		boost::filesystem::path path;
+		Semver version;
+		LayoutEntry() {}
+		LayoutEntry(std::string name, std::string description, boost::filesystem::path path, Semver version) : name(name), description(description), path(path), version(version) {}
+	};
+	struct Tag {
+		ConfigOptionMode tag;
+		std::string name;
+		std::string description;
+		std::string color_hash; // with the hash, '#' + 6 digits.
+		Tag() {}
+		Tag(std::string name, std::string description, ConfigOptionMode tag, std::string color_hash) : name(name), description(description), tag(tag), color_hash(color_hash) {}
+	};
+
+    struct ConfigurationEntry
+    {
+        std::string installed_name;
+        Semver      version;
+        boost::filesystem::path config_path;
+        boost::filesystem::path exe_path;
+        std::map<std::string, std::string> other_keys;
+        boost::filesystem::path get_config_path(const std::string &data_dir_root) const;
+    };
 
 	explicit AppConfig(EAppMode mode) :
 		m_mode(mode)
@@ -31,10 +92,20 @@ public:
 		this->reset();
 	}
 
-	// Clear and reset to defaults.
-	void 			   	reset();
-	// Override missing or keys with their defaults.
-	void 			   	set_defaults();
+    // Clear and reset to defaults.
+    void                reset();
+    // Override missing or keys with their defaults.
+    void                set_defaults();
+    void                init_ui_layout();
+    ConfigurationEntry  get_installation() { return m_data_dir; }
+    boost::filesystem::path data_dir() { return m_data_dir.config_path; }
+    // return false if already init
+    bool                init_root_data_dir(const std::string &default_app_data_path);
+    std::string         get_root_data_dir() { return m_data_dir_root; }
+    void                load_installed_repo(const boost::filesystem::path &filename);
+    void                save_installed_repo();
+    const std::vector<ConfigurationEntry> &get_all_slicer_installed() const { return m_all_slic3r_installed; }
+    void                set_new_installation(ConfigurationEntry new_install);
 
 	// Load the slic3r.ini from a user profile directory (or a datadir, if configured).
 	// return error string or empty strinf
@@ -68,6 +139,8 @@ public:
 		{ std::string value; this->get("", key, value); return value; }
 	bool  				get_bool(const std::string &key) const
 		{ return this->get(key) == "1"; }
+	int  				get_int(const std::string &key) const
+		{ return atoi(this->get(key).c_str()); }
 	bool			    set(const std::string &section, const std::string &key, const std::string &value)
 	{
 #ifndef NDEBUG
@@ -126,6 +199,11 @@ public:
 	std::string 		get_last_output_dir(const std::string& alt, const bool removable = false) const;
 	bool                update_last_output_dir(const std::string &dir, const bool removable = false);
 
+	bool                get_show_overwrite_dialog() const { return get("show_overwrite_dialog") != "0"; }
+
+	// create color
+	uint32_t			create_color(float saturation, float value, EAppColorType color_template = EAppColorType::Main);
+
 	// reset the current print / filament / printer selections, so that 
 	// the  PresetBundle::load_selections(const AppConfig &config) call will select
 	// the first non-default preset when called.
@@ -133,6 +211,21 @@ public:
 
 	// Get the default config path from Slic3r::data_dir().
 	std::string			config_path() const;
+
+    // Get the current path to ui_layout directory
+    boost::filesystem::path  layout_config_path();
+    LayoutEntry              get_ui_layout();
+    std::vector<LayoutEntry> get_ui_layouts() { return m_ui_layout; }
+
+    // Tags
+    std::vector<Tag>         tags() { return m_tags; }
+
+    // splashscreen
+    std::string              splashscreen(bool is_editor);
+
+    // Hardware
+    HardwareType			 hardware() { return m_hardware; }
+    void					 set_hardware_type(HardwareType hard);
 
 	// Returns true if the user's data directory comes from before Slic3r 1.40.0 (no updating)
 	bool 				legacy_datadir() const { return m_legacy_datadir; }
@@ -157,7 +250,7 @@ public:
     std::vector<std::string> get_recent_projects() const;
     bool set_recent_projects(const std::vector<std::string>& recent_projects);
 
-	bool set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz);
+	bool set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll);
 	std::vector<std::string> get_mouse_device_names() const;
 	bool get_mouse_device_translation_speed(const std::string& name, double& speed) const
 		{ return get_3dmouse_device_numeric_value(name, "translation_speed", speed); }
@@ -171,11 +264,27 @@ public:
 		{ return get_3dmouse_device_numeric_value(name, "zoom_speed", speed); }
 	bool get_mouse_device_swap_yz(const std::string& name, bool& swap) const
 		{ return get_3dmouse_device_numeric_value(name, "swap_yz", swap); }
+	bool get_mouse_device_invert_x(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_x", invert); }
+	bool get_mouse_device_invert_y(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_y", invert); }
+	bool get_mouse_device_invert_z(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_z", invert); }
+	bool get_mouse_device_invert_yaw(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_yaw", invert); }
+	bool get_mouse_device_invert_pitch(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_pitch", invert); }
+	bool get_mouse_device_invert_roll(const std::string& name, bool& invert) const
+		{ return get_3dmouse_device_numeric_value(name, "invert_roll", invert); }
 
 	static const std::string SECTION_FILAMENTS;
     static const std::string SECTION_MATERIALS;
     static const std::string SECTION_EMBOSS_STYLE;
 
+#ifdef WIN32
+	static std::string appconfig_md5_hash_line(const std::string_view data);
+	static ConfigFileInfo check_config_file_and_verify_checksum(boost::nowide::ifstream& ifs);
+#endif
 private:
 	template<typename T>
 	bool get_3dmouse_device_numeric_value(const std::string &device_name, const char *parameter_name, T &out) const 
@@ -203,6 +312,19 @@ private:
 	Semver                                                      m_orig_version;
 	// Whether the existing version is before system profiles & configuration updating
 	bool                                                        m_legacy_datadir;
+    // ui_layout installed
+    std::vector<LayoutEntry>                                    m_ui_layout;
+    // tags installed
+	std::vector<Tag>                                            m_tags;
+	//splashscreen
+	std::pair<std::string,std::string>                          m_default_splashscreen;
+	// hardware type
+	HardwareType												m_hardware;
+    // our installation. can be empty if data_dir() is set by command line
+    ConfigurationEntry                                          m_data_dir;
+    // directory of all configurations for all "installed" version.
+    std::string                                                 m_data_dir_root;
+    std::vector<ConfigurationEntry>                             m_all_slic3r_installed;
 };
 
 } // namespace Slic3r

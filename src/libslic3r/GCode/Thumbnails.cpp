@@ -3,23 +3,15 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "Thumbnails.hpp"
-
-#include <qoi.h>
-#include <jpeglib.h>
-#include <jmorecfg.h>
-#include <stdlib.h>
-#include <boost/algorithm/string/case_conv.hpp>
-#include <boost/log/trivial.hpp>
-#include <string>
-#include <cstdint>
-
-#include "libslic3r/miniz_extension.hpp" // IWYU pragma: keep
+#include "../miniz_extension.hpp"
 #include "../format.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/GCode/ThumbnailData.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "miniz.h"
+
+#include <qoi/qoi.h>
+#include <jpeglib.h>
+#include <jerror.h>
+
+#include <boost/algorithm/string.hpp>
+#include <string>
 
 namespace Slic3r::GCodeThumbnails {
 
@@ -28,7 +20,7 @@ using namespace std::literals;
 struct CompressedPNG : CompressedImageBuffer 
 {
     ~CompressedPNG() override { if (data) mz_free(data); }
-    std::string_view tag() const override { return "thumbnail"sv; }
+    std::string_view tag() const override { return "thumbnail_PNG"sv; }
 };
 
 struct CompressedJPG : CompressedImageBuffer
@@ -37,16 +29,58 @@ struct CompressedJPG : CompressedImageBuffer
     std::string_view tag() const override { return "thumbnail_JPG"sv; }
 };
 
-struct CompressedQOI : CompressedImageBuffer 
+struct CompressedQOI : CompressedImageBuffer
 {
     ~CompressedQOI() override { free(data); }
     std::string_view tag() const override { return "thumbnail_QOI"sv; }
 };
 
-std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailData &data)
+struct CompressedBIQU : CompressedImageBuffer
+{
+    ~CompressedBIQU() override { free(data); }
+    std::string_view tag() const override { return "thumbnail_BIQU"sv; }
+};
+
+std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailData& data)
 {
     auto out = std::make_unique<CompressedPNG>();
     out->data = tdefl_write_image_to_png_file_in_memory_ex((const void*)data.pixels.data(), data.width, data.height, 4, &out->size, MZ_DEFAULT_LEVEL, 1);
+    return out;
+}
+
+std::unique_ptr<CompressedImageBuffer> compress_thumbnail_biqu(const ThumbnailData& data)
+{
+    // Take vector of RGBA pixels and flip the image vertically
+    std::vector<uint8_t> rgba_pixels(data.pixels.size());
+    const size_t row_size = data.width * 4;
+    for (size_t y = 0; y < data.height; ++y)
+        ::memcpy(rgba_pixels.data() + (data.height - y - 1) * row_size, data.pixels.data() + y * row_size, row_size);
+
+    auto out = std::make_unique<CompressedBIQU>();
+    //size: height is number of lines. Add 2 byte to each line for the ';' and '\n'. Each pixel is 4 byte, +1 for the 0 of the c_str
+    out->size = data.height * (2 + data.width * 4) + 1;
+    out->data = malloc(out->size);
+
+    int idx = 0;
+    std::stringstream tohex;
+    tohex << std::setfill('0') << std::hex;
+    for (size_t y = 0; y < data.height; ++y) {
+        tohex << ";";
+        for (size_t x = 0; x < data.width; ++x) {
+            uint16_t pixel = 0;
+            //r
+            pixel |= uint16_t((rgba_pixels[y * row_size + x * 4 + 0 ] & 0x000000F8) >> 3);
+            //g
+            pixel |= uint16_t((rgba_pixels[y * row_size + x * 4 + 1 ] & 0x000000FC) << 3);
+            //b
+            pixel |= uint16_t((rgba_pixels[y * row_size + x * 4 + 2 ] & 0x000000F8) << 8);
+            tohex << std::setw(4) << pixel;
+        }
+        tohex << "\n";
+    }
+    std::string str = tohex.str();
+    assert(str.size() + 1 == out->size);
+    ::memcpy(out->data, (const void*)str.c_str(), out->size);
     return out;
 }
 
@@ -129,10 +163,12 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail(const ThumbnailData &d
             return compress_thumbnail_jpg(data);
         case GCodeThumbnailsFormat::QOI:
             return compress_thumbnail_qoi(data);
+        case GCodeThumbnailsFormat::BIQU:
+            return compress_thumbnail_biqu(data);
     }
 }
 
-std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbnail_list(const std::string& thumbnails_string, const std::string_view def_ext /*= "PNG"sv*/)
+std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbnail_list_from_prusa(const std::string& thumbnails_string, const std::string_view def_ext /*= "PNG"sv*/)
 {
     if (thumbnails_string.empty())
         return {};
@@ -182,15 +218,32 @@ std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbna
     return std::make_pair(std::move(thumbnails_list), errors);
 }
 
+std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbnail_list(const std::vector<Vec2d>& thumbnails, GCodeThumbnailsFormat format)
+{
+    if (thumbnails.empty())
+        return {};
+
+    ThumbnailErrors errors;
+    GCodeThumbnailDefinitionsList thumbnails_list;
+
+    // generate thumbnails data to process it
+    for (const Vec2d &point : thumbnails) {
+        thumbnails_list.emplace_back(std::make_pair(format, point));
+    }
+
+    return std::make_pair(std::move(thumbnails_list), errors);
+}
+
 std::pair<GCodeThumbnailDefinitionsList, ThumbnailErrors> make_and_check_thumbnail_list(const ConfigBase& config)
 {
     // ??? Unit tests or command line slicing may not define "thumbnails" or "thumbnails_format".
     // ??? If "thumbnails_format" is not defined, export to PNG.
 
     // generate thumbnails data to process it
-
-    if (const auto thumbnails_value = config.option<ConfigOptionString>("thumbnails"))
-        return make_and_check_thumbnail_list(thumbnails_value->value);
+    assert(config.option<ConfigOptionPoints>("thumbnails"));
+    assert(config.option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format"));
+    if (const auto thumbnails_value = config.option<ConfigOptionPoints>("thumbnails"))
+        return make_and_check_thumbnail_list(thumbnails_value->get_values(), config.option<ConfigOptionEnum<GCodeThumbnailsFormat>>("thumbnails_format")->value);
 
     return {};
 }

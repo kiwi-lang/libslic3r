@@ -4,15 +4,11 @@
 #ifndef LIGHTNING_GENERATOR_H
 #define LIGHTNING_GENERATOR_H
 
-#include <stddef.h>
+#include "Layer.hpp"
+
 #include <functional>
 #include <memory>
 #include <vector>
-#include <cstddef>
-
-#include "Layer.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r 
 {

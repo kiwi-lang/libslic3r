@@ -13,26 +13,16 @@
 #ifndef slic3r_TreeModelVolumes_hpp
 #define slic3r_TreeModelVolumes_hpp
 
-#include <boost/functional/hash.hpp>
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <mutex>
 #include <unordered_map>
-#include <functional>
-#include <map>
-#include <optional>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstddef>
+
+#include <boost/functional/hash.hpp>
 
 #include "TreeSupportCommon.hpp"
+
 #include "../Point.hpp"
 #include "../Polygon.hpp"
 #include "../PrintConfig.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r
 {
@@ -495,7 +485,7 @@ private:
     /*!
      * \brief Storage for areas that should be avoided, like support blocker or previous generated trees.
      */
-    std::vector<Polygons> m_anti_overhang;
+    std::vector<ExPolygons> m_anti_overhang;
     /*!
      * \brief Radii that can be ignored by ceilRadius as they will never be requested, sorted.
      */

@@ -3,24 +3,27 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "JumpPointSearch.hpp"
-
+#include "BoundingBox.hpp"
+#include "ExPolygon.hpp"
+#include "Point.hpp"
+#include "libslic3r/AStar.hpp"
+#include "libslic3r/KDTreeIndirect.hpp"
+#include "libslic3r/Polygon.hpp"
+#include "libslic3r/Polyline.hpp"
+#include "libslic3r/libslic3r.h"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
 #include <limits>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <utility>
 
-#include "BoundingBox.hpp"
-#include "Point.hpp"
-#include "libslic3r/AStar.hpp"
-#include "libslic3r/KDTreeIndirect.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/Layer.hpp"
+#include <oneapi/tbb/scalable_allocator.h>
 
 //#define DEBUG_FILES
 #ifdef DEBUG_FILES
@@ -300,7 +303,7 @@ Polyline JPSPathFinder::find_path(const Point &p0, const Point &p1)
         return r;
     };
     auto          scaled_point = [](const Point &p) { return Point::new_scale(p.x(), p.y()); };
-    ::Slic3r::SVG svg(debug_out_path(("path_jps" + std::to_string(print_z) + "_" + std::to_string(rand() % 1000)).c_str()).c_str(),
+    ::Slic3r::SVG svg(debug_out_path(("path_jps" + std::to_string(print_z) + "_" + std::to_string(safe_rand(1000))).c_str()).c_str(),
                       BoundingBox(scaled_point(search_box.min), scaled_point(search_box.max)));
     for (const auto &p : inpassable) { svg.draw(scaled_point(p), "black", scale_(0.4)); }
     for (const auto &qn : astar_cache) { svg.draw(scaled_point(qn.second.node.position), "blue", scale_(0.3)); }

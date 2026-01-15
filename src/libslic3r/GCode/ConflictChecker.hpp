@@ -6,24 +6,16 @@
 #ifndef slic3r_ConflictChecker_hpp_
 #define slic3r_ConflictChecker_hpp_
 
+#include "libslic3r/Print.hpp"
+
 #include <queue>
 #include <vector>
 #include <optional>
-#include <map>
-#include <string>
-#include <utility>
 
-#include "libslic3r/Print.hpp"
-#include "libslic3r/ExtrusionEntity.hpp"
-#include "libslic3r/ExtrusionRole.hpp"
-#include "libslic3r/GCode/GCodeProcessor.hpp"
-#include "libslic3r/Layer.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polyline.hpp"
 
+//used only in Print::process() after brim generation, to check for object collision
+// arc is done just after, so we don't need to worry about it
 namespace Slic3r {
-class ExtrusionEntityCollection;
 
 struct LineWithID
 {
@@ -66,11 +58,12 @@ public:
         LineWithIDs lines;
         for (const ExtrusionPath &path : _piles[_curPileIdx]) {
             Polyline check_polyline;
-            for (int i = 0; i < (int)_offsets.size(); ++i) {
-                check_polyline = path.polyline;
-                check_polyline.translate(_offsets[i]);
-                Lines tmpLines = check_polyline.lines();
-                for (const Line& line : tmpLines) { lines.emplace_back(line, _id, i, path.role()); }
+            for (int idx_offset = 0; idx_offset < (int)_offsets.size(); ++idx_offset) {
+                check_polyline = path.as_polyline().to_polyline();
+                check_polyline.translate(_offsets[idx_offset]);
+                for (size_t idx_pt = 1; idx_pt < check_polyline.size(); ++idx_pt) {
+                    lines.emplace_back(Line(check_polyline.points[idx_pt - 1], check_polyline.points[idx_pt]), _id, idx_offset, path.role());
+                }
             }
         }
         return lines;

@@ -4,16 +4,11 @@
 #include "SkeletalTrapezoidationGraph.hpp"
 
 #include <ankerl/unordered_dense.h>
-#include <boost/log/trivial.hpp>
-#include <algorithm>
-#include <iostream>
-#include <cassert>
-#include <cinttypes>
 
+#include <boost/log/trivial.hpp>
+
+#include "utils/linearAlg2D.hpp"
 #include "../Line.hpp"
-#include "libslic3r/Arachne/SkeletalTrapezoidationEdge.hpp"
-#include "libslic3r/Arachne/SkeletalTrapezoidationJoint.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r::Arachne
 {
@@ -319,7 +314,8 @@ void SkeletalTrapezoidationGraph::collapseSmallEdges(coord_t snap_dist)
     }
 }
 
-void SkeletalTrapezoidationGraph::makeRib(edge_t *&prev_edge, const Point &start_source_point, const Point &end_source_point) {
+void SkeletalTrapezoidationGraph::makeRib(edge_t*& prev_edge, Point start_source_point, Point end_source_point, bool is_next_to_start_or_end)
+{
     Point p;
     Line(start_source_point, end_source_point).distance_to_infinite_squared(prev_edge->to->p, &p);
     coord_t dist = (prev_edge->to->p - p).cast<int64_t>().norm();

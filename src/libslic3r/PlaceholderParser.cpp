@@ -7,35 +7,22 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "PlaceholderParser.hpp"
-
-#include <cstring>
-#include <ctime>
-#include <iomanip>
-#include <map>
-#include <algorithm>
-#include <cmath>
-#include <iterator>
-#include <utility>
-#include <cassert>
-#include <cinttypes>
-#include <cstdio>
-#include <cstdlib>
-
 #include "Exception.hpp"
 #include "Flow.hpp"
 #include "Utils.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/libslic3r.h"
-#include "libslic3r_version.h"
+#include <cstring>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <map>
 #ifdef _MSC_VER
-    #include <stdlib.h>  // provides **_environ
+    #include <cstdlib>  // provides **_environ
 #else
+    #include <unistd.h>  // provides **environ
 #endif
 
 #ifdef __APPLE__
 #include <crt_externs.h>
-
 #undef environ
 #define environ (*_NSGetEnviron())
 #else
@@ -46,18 +33,9 @@
     #endif
 #endif
 
+#include <boost/algorithm/string.hpp>
+#include <boost/log/trivial.hpp>
 #include <boost/nowide/convert.hpp>
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/cstdint.hpp>
-#include <boost/fusion/container/vector/vector.hpp>
-#include <boost/phoenix/phoenix.hpp>
-#include <boost/proto/operators.hpp>
-#include <boost/proto/proto.hpp>
-#include <boost/proto/traits.hpp>
-#include <boost/range/iterator_range_core.hpp>
-#include <boost/regex/v5/regex.hpp>
-#include <boost/spirit/repository/include/qi.hpp>
-#include <boost/throw_exception.hpp>
 
 // Spirit v2.5 allows you to suppress automatic generation
 // of predefined terminals to speed up complation. With
@@ -68,17 +46,30 @@
 
 #define BOOST_RESULT_OF_USE_DECLTYPE
 #define BOOST_SPIRIT_USE_PHOENIX_V3
+#include <boost/config/warning_disable.hpp>
+#include <boost/lexical_cast.hpp>
 #include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/qi_lit.hpp>
+#include <boost/phoenix/core.hpp>
+#include <boost/phoenix/operator.hpp>
+#include <boost/phoenix/fusion.hpp>
+#include <boost/phoenix/stl.hpp>
+#include <boost/phoenix/object.hpp>
+#include <boost/fusion/include/adapt_struct.hpp>
+#include <boost/spirit/repository/include/qi_distinct.hpp>
+#include <boost/spirit/repository/include/qi_iter_pos.hpp>
+#include <boost/variant/recursive_variant.hpp>
 #include <boost/phoenix/bind/bind_function.hpp>
+
 #include <iostream>
 #include <string>
 
 // #define USE_CPP11_REGEX
 #ifdef USE_CPP11_REGEX
     #include <regex>
-
     #define SLIC3R_REGEX_NAMESPACE std
 #else /* USE_CPP11_REGEX */
+    #include <boost/regex.hpp>
     #define SLIC3R_REGEX_NAMESPACE boost
 #endif /* USE_CPP11_REGEX */
 
@@ -139,7 +130,7 @@ std::vector<std::string> PlaceholderParser::config_diff(const DynamicPrintConfig
 // are expected to be addressed by the extruder ID, therefore
 // if a vector configuration value is addressed without an index,
 // a current extruder ID is used.
-bool PlaceholderParser::apply_config(const DynamicConfig &rhs)
+bool PlaceholderParser::apply_config(const DynamicPrintConfig &rhs)
 {
     bool modified = false;
     for (const t_config_option_key &opt_key : rhs.keys()) {
@@ -151,13 +142,13 @@ bool PlaceholderParser::apply_config(const DynamicConfig &rhs)
     return modified;
 }
 
-void PlaceholderParser::apply_only(const DynamicConfig &rhs, const std::vector<std::string> &keys)
+void PlaceholderParser::apply_only(const DynamicPrintConfig &rhs, const std::vector<std::string> &keys)
 {
     for (const t_config_option_key &opt_key : keys)
         this->set(opt_key, rhs.option(opt_key)->clone());
 }
 
-void PlaceholderParser::apply_config(DynamicConfig &&rhs)
+void PlaceholderParser::apply_config(DynamicPrintConfig &&rhs)
 {
 	m_config += std::move(rhs);
 }
@@ -283,6 +274,7 @@ namespace client
         void                set_i_lite(int v) { assert(this->type() != TYPE_STRING); Data tmp; tmp.i = v; m_data.set(tmp); m_type = TYPE_INT; }
         int                 as_i() const { return this->type() == TYPE_INT ? this->i() : int(this->d()); }
         int                 as_i_rounded() const { return this->type() == TYPE_INT ? this->i() : int(std::round(this->d())); }
+        int                 as_i_ceiled() const { return this->type() == TYPE_INT ? this->i() : int(std::ceil(this->d())); }
         double&             d()       { return m_data.d; }
         double              d() const { return m_data.d; }
         void                set_d(double v) { this->reset(); this->set_d_lite(v); }
@@ -390,6 +382,24 @@ namespace client
                 return expr(static_cast<int>(std::round(this->d())), start_pos, this->it_range.end());
             default:
                 this->throw_exception("Cannot round a non-numeric value.");
+            }
+            assert(false);
+            // Suppress compiler warnings.
+            return expr();
+        }
+
+        expr ceil(const Iterator start_pos) const
+        { 
+            switch (this->type()) {
+            case TYPE_EMPTY:
+                // Inside an if / else block to be skipped.
+                return expr();
+            case TYPE_INT:
+                return expr(this->i(), start_pos, this->it_range.end());
+            case TYPE_DOUBLE:
+                return expr(static_cast<int>(std::ceil(this->d())), start_pos, this->it_range.end());
+            default:
+                this->throw_exception("Cannot ceil a non-numeric value.");
             }
             assert(false);
             // Suppress compiler warnings.
@@ -810,7 +820,10 @@ namespace client
         // If false, the macro_processor will evaluate a full macro.
         // If true, the macro processor will evaluate just a boolean condition using the full expressive power of the macro processor.
         bool                     just_boolean_expression = false;
+        inline static bool       ignore_legacy = false;
         std::string              error_message;
+
+        static std::map<t_config_option_key, std::unique_ptr<ConfigOption>> checked_vars;
 
         // Table to translate symbol tag to a human readable error message.
         static std::map<std::string, std::string> tag_to_error_message;
@@ -853,7 +866,91 @@ namespace client
                 opt = config->option(opt_key);
             if (opt == nullptr && external_config != nullptr)
                 opt = external_config->option(opt_key);
+            if (opt == nullptr) {
+                auto it = MyContext::checked_vars.find(opt_key);
+                if (it != MyContext::checked_vars.end())
+                    opt = it->second.get();
+            }
             return opt;
+        }
+
+
+        // copy of ConfigBase::get_computed_value
+        double get_computed_value(const t_config_option_key& opt_key) const
+        {
+            // Get stored option value.
+            const ConfigOption* raw_opt = this->optptr(opt_key);
+            if (raw_opt == nullptr) {
+                std::stringstream ss; ss << "You can't define an option that need " << opt_key << " without defining it!";
+                throw std::runtime_error(ss.str());
+            }
+
+            if (!raw_opt->is_vector()) {
+                if (raw_opt->type() == coFloat)
+                    return static_cast<const ConfigOptionFloat*>(raw_opt)->value;
+                if (raw_opt->type() == coInt)
+                    return static_cast<const ConfigOptionInt*>(raw_opt)->value;
+                if (raw_opt->type() == coBool)
+                    return static_cast<const ConfigOptionBool*>(raw_opt)->value ? 1 : 0;
+                const ConfigOptionDef* opt_def = nullptr;
+                const ConfigOptionPercent* cast_opt = nullptr;
+                if (raw_opt->type() == coFloatOrPercent) {
+                    if (!static_cast<const ConfigOptionFloatOrPercent*>(raw_opt)->percent)
+                        return static_cast<const ConfigOptionFloatOrPercent*>(raw_opt)->value;
+                    // Get option definition.
+                    opt_def = print_config_def.get(opt_key);
+                    cast_opt = static_cast<const ConfigOptionFloatOrPercent*>(raw_opt);
+                    assert(opt_def != nullptr);
+                }
+                if (raw_opt->type() == coPercent) {
+                    // Get option definition.
+                    opt_def = print_config_def.get(opt_key);
+                    assert(opt_def != nullptr);
+                    cast_opt = static_cast<const ConfigOptionPercent*>(raw_opt);
+                }
+                if (opt_def != nullptr) {
+                    //if over no other key, it's most probably a simple %
+                    if (opt_def->ratio_over == "")
+                        return cast_opt->get_abs_value(1);
+                    // Compute absolute value over the absolute value of the base option.
+                    //FIXME there are some ratio_over chains, which end with empty ratio_with.
+                    // For example, XXX_extrusion_width parameters are not handled by get_abs_value correctly.
+                    if (!opt_def->ratio_over.empty() && opt_def->ratio_over != "depends")
+                        return cast_opt->get_abs_value(this->get_computed_value(opt_def->ratio_over));
+
+                    std::stringstream ss; ss << "ConfigBase::get_abs_value(): " << opt_key << " has no valid ratio_over to compute of";
+                    throw ConfigurationError(ss.str());
+                }
+            } else {
+                // check if it's an extruder_id array
+                const ConfigOptionVectorBase* vector_opt = static_cast<const ConfigOptionVectorBase*>(raw_opt);
+                if (vector_opt->is_extruder_size()) {
+
+                    if (raw_opt->type() == coFloats || raw_opt->type() == coInts || raw_opt->type() == coBools)
+                        return vector_opt->get_float(int(current_extruder_id));
+                    if (raw_opt->type() == coFloatsOrPercents) {
+                        const ConfigOptionFloatsOrPercents* opt_fl_per = static_cast<const ConfigOptionFloatsOrPercents*>(raw_opt);
+                        if (!opt_fl_per->get_at(current_extruder_id).percent)
+                            return opt_fl_per->get_at(current_extruder_id).value;
+
+                        const ConfigOptionDef* opt_def = print_config_def.get(opt_key);
+                        if (!opt_def->ratio_over.empty() && opt_def->ratio_over != "depends")
+                            return opt_fl_per->get_abs_value(current_extruder_id, this->get_computed_value(opt_def->ratio_over));
+                        std::stringstream ss; ss << "ConfigBase::get_abs_value(): " << opt_key << " has no valid ratio_over to compute of";
+                        throw ConfigurationError(ss.str());
+                    }
+                    if (raw_opt->type() == coPercents) {
+                        const ConfigOptionPercents* opt_per = static_cast<const ConfigOptionPercents*>(raw_opt);
+                        const ConfigOptionDef* opt_def = print_config_def.get(opt_key);
+                        if (!opt_def->ratio_over.empty() && opt_def->ratio_over != "depends")
+                            return opt_per->get_abs_value(current_extruder_id, this->get_computed_value(opt_def->ratio_over));
+                        std::stringstream ss; ss << "ConfigBase::get_abs_value(): " << opt_key << " has no valid ratio_over to compute of";
+                        throw ConfigurationError(ss.str());
+                    }
+                }
+            }
+            std::stringstream ss; ss << "ConfigBase::get_abs_value(): " << opt_key << " has not a valid option type for get_abs_value()";
+            throw ConfigurationError(ss.str());
         }
 
         const ConfigOption*     resolve_symbol(const std::string &opt_key) const { return this->optptr(opt_key); }
@@ -882,6 +979,10 @@ namespace client
                 return;
 
             std::string         opt_key_str(opt_key.begin(), opt_key.end());
+            if (ignore_legacy) {
+                output = "[" + opt_key_str + "]";
+                return;
+            }
             const ConfigOption *opt = ctx->resolve_symbol(opt_key_str);
             size_t              idx = ctx->current_extruder_id;
             if (opt == nullptr) {
@@ -902,8 +1003,6 @@ namespace client
             if (opt == nullptr)
                 ctx->throw_exception("Variable does not exist", opt_key);
             if (opt->is_scalar()) {
-                if (opt->is_nil())
-                    ctx->throw_exception("Trying to reference an undefined (nil) optional variable", opt_key);
                 output = opt->serialize();
             } else {
                 const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase*>(opt);
@@ -911,9 +1010,7 @@ namespace client
                     ctx->throw_exception("Indexing an empty vector variable", opt_key);
                 if (idx >= vec->size())
                     idx = 0;
-                if (vec->is_nil(idx))
-                    ctx->throw_exception("Trying to reference an undefined (nil) element of vector of optional values", opt_key);
-                output = vec->vserialize()[idx];
+                output = vec->serialize_at(idx);
             }
         }
 
@@ -927,6 +1024,10 @@ namespace client
                 return;
 
             std::string         opt_key_str(opt_key.begin(), opt_key.end());
+            if (ignore_legacy) {
+                output = "[" + opt_key_str + "]";
+                return;
+            }
             const ConfigOption *opt = ctx->resolve_symbol(opt_key_str);
             if (opt == nullptr) {
                 // Check whether the opt_key ends with '_'.
@@ -947,14 +1048,12 @@ namespace client
                 ctx->throw_exception("Variable does not exist", opt_key);
             if (opt_index->type() != coInt)
                 ctx->throw_exception("Indexing variable has to be integer", opt_key);
-			int idx = opt_index->getInt();
+			int idx = opt_index->get_int();
 			if (idx < 0)
                 ctx->throw_exception("Negative vector index", opt_key);
             if (idx >= (int)vec->size())
                 idx = 0;
-            if (vec->is_nil(idx))
-                ctx->throw_exception("Trying to reference an undefined (nil) element of vector of optional values", opt_key);
-			output = vec->vserialize()[idx];
+			output = vec->serialize_at(idx);
         }
 
         static void resolve_variable(
@@ -974,6 +1073,38 @@ namespace client
                 output.opt = opt;
             }
             output.it_range = opt_key;
+        }
+        
+        // function to check if a var exist & add a dummy var if not
+        template <typename Iterator>
+        static void check_variable(
+            const MyContext* ctx,
+            boost::iterator_range<Iterator>& opt_key,
+            Iterator& end_pos,
+            expr& out,
+            std::unique_ptr<ConfigOption>&& default_val)
+        {
+            bool has_default_value = default_val.get() != nullptr;
+            t_config_option_key key = std::string(opt_key.begin(), opt_key.end());
+            const ConfigOption* opt = nullptr;
+            if (ctx->config_override != nullptr)
+                opt = ctx->config_override->option(key);
+            if (opt == nullptr)
+                opt = ctx->config->option(key);
+            if (opt == nullptr && ctx->external_config != nullptr)
+                opt = ctx->external_config->option(key);
+            if (opt == nullptr && (has_default_value || MyContext::checked_vars.find(key) == MyContext::checked_vars.end()) ) {
+                // set stub bool value only if a default() hasn't been called yet.
+                if (!has_default_value) {
+                    default_val.reset(new ConfigOptionBool(false));
+                }
+                // set flag to say "it's a var that isn't here, please ignore it"
+                default_val->flags |= ConfigOption::FCO_PLACEHOLDER_TEMP;
+                MyContext::checked_vars[key] = std::move(default_val);
+            }
+            // return (wanted for exists() but not for default())
+            if(!has_default_value)
+                out = expr(opt != nullptr, out.it_range.begin(), end_pos);
         }
 
         static void store_variable_index(
@@ -1002,57 +1133,107 @@ namespace client
             if (ctx->skipping())
                 return;
 
-            assert(opt.opt->is_scalar());
-
-            if (opt.opt->is_nil())
-                ctx->throw_exception("Trying to reference an undefined (nil) optional variable", opt.it_range);
+            //assert(opt.opt->is_scalar());
+            std::string opt_key(opt.it_range.begin(), opt.it_range.end());
+            const ConfigOptionVectorBase* vector_opt = nullptr;
+            if (opt.opt->is_vector()) {
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (!vector_opt->is_extruder_size())
+                    ctx->throw_exception("Referencing a vector variable when scalar is expected", opt.it_range);
+            }
 
             switch (opt.opt->type()) {
-            case coFloat:   output.set_d(opt.opt->getFloat());   break;
-            case coInt:     output.set_i(opt.opt->getInt());     break;
+            case coFloat:   output.set_d(opt.opt->get_float());   break;
+            case coInt:     output.set_i(opt.opt->get_int());     break;
             case coString:  output.set_s(static_cast<const ConfigOptionString*>(opt.opt)->value); break;
-            case coPercent: output.set_d(opt.opt->getFloat());   break;
+            case coPercent: output.set_d(opt.opt->get_float());   break;
             case coEnum:
+            case coGraph:
             case coPoint:   output.set_s(opt.opt->serialize());  break;
-            case coBool:    output.set_b(opt.opt->getBool());    break;
+            case coBool:    output.set_b(opt.opt->get_bool());    break;
             case coFloatOrPercent:
             {
-                std::string opt_key(opt.it_range.begin(), opt.it_range.end());
                 if (boost::ends_with(opt_key, "extrusion_width")) {
-                    // Extrusion width supports defaults and a complex graph of dependencies.
+                	// Extrusion width use the first nozzle diameter
                     output.set_d(Flow::extrusion_width(opt_key, *ctx, static_cast<unsigned int>(ctx->current_extruder_id)));
                 } else if (! static_cast<const ConfigOptionFloatOrPercent*>(opt.opt)->percent) {
                     // Not a percent, just return the value.
-                    output.set_d(opt.opt->getFloat());
+                    output.set_d(opt.opt->get_float());
                 } else {
-                    // Resolve dependencies using the "ratio_over" link to a parent value.
-    			    const ConfigOptionDef  *opt_def = print_config_def.get(opt_key);
-    			    assert(opt_def != nullptr);
-    			    double v = opt.opt->getFloat() * 0.01; // percent to ratio
-    			    for (;;) {
-    			        const ConfigOption *opt_parent = opt_def->ratio_over.empty() ? nullptr : ctx->resolve_symbol(opt_def->ratio_over);
-    			        if (opt_parent == nullptr)
-    			            ctx->throw_exception("FloatOrPercent variable failed to resolve the \"ratio_over\" dependencies", opt.it_range);
-    			        if (boost::ends_with(opt_def->ratio_over, "extrusion_width")) {
-                    		// Extrusion width supports defaults and a complex graph of dependencies.
+                	// Resolve dependencies using the "ratio_over" link to a parent value.
+                    const ConfigOptionDef  *opt_def = print_config_def.get(opt_key);
+			        assert(opt_def != nullptr);
+			        double v = opt.opt->get_float() * 0.01; // percent to ratio
+                    if (opt_def) for (;;) {
+			        	const ConfigOption *opt_parent = opt_def->ratio_over.empty() ? nullptr : ctx->resolve_symbol(opt_def->ratio_over);
+			        	if (opt_parent == nullptr)
+			                ctx->throw_exception("FloatOrPercent variable failed to resolve the \"ratio_over\" dependencies", opt.it_range);
+			            if (boost::ends_with(opt_def->ratio_over, "extrusion_width")) {
+                			// Extrusion width supports defaults and a dependency over nozzle diameter
                             assert(opt_parent->type() == coFloatOrPercent);
-                        	v *= Flow::extrusion_width(opt_def->ratio_over, static_cast<const ConfigOptionFloatOrPercent*>(opt_parent), *ctx, static_cast<unsigned int>(ctx->current_extruder_id));
-                        	break;
-                        }
-                        if (opt_parent->type() == coFloat || opt_parent->type() == coFloatOrPercent) {
-    			        	v *= opt_parent->getFloat();
-    			        	if (opt_parent->type() == coFloat || ! static_cast<const ConfigOptionFloatOrPercent*>(opt_parent)->percent)
-    			        		break;
-    			        	v *= 0.01; // percent to ratio
-    			        }
-    		        	// Continue one level up in the "ratio_over" hierarchy.
-    				    opt_def = print_config_def.get(opt_def->ratio_over);
-    				    assert(opt_def != nullptr);
-    			    }
+                    		v *= Flow::extrusion_width(opt_def->ratio_over, static_cast<const ConfigOptionFloatOrPercent*>(opt_parent), *ctx, static_cast<unsigned int>(ctx->current_extruder_id));
+                    		break;
+                    	}
+                        double val = ctx->get_computed_value(opt_def->ratio_over);
+                        v *= val;
+                        break;
+            //        	if (opt_parent->type() == coFloat || opt_parent->type() == coFloatOrPercent) {
+			        	//	v *= opt_parent->get_float();
+			        	//	if (opt_parent->type() == coFloat || ! static_cast<const ConfigOptionFloatOrPercent*>(opt_parent)->percent)
+			        	//		break;
+			        	//	v *= 0.01; // percent to ratio
+			        	//}
+		        		//// Continue one level up in the "ratio_over" hierarchy.
+				        //opt_def = print_config_def.get(opt_def->ratio_over);
+				        //assert(opt_def != nullptr);
+			        }
                     output.set_d(v);
-    	        }
-    		    break;
-    		}
+                }
+                break;
+            }
+            case coInts:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_i(((ConfigOptionVectorBase*)opt.opt)->get_int(int(ctx->current_extruder_id)));
+                    break;
+                } else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
+            case coFloats:
+            case coPercents:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_d(((ConfigOptionVectorBase*)opt.opt)->get_float(int(ctx->current_extruder_id)));
+                    break;
+                } else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
+            case coFloatsOrPercents:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_d(ctx->get_computed_value(opt_key));
+                    break;
+                } else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
+            case coStrings:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_s(((ConfigOptionStrings*)opt.opt)->get_at(ctx->current_extruder_id));
+                    break;
+                } else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
+            case coPoints:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_s(to_string(((ConfigOptionPoints*)opt.opt)->get_at(ctx->current_extruder_id)));
+                    break;
+                }else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
+            case coGraphs:
+                vector_opt = static_cast<const ConfigOptionVectorBase*>(opt.opt);
+                if (vector_opt->is_extruder_size()) {
+                    output.set_s(((ConfigOptionGraphs*)opt.opt)->get_at(ctx->current_extruder_id).serialize());
+                    break;
+                }else
+                    ctx->throw_exception("Unknown scalar variable type", opt.it_range);
             default:
                 ctx->throw_exception("Unsupported scalar variable type", opt.it_range);
             }
@@ -1065,23 +1246,33 @@ namespace client
             if (ctx->skipping())
                 return;
 
-            assert(opt.opt->is_vector());
-            if (! opt.has_index())
-                ctx->throw_exception("Referencing a vector variable when scalar is expected", opt.it_range);
+            if (opt.opt->is_scalar()) {
+                if (0 != (opt.opt->flags & ConfigOption::FCO_PLACEHOLDER_TEMP)) // fake var, from checked_vars
+                    return scalar_variable_to_expr(ctx, opt, output);
+                ctx->throw_exception("Referencing a scalar variable when vector is expected", opt.it_range);
+            }
             const ConfigOptionVectorBase* vec = static_cast<const ConfigOptionVectorBase*>(opt.opt);
             if (vec->empty())
                 ctx->throw_exception("Indexing an empty vector variable", opt.it_range);
-            size_t idx = (opt.index < 0) ? 0 : (opt.index >= int(vec->size())) ? 0 : size_t(opt.index);
-            if (vec->is_nil(idx))
-                ctx->throw_exception("Trying to reference an undefined (nil) element of vector of optional values", opt.it_range);
+            size_t idx = 0;
+            if (!opt.has_index()) {
+                if (!vec->is_extruder_size() && int(ctx->current_extruder_id) >= 0 && int(ctx->current_extruder_id) < int(vec->size()))
+                    ctx->throw_exception("Referencing a (not-extruder sized) vector variable when scalar is expected", opt.it_range);
+                idx = size_t(ctx->current_extruder_id);
+            } else if (opt.has_index() && opt.index >= 0 && opt.index < int(vec->size()))
+                idx = size_t(opt.index);
+            else if (!opt.has_index())
+                ctx->throw_exception("Referencing a vector variable when scalar is expected", opt.it_range);
             switch (opt.opt->type()) {
-            case coFloats:   output.set_d(static_cast<const ConfigOptionFloats*>(opt.opt)->values[idx]); break;
-            case coInts:     output.set_i(static_cast<const ConfigOptionInts*>(opt.opt)->values[idx]); break;
-            case coStrings:  output.set_s(static_cast<const ConfigOptionStrings*>(opt.opt)->values[idx]); break;
-            case coPercents: output.set_d(static_cast<const ConfigOptionPercents*>(opt.opt)->values[idx]); break;
-            case coPoints:   output.set_s(to_string(static_cast<const ConfigOptionPoints*>(opt.opt)->values[idx])); break;
-            case coBools:    output.set_b(static_cast<const ConfigOptionBools*>(opt.opt)->values[idx] != 0); break;
-                //case coEnums:    output.set_s(opt.opt->vserialize()[idx]); break;
+            case coFloats:   output.set_d(static_cast<const ConfigOptionFloats  *>(opt.opt)->get_at(idx)); break;
+            case coInts:     output.set_i(static_cast<const ConfigOptionInts    *>(opt.opt)->get_at(idx)); break;
+            case coStrings:  output.set_s(static_cast<const ConfigOptionStrings *>(opt.opt)->get_at(idx)); break;
+            case coPercents: output.set_d(static_cast<const ConfigOptionPercents*>(opt.opt)->get_at(idx)); break;
+            case coFloatsOrPercents: output.set_d(static_cast<const ConfigOptionFloatsOrPercents*>(opt.opt)->get_at(idx).value); break;
+            case coPoints:   output.set_s(to_string(static_cast<const ConfigOptionPoints  *>(opt.opt)->get_at(idx))); break;
+            case coGraphs:   output.set_s(static_cast<const ConfigOptionGraphs  *>(opt.opt)->get_at(idx).serialize()); break;
+            case coBools:    output.set_b(static_cast<const ConfigOptionBools   *>(opt.opt)->get_at(idx) != 0); break;
+                //case coEnums:    output.set_s(opt.opt->serialize_at(idx)); break;
             default:
                 ctx->throw_exception("Unsupported vector variable type", opt.it_range);
             }
@@ -1153,24 +1344,39 @@ namespace client
             switch (lhs.opt->type()) {
             case coFloats:
                 check_numeric(rhs);
-                static_cast<ConfigOptionFloats*>(vec)->values[lhs.index] = rhs.as_d();
+                static_cast<ConfigOptionFloats*>(vec)->set_at(rhs.as_d(), lhs.index);
                 break;
             case coInts:
                 check_numeric(rhs);
-                static_cast<ConfigOptionInts*>(vec)->values[lhs.index] = rhs.as_i();
+                static_cast<ConfigOptionInts*>(vec)->set_at(rhs.as_i(), lhs.index);
                 break;
             case coStrings:
-                static_cast<ConfigOptionStrings*>(vec)->values[lhs.index] = rhs.to_string();
+                static_cast<ConfigOptionStrings*>(vec)->set_at(rhs.to_string(), lhs.index);
                 break;
             case coPercents:
                 check_numeric(rhs);
-                static_cast<ConfigOptionPercents*>(vec)->values[lhs.index] = rhs.as_d();
+                static_cast<ConfigOptionPercents*>(vec)->set_at(rhs.as_d(), lhs.index);
                 break;
             case coBools:
                 if (rhs.type() != expr::TYPE_BOOL)
                     ctx->throw_exception("Right side is not a boolean expression", rhs.it_range);
-                static_cast<ConfigOptionBools*>(vec)->values[lhs.index] = rhs.b();
+                static_cast<ConfigOptionBools*>(vec)->set_at(rhs.b(), lhs.index);
                 break;
+            case coPoints: {
+                ConfigOptionPoint co_pt;
+                co_pt.deserialize(rhs.to_string());
+                static_cast<ConfigOptionPoints *>(vec)->set_at(co_pt.value, lhs.index);
+                break;
+            }
+            case coGraphs: {
+                ConfigOptionGraph co_gr;
+                co_gr.deserialize(rhs.to_string());
+                if (!co_gr.value.validate())
+                    ctx->throw_exception("Malformed graph string", lhs.it_range);
+                else
+                    static_cast<ConfigOptionGraphs *>(vec)->set_at(co_gr.value, lhs.index);
+                break;
+            }
             default:
                 ctx->throw_exception("Unsupported output vector variable type", lhs.it_range);
             }
@@ -1184,20 +1390,35 @@ namespace client
             switch (lhs.opt->type()) {
             case coFloats:
                 check_numeric(rhs_value);
-                static_cast<ConfigOptionFloats*>(opt)->values.assign(count, rhs_value.as_d());
+                static_cast<ConfigOptionFloats*>(opt)->set(std::vector<double>(count, rhs_value.as_d()));
                 break;
             case coInts:
                 check_numeric(rhs_value);
-                static_cast<ConfigOptionInts*>(opt)->values.assign(count, rhs_value.as_i());
+                static_cast<ConfigOptionInts*>(opt)->set(std::vector<int32_t>(count, rhs_value.as_i()));
                 break;
             case coStrings:
-                static_cast<ConfigOptionStrings*>(opt)->values.assign(count, rhs_value.to_string());
+                static_cast<ConfigOptionStrings*>(opt)->set(std::vector<std::string>(count, rhs_value.to_string()));
                 break;
             case coBools:
                 if (rhs_value.type() != expr::TYPE_BOOL)
                     rhs_value.throw_exception("Right side is not a boolean expression");
-                static_cast<ConfigOptionBools*>(opt)->values.assign(count, rhs_value.b());
+                static_cast<ConfigOptionBools*>(opt)->set(std::vector<uint8_t>(count, rhs_value.b()));
                 break;
+            case coPoints: {
+                ConfigOptionPoint co_pt;
+                co_pt.deserialize(rhs_value.to_string());
+                static_cast<ConfigOptionPoints *>(opt)->set(std::vector<Vec2d>(count, co_pt.value));
+                break;
+            }
+            case coGraphs: {
+                ConfigOptionGraph co_gr;
+                co_gr.deserialize(rhs_value.to_string());
+                if (!co_gr.value.validate())
+                    ctx->throw_exception("Malformed graph string", lhs.it_range);
+                else
+                    static_cast<ConfigOptionGraphs *>(opt)->set(std::vector<GraphData>(count, co_gr.value));
+                break;
+            }
             default: assert(false);
             }
         }
@@ -1213,21 +1434,36 @@ namespace client
             output.it_range = opt.it_range;
         }
 
-        // Return a boolean value, true if the scalar variable referenced by "opt" is nullable and it has a nil value.
-        // Return a boolean value, true if an element of a vector variable referenced by "opt[index]" is nullable and it has a nil value.
-        static void is_nil_test(const MyContext *ctx, OptWithPos &opt, expr &output)
+        // Return a boolean value, true if the scalar variable referenced by "opt" or "opt[index]" is enabled.
+        static void is_enabled_test(const MyContext *ctx, OptWithPos &opt, expr &output)
         {
             if (ctx->skipping()) {
             } else if (opt.opt->is_vector()) {
                 if (! opt.has_index())
                     ctx->throw_exception("Referencing a vector variable when scalar is expected", opt.it_range);
-                const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase*>(opt.opt);
-                if (vec->empty())
+                if (opt.opt->size() == 0)
                     ctx->throw_exception("Indexing an empty vector variable", opt.it_range);
-                output.set_b(static_cast<const ConfigOptionVectorBase*>(opt.opt)->is_nil(opt.index >= int(vec->size()) ? 0 : size_t(opt.index)));
+                output.set_b(opt.opt->is_enabled(opt.index));
             } else {
                 assert(opt.opt->is_scalar());
-                output.set_b(opt.opt->is_nil());
+                output.set_b(opt.opt->is_enabled());
+            }
+            output.it_range = opt.it_range;
+        }
+        // Return a boolean value, true if an element of a variable referenced by "opt" or "opt[index]" is disabled.
+        static void is_nil_test(const MyContext *ctx, OptWithPos &opt, expr &output)
+        {
+            BOOST_LOG_TRIVIAL(warning) << "Warning: The macro 'is_nil' is deprecated. Please use '!is_enabled' instead.";
+            if (ctx->skipping()) {
+            } else if (opt.opt->is_vector()) {
+                if (! opt.has_index())
+                    ctx->throw_exception("Referencing a vector variable when scalar is expected", opt.it_range);
+                if (opt.opt->size() == 0)
+                    ctx->throw_exception("Indexing an empty vector variable", opt.it_range);
+                output.set_b(!opt.opt->is_enabled(opt.index));
+            } else {
+                assert(opt.opt->is_scalar());
+                output.set_b(!opt.opt->is_enabled());
             }
             output.it_range = opt.it_range;
         }
@@ -1345,13 +1581,14 @@ namespace client
             }
         }
 
-        template<typename ConfigOptionType, typename RightValueEvaluate>
+        template<typename ConfigOptionType, typename ScalarType, typename RightValueEvaluate>
         static void fill_vector_from_initializer_list(ConfigOption *opt, const std::vector<expr> &il, RightValueEvaluate rv_eval) {
-            auto& out = static_cast<ConfigOptionType*>(opt)->values;
-            out.clear();
-            out.reserve(il.size());
+            //const& out = static_cast<ConfigOptionType*>(opt)->get_values();
+            std::vector<ScalarType> vec;
+            vec.reserve(il.size());
             for (const expr& i : il)
-                out.emplace_back(rv_eval(i));
+                vec.push_back(rv_eval(i));
+            static_cast<ConfigOptionType*>(opt)->set(vec);
         }
 
         static void vector_variable_assign_initializer_list(const MyContext *ctx, OptWithPos &lhs, const std::vector<expr> &il)
@@ -1382,21 +1619,43 @@ namespace client
             switch (lhs.opt->type()) {
             case coFloats:
                 check_numeric_vector(il);
-                fill_vector_from_initializer_list<ConfigOptionFloats>(opt, il, [](auto &v){ return v.as_d(); });
+                fill_vector_from_initializer_list<ConfigOptionFloats, double>(opt, il, [](auto &v){ return v.as_d(); });
                 break;
             case coInts:
                 check_numeric_vector(il);
-                fill_vector_from_initializer_list<ConfigOptionInts>(opt, il, [](auto &v){ return v.as_i(); });
+                fill_vector_from_initializer_list<ConfigOptionInts, int32_t>(opt, il, [](auto &v){ return v.as_i(); });
                 break;
             case coStrings:
-                fill_vector_from_initializer_list<ConfigOptionStrings>(opt, il, [](auto &v){ return v.to_string(); });
+                fill_vector_from_initializer_list<ConfigOptionStrings, std::string>(opt, il, [](auto &v){ return v.to_string(); });
                 break;
             case coBools:
                 for (auto &i : il)
                     if (i.type() != expr::TYPE_BOOL)
                         i.throw_exception("Right side is not a boolean expression");
-                fill_vector_from_initializer_list<ConfigOptionBools>(opt, il, [](auto &v){ return v.b(); });
+                fill_vector_from_initializer_list<ConfigOptionBools, uint8_t>(opt, il, [](auto &v){ return v.b(); });
                 break;
+            case coPoints: {
+                std::vector<Vec2d> vec;
+                vec.reserve(il.size());
+                ConfigOptionPoint co_pt;
+                for (const expr &val : il) {
+                    co_pt.deserialize(val.to_string());
+                    vec.push_back(co_pt.value);
+                }
+                static_cast<ConfigOptionPoints *>(opt)->set(vec);
+                break;
+            }
+            case coGraphs: {
+                std::vector<GraphData> vec;
+                vec.reserve(il.size());
+                ConfigOptionGraph co_gr;
+                for (const expr &val : il) {
+                    co_gr.deserialize(val.to_string());
+                    vec.push_back(co_gr.value);
+                }
+                static_cast<ConfigOptionGraphs *>(opt)->set(vec);
+                break;
+            }
             default: assert(false);
             }
         }
@@ -1467,11 +1726,9 @@ namespace client
                 return;
 
             check_writable(ctx, lhs);
-            assert(lhs.opt->is_vector());
+            assert(lhs.opt && lhs.opt->is_vector());
             if (rhs.has_index() || ! rhs.opt->is_vector())
                 ctx->throw_exception("Cannot assign scalar to a vector", lhs.it_range);
-            if (rhs.opt->is_nil())
-                ctx->throw_exception("Some elements of the right hand side vector variable of optional values are undefined (nil)", rhs.it_range);
             if (lhs.opt->type() != rhs.opt->type()) {
                 // Vector types are not compatible.
                 switch (lhs.opt->type()) {
@@ -1487,7 +1744,7 @@ namespace client
                     ctx->throw_exception("Left hand side / right hand side vectors are not compatible.", lhs.it_range);
                 }
             }
-            const_cast<ConfigOption*>(lhs.opt)->set(rhs.opt);
+            const_cast<ConfigOption*>(lhs.opt)->set(*rhs.opt);
         }
 
         static bool vector_variable_new_from_copy(
@@ -1508,14 +1765,12 @@ namespace client
                 if (rhs.has_index() || ! rhs.opt->is_vector())
                     // Stop parsing, let the other rules resolve this case.
                     return false;
-                if (rhs.opt->is_nil())
-                    ctx->throw_exception("Some elements of the right hand side vector variable of optional values are undefined (nil)", rhs.it_range);
                 // Clone the vector variable.
                 std::unique_ptr<ConfigOption> opt_new;
                 if (one_of(rhs.opt->type(), { coFloats, coInts, coStrings, coBools }))
                     opt_new = std::unique_ptr<ConfigOption>(rhs.opt->clone());
                 else if (rhs.opt->type() == coPercents)
-                    opt_new = std::make_unique<ConfigOptionFloats>(static_cast<const ConfigOptionPercents*>(rhs.opt)->values);
+                    opt_new = std::make_unique<ConfigOptionFloats>(static_cast<const ConfigOptionPercents*>(rhs.opt)->get_values());
                 else
                     ctx->throw_exception("Duplicating this type of vector variable is not supported", rhs.it_range);
                 const_cast<MyContext*>(ctx)->store_new_variable(lhs.name, std::move(opt_new), global_variable);
@@ -1533,21 +1788,24 @@ namespace client
 
         static void is_vector_empty(const MyContext *ctx, OptWithPos &opt, expr &out)
         {
-            if (! ctx->skipping()) {
-                if (opt.has_index() || ! opt.opt->is_vector())
-                    ctx->throw_exception("parameter of empty() is not a vector variable", opt.it_range);
-                out.set_b(static_cast<const ConfigOptionVectorBase*>(opt.opt)->size() == 0);
-            }
+            //if (! ctx->skipping()) {
+            //    if (opt.has_index() || ! opt.opt->is_vector())
+            //        ctx->throw_exception("parameter of empty() is not a vector variable", opt.it_range);
+            //    out.set_b(static_cast<const ConfigOptionVectorBase*>(opt.opt)->size() == 0);
+            //}
+            out.set_b(opt.opt->size() == 0);
             out.it_range = opt.it_range;
         }
 
         static void vector_size(const MyContext *ctx, OptWithPos &opt, expr &out)
         {
-            if (! ctx->skipping()) {
-                if (opt.has_index() || ! opt.opt->is_vector())
-                    ctx->throw_exception("parameter of size() is not a vector variable", opt.it_range);
-                out.set_i(int(static_cast<const ConfigOptionVectorBase*>(opt.opt)->size()));
-            }
+            //if (! ctx->skipping()) {
+            //    if (opt.has_index() || ! opt.opt->is_vector())
+            //        ctx->throw_exception("parameter of size() is not a vector variable", opt.it_range);
+            //    out.set_i(int(static_cast<const ConfigOptionVectorBase*>(opt.opt)->size()));
+            //}
+
+            out.set_i(int(opt.opt->size()));
             out.it_range = opt.it_range;
         }
 
@@ -1556,8 +1814,12 @@ namespace client
         static void evaluate_index(expr &expr_index, int &output)
         {
             if (expr_index.type() != expr::TYPE_EMPTY) {
-                if (expr_index.type() != expr::TYPE_INT)                
-                    expr_index.throw_exception("Non-integer index is not allowed to address a vector variable.");
+                if (expr_index.type() != expr::TYPE_INT) {
+                    //allow fake int inside double (for custom variables)
+                    if (expr_index.type() != expr::TYPE_DOUBLE || expr_index.i() != expr_index.d()) {
+                        expr_index.throw_exception("Non-integer index is not allowed to address a vector variable.");
+                    }
+                }
                 output = expr_index.i();
             }
         }
@@ -1730,6 +1992,7 @@ namespace client
         { "variable",                   "Expecting a variable name."},
         { "regular_expression",         "Expecting a regular expression."}
     };
+    std::map<t_config_option_key, std::unique_ptr<ConfigOption>> MyContext::checked_vars = {};
 
     // For debugging the boost::spirit parsers. Print out the string enclosed in it_range.
     std::ostream& operator<<(std::ostream& os, const IteratorRange &it_range)
@@ -1923,8 +2186,26 @@ namespace client
                 { out = value.unary_integer(out.it_range.begin()); }
         static void round(expr &value, expr &out)
                 { out = value.round(out.it_range.begin()); }
+        static void ceil(expr &value, expr &out)
+                { out = value.ceil(out.it_range.begin()); }
         // For indicating "no optional parameter".
         static void noexpr(expr &out) { out.reset(); }
+
+        //functions for default keyword
+        static void default_bool_(bool &value, const MyContext* ctx, boost::iterator_range<Iterator>& opt_key, Iterator& end_pos, expr& out)
+                { MyContext::check_variable<Iterator>(ctx, opt_key, end_pos, out, std::make_unique<ConfigOptionBool>(value)); }
+        static void default_int_(int &value, const MyContext* ctx, boost::iterator_range<Iterator>& opt_key, Iterator& end_pos, expr& out)
+                { MyContext::check_variable<Iterator>(ctx, opt_key, end_pos, out, std::make_unique<ConfigOptionInt>(value)); }
+        static void default_double_(double &value, const MyContext* ctx, boost::iterator_range<Iterator>& opt_key, Iterator& end_pos, expr& out)
+                { MyContext::check_variable<Iterator>(ctx, opt_key, end_pos, out, std::make_unique<ConfigOptionFloat>(value)); }
+        static void default_string_(boost::iterator_range<Iterator>& it_range, const MyContext* ctx, boost::iterator_range<Iterator>& opt_key, Iterator& end_pos, expr& out)
+                { MyContext::check_variable<Iterator>(ctx, opt_key, end_pos, out, std::make_unique<ConfigOptionString>(std::string(it_range.begin() + 1, it_range.end() - 1))); }
+        static void exists_(const MyContext* ctx, boost::iterator_range<Iterator>& opt_key, Iterator& end_pos, expr& out)
+                { MyContext::check_variable<Iterator>(ctx, opt_key, end_pos, out, std::unique_ptr<ConfigOption>{nullptr}); }
+
+        //function for changing state
+        static void set_ignore_legacy_(bool& value)
+                { MyContext::ignore_legacy = value; }
     };
 
     using skipper = ascii_char_skipper_parser;
@@ -1981,6 +2262,10 @@ namespace client
 
             text_block = *(
                         text [_val+=_1]
+                        // escape character: can escape '[' and '{' or is printed as-is.
+                    |  (no_skip[raw["\\["]]     [_val = _val + "["])
+                    |  (no_skip[raw["\\{"]]     [_val = _val + "{"])
+                    |  (no_skip[raw["\\"]]      [_val = _val + "\\"])
                         // Allow back tracking after '{' in case of a text_block embedded inside a condition.
                         // In that case the inner-most {else} wins and the {if}/{elsif}/{else} shall be paired.
                         // {elsif}/{else} without an {if} will be allowed to back track from the embedded text_block.
@@ -1991,7 +2276,7 @@ namespace client
 
             // Free-form text up to a first brace, including spaces and newlines.
             // The free-form text will be inserted into the processed text without a modification.
-            text = no_skip[raw[+(utf8char - char_('[') - char_('{'))]];
+            text = no_skip[raw[+(utf8char - char_('[') - char_('{') - char_('\\'))]];
             text.name("text");
 
             // New style of macro expansion.
@@ -2045,7 +2330,7 @@ namespace client
                 "endif";
 */
 
-            // Legacy variable expansion of the original Slic3r, in the form of [scalar_variable] or [vector_variable_index].
+            // Legacy variable expansion of the original Slic3r, in the form of [scalar_variable] or [vector_variable_index] or [vector_variable_[index_variable]].
             legacy_variable_expansion =
                     (identifier >> &lit(']'))
                         [ px::bind(&MyContext::legacy_variable_expansion, _r1, _1, _val) ]
@@ -2171,11 +2456,23 @@ namespace client
                                                                     [ px::bind(&expr::digits<true>, _val, _2, _3) ]
                 |   (kw["int"]   > '(' > conditional_expression(_r1) > ')') [ px::bind(&FactorActions::to_int,  _1, _val) ]
                 |   (kw["round"] > '(' > conditional_expression(_r1) > ')') [ px::bind(&FactorActions::round,   _1, _val) ]
-                |   (kw["is_nil"] > '(' > variable_reference(_r1) > ')') [px::bind(&MyContext::is_nil_test, _r1, _1, _val)]
+                |   (kw["ceil"] > '(' > conditional_expression(_r1) > ')') [ px::bind(&FactorActions::ceil,   _1, _val) ]
+                |   (kw["is_nil"] > '(' > variable_reference(_r1) > ')') [px::bind(&MyContext::is_nil_test, _r1, _1, _val)] // Deprecated same as !is_enabled
+                |   (kw["is_enabled"] > '(' > variable_reference(_r1) > ')') [px::bind(&MyContext::is_enabled_test, _r1, _1, _val)]
                 |   (kw["one_of"] > '(' > one_of(_r1) > ')')        [ _val = _1 ]
                 |   (kw["empty"] > '(' > variable_reference(_r1) > ')') [px::bind(&MyContext::is_vector_empty, _r1, _1, _val)]
                 |   (kw["size"] > '(' > variable_reference(_r1) > ')') [px::bind(&MyContext::vector_size, _r1, _1, _val)]
                 |   (kw["interpolate_table"] > '(' > interpolate_table(_r1) > ')') [ _val = _1 ]
+                |   (kw["exists"] > '('  > identifier > ')' > iter_pos) [ px::bind(&FactorActions::exists_, _r1, _1, _2, _val) ]
+                |   (kw["default_double"] > '(' > identifier > ',' > strict_double > ')' > iter_pos)
+                                                                    [px::bind(&FactorActions::default_double_, _2, _r1, _1, _3, _val)]
+                |   (kw["default_int"] > '(' > identifier > ',' > int_ > ')' > iter_pos)
+                                                                    [px::bind(&FactorActions::default_int_, _2, _r1, _1, _3, _val)]
+                |   (kw["default_bool"] > '('  > identifier > ',' > kw[bool_] > ')' > iter_pos)
+                                                                    [ px::bind(&FactorActions::default_bool_, _2, _r1, _1, _3, _val) ]
+                |   (kw["default_string"] > '(' > identifier > ',' > raw[lexeme['"' > *((utf8char - char_('\\') - char_('"')) | ('\\' > char_)) > '"']] > ')' > iter_pos)
+                                                                    [px::bind(&FactorActions::default_string_, _2, _r1, _1, _3, _val)]
+                |   (kw["ignore_legacy"] > '(' > kw[bool_] > ')')   [px::bind(&FactorActions::set_ignore_legacy_, _1)]
                 |   (strict_double > iter_pos)                      [ px::bind(&FactorActions::double_, _r1, _1, _2, _val) ]
                 |   (int_      > iter_pos)                          [ px::bind(&FactorActions::int_,    _r1, _1, _2, _val) ]
                 |   (kw[bool_] > iter_pos)                          [ px::bind(&FactorActions::bool_,   _r1, _1, _2, _val) ]
@@ -2237,6 +2534,7 @@ namespace client
                 ("if")
                 ("int")
                 ("is_nil")
+                ("is_enabled")
                 ("local")
                 //("inf")
                 ("else")
@@ -2250,11 +2548,18 @@ namespace client
                 ("random")
                 ("repeat")
                 ("round")
+                ("ceil")
                 ("not")
                 ("one_of")
                 ("or")
                 ("size")
-                ("true");
+                ("true")
+                ("exists")
+                ("default_double")
+                ("default_int")
+                ("default_bool")
+                ("default_string")
+                ("ignore_legacy");
 
             if (0) {
                 debug(start);
@@ -2327,8 +2632,9 @@ namespace client
         qi::rule<Iterator, OptWithPos(const MyContext*), qi::locals<OptWithPos, int>, skipper> variable_reference;
         // Rule to translate an identifier to a ConfigOption, or to fail.
         qi::rule<Iterator, OptWithPos(const MyContext*), skipper> variable;
-        // Evaluating whether a nullable variable is nil.
+        // Evaluating whether a variable is enabled.
         qi::rule<Iterator, expr(const MyContext*), skipper> is_nil_test;
+        qi::rule<Iterator, expr(const MyContext*), skipper> is_enabled_test;
         // Evaluating "one of" list of patterns.
         qi::rule<Iterator, expr(const MyContext*), qi::locals<expr>, skipper> one_of;
         qi::rule<Iterator, expr(const MyContext*, const expr &param), skipper> one_of_list;
@@ -2382,6 +2688,185 @@ bool PlaceholderParser::evaluate_boolean_expression(const std::string &templ, co
     // Let the macro processor parse just a boolean expression, not the full macro language.
     context.just_boolean_expression = true;
     return process_macro(templ, context) == "true";
+}
+
+
+void PlaceholderParser::append_custom_variables(std::map<std::string, std::vector<std::string>> name2var_array, uint16_t nb_extruders) {
+
+    bool is_array = nb_extruders > 0;
+    if (!is_array) nb_extruders = 1;
+    SLIC3R_REGEX_NAMESPACE::regex is_a_name("[a-zA-Z_0-9]+");
+    for (const auto& entry : name2var_array) {
+        if (entry.first.empty())
+            continue;
+        if (!SLIC3R_REGEX_NAMESPACE::regex_match(entry.first, is_a_name))
+            continue;
+        const std::vector<std::string>& values = entry.second;
+        bool is_not_string = true;
+        std::vector<std::string> string_values;
+        //check if all values are strings
+        if (is_not_string) {
+            is_not_string = false;
+            for (uint16_t extruder_id = 0; extruder_id < nb_extruders; ++extruder_id) {
+                if (!values[extruder_id].empty()) {
+                    if (values[extruder_id].front() != '\"' && values[extruder_id].back() != '\"') {
+                        is_not_string = true;
+                        break;
+                    }
+                    string_values.push_back(values[extruder_id].substr(1, values[extruder_id].size() - 2));
+                } else {
+                    //if value is empty, it's a string.
+                    string_values.push_back("");
+                }
+            }
+        }
+        //check if all values are bools
+        bool is_not_bool = !is_not_string;
+        std::vector<unsigned char> bool_values;
+        if (!is_not_bool) {
+            for (uint16_t extruder_id = 0; extruder_id < nb_extruders; ++extruder_id) {
+                if (!values[extruder_id].empty()) {
+                    if (boost::algorithm::to_lower_copy(values[extruder_id]) == "true") {
+                        bool_values.push_back(true);
+                    } else if (boost::algorithm::to_lower_copy(values[extruder_id]) == "false") {
+                        bool_values.push_back(false);
+                    } else {
+                        is_not_bool = true;
+                        break;
+                    }
+                } else {
+                    bool_values.push_back(false);
+                }
+            }
+        }
+        //check if all values are numeric
+        bool is_not_numeric = !is_not_string || !is_not_bool;
+        std::vector<double> double_values;
+        //SLIC3R_REGEX_NAMESPACE::regex("\\s*[+-]?([0-9]+\\.[0-9]*([Ee][+-]?[0-9]+)?|\\.[0-9]+([Ee][+-]?[0-9]+)?|[0-9]+[Ee][+-]?[0-9]+)");
+        if (!is_not_numeric) {
+            for (uint16_t extruder_id = 0; extruder_id < nb_extruders; ++extruder_id) {
+                if (!values[extruder_id].empty()) {
+                    try {
+                        double_values.push_back(boost::lexical_cast<float>(values[extruder_id]));
+                    }
+                    catch (boost::bad_lexical_cast&) {
+                        is_not_numeric = true;
+                        break;
+                    }
+                } else {
+                    double_values.push_back(0);
+                }
+            }
+        }
+        //if nothing, then it's strings
+        if (is_not_string && is_not_numeric && is_not_bool) {
+            string_values = values;
+            is_not_string = false;
+        }
+        if (!is_not_numeric) {
+            std::stringstream log;
+            log << "Parsing NUM custom variable '" << entry.first << "' : ";
+            for (auto s : double_values) log << ", " << s;
+            BOOST_LOG_TRIVIAL(trace) << log.str();
+            if (is_array) {
+                ConfigOptionFloats* conf = new ConfigOptionFloats(double_values);
+                conf->set_is_extruder_size(true);
+                this->set(entry.first, conf);
+            } else {
+                ConfigOptionFloat* conf = new ConfigOptionFloat(double_values[0]);
+                this->set(entry.first, conf);
+            }
+        } else if (!is_not_bool) {
+            std::stringstream log;
+            log << "Parsing BOOL custom variable '" << entry.first << "' : ";
+            for (auto s : bool_values) log << ", " << s;
+            BOOST_LOG_TRIVIAL(trace) << log.str();
+            if (is_array) {
+                ConfigOptionBools* conf = new ConfigOptionBools(bool_values);
+                conf->set_is_extruder_size(true);
+                this->set(entry.first, conf);
+            } else {
+                ConfigOptionBool* conf = new ConfigOptionBool(bool_values[0]);
+                this->set(entry.first, conf);
+            }
+        } else {
+            for (std::string& s : string_values)
+                boost::replace_all(s, "\\n", "\n");
+            std::stringstream log;
+            log << "Parsing STR custom variable '" << entry.first << "' : ";
+            for (auto s : string_values) log << ", " << s;
+            BOOST_LOG_TRIVIAL(trace) << log.str();
+            if (is_array) {
+                ConfigOptionStrings* conf = new ConfigOptionStrings(string_values);
+                conf->set_is_extruder_size(true);
+                this->set(entry.first, conf);
+            } else {
+                ConfigOptionString* conf = new ConfigOptionString(string_values[0]);
+                this->set(entry.first, conf);
+            }
+        }
+    }
+
+}
+
+void PlaceholderParser::reset()
+{
+    client::MyContext::checked_vars.clear();
+    m_config.clear();
+}
+
+void PlaceholderParser::parse_custom_variables(const ConfigOptionString& custom_variables)
+{
+    std::map<std::string, std::vector<std::string>> name2var_array;
+
+    std::string raw_text = custom_variables.value;
+    boost::erase_all(raw_text, "\r");
+    std::vector<std::string> lines;
+    boost::algorithm::split(lines, raw_text, boost::is_any_of("\n"));
+    for (const std::string& line : lines) {
+        size_t equal_pos = line.find_first_of('=');
+        if (equal_pos != std::string::npos) {
+            std::string name = line.substr(0, equal_pos);
+            std::string value = line.substr(equal_pos + 1);
+            boost::algorithm::trim(name);
+            boost::algorithm::trim(value);
+            if (name2var_array.find(name) == name2var_array.end()) {
+                name2var_array.emplace(name, std::vector<std::string>{ 1, value });
+            } else
+                name2var_array[name][0] = value;
+
+        }
+    }
+    append_custom_variables(name2var_array, 0);
+}
+
+void PlaceholderParser::parse_custom_variables(const ConfigOptionStrings& filament_custom_variables)
+{
+    std::map<std::string, std::vector<std::string>> name2var_array;
+    const std::vector<std::string> empty_array(filament_custom_variables.size());
+
+    for (size_t extruder_id = 0; extruder_id < filament_custom_variables.size(); ++extruder_id)
+    {
+        std::string raw_text = filament_custom_variables.get_at(extruder_id);
+        boost::erase_all(raw_text, "\r");
+        std::vector<std::string> lines;
+        boost::algorithm::split(lines, raw_text, boost::is_any_of("\n"));
+        for (const std::string& line : lines) {
+            size_t equal_pos = line.find_first_of('=');
+            if (equal_pos != std::string::npos) {
+                std::string name = line.substr(0, equal_pos);
+                std::string value = line.substr(equal_pos + 1);
+                boost::algorithm::trim(name);
+                boost::algorithm::trim(value);
+                if (name2var_array.find(name) == name2var_array.end()) {
+                    name2var_array.emplace(name, empty_array);
+                }
+                name2var_array[name][extruder_id] = value;
+
+            }
+        }
+    }
+    append_custom_variables(name2var_array, uint16_t(filament_custom_variables.size()));
 }
 
 }

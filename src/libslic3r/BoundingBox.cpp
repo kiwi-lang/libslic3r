@@ -1,3 +1,4 @@
+///|/ Copyright (c) Superslicer 2018-2023 Durand Rémi @supermerill
 ///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Enrico Turri @enricoturri1966
 ///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
 ///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
@@ -8,12 +9,10 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "BoundingBox.hpp"
-
 #include <algorithm>
+#include <cassert>
 
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include <Eigen/Dense>
 
 namespace Slic3r {
 
@@ -56,13 +55,6 @@ BoundingBox BoundingBox::rotated(double angle, const Point &center) const
     out.merge(this->max.rotated(angle, center));
     out.merge(Point(this->min.x(), this->max.y()).rotated(angle, center));
     out.merge(Point(this->max.x(), this->min.y()).rotated(angle, center));
-    return out;
-}
-
-BoundingBox BoundingBox::scaled(double factor) const
-{
-    BoundingBox out(*this);
-    out.scale(factor);
     return out;
 }
 
@@ -118,6 +110,59 @@ BoundingBoxBase<PointType, APointsType>::merge(const BoundingBoxBase<PointType, 
 template void BoundingBoxBase<Point, Points>::merge(const BoundingBoxBase<Point, Points> &bb);
 template void BoundingBoxBase<Vec2f>::merge(const BoundingBoxBase<Vec2f> &bb);
 template void BoundingBoxBase<Vec2d>::merge(const BoundingBoxBase<Vec2d> &bb);
+
+template <class PointClass, typename APointsType>
+bool BoundingBoxBase<PointClass, APointsType>::cross(const Line &line) const
+{
+    assert(this->defined || this->min.x() >= this->max.x() || this->min.y() >= this->max.y());
+    // first just check if one point is inside and the other outside
+    bool cross = this->contains(line.a) != this->contains(line.b);
+    // now compre cross for the 4 lines
+    Point intersect;
+    if (!cross)
+        cross = Line(Point(this->min.x(), this->min.y()), Point(this->min.x(), this->max.y())).intersection(line, &intersect);
+    if (!cross)
+        cross = Line(Point(this->min.x(), this->min.y()), Point(this->max.x(), this->min.y())).intersection(line, &intersect);
+    if (!cross)
+        cross = Line(Point(this->max.x(), this->max.y()), Point(this->min.x(), this->max.y())).intersection(line, &intersect);
+    if (!cross)
+        cross = Line(Point(this->max.x(), this->max.y()), Point(this->max.x(), this->min.y())).intersection(line, &intersect);
+    return cross;
+}
+template bool BoundingBoxBase<Point, Points>::cross(const Line &line) const;
+
+template <class PointClass, typename APointsType>
+bool BoundingBoxBase<PointClass, APointsType>::cross(const Polyline &lines) const
+{
+    assert(this->defined || this->min.x() >= this->max.x() || this->min.y() >= this->max.y());
+    // first just check if one point is inside and the other outside
+    size_t nb_in  = 0;
+    size_t nb_out = 0;
+    for (const Point &pt : lines.points)
+        if (this->contains(pt))
+            nb_in++;
+        else
+            nb_out++;
+    if (nb_in > 0 && nb_out > 0)
+        return true;
+    bool cross = false;
+    Point intersect;
+    // now compare cross for the 4 lines
+    Line l1 = Line(Point(this->min.x(), this->min.y()), Point(this->min.x(), this->max.y()));
+    Line l2 = Line(Point(this->min.x(), this->min.y()), Point(this->max.x(), this->min.y()));
+    Line l3 = Line(Point(this->max.x(), this->max.y()), Point(this->min.x(), this->max.y()));
+    Line l4 = Line(Point(this->max.x(), this->max.y()), Point(this->max.x(), this->min.y()));
+    for (size_t next_idx = 1; next_idx < lines.size(); ++next_idx) {
+        Line line(lines.points[next_idx - 1], lines.points[next_idx]);
+        Vec2f v;
+        cross = l1.intersection(line, &intersect) || l2.intersection(line, &intersect) ||
+                l3.intersection(line, &intersect) || l4.intersection(line, &intersect);
+        if (cross)
+            return true;
+    }
+    return false;
+}
+template bool BoundingBoxBase<Point, Points>::cross(const Polyline &lines) const;
 
 template <class PointType> void
 BoundingBox3Base<PointType>::merge(const PointType &point)
@@ -175,10 +220,10 @@ BoundingBox3Base<PointType>::size() const
 template Vec3f BoundingBox3Base<Vec3f>::size() const;
 template Vec3d BoundingBox3Base<Vec3d>::size() const;
 
-template <class PointType, typename APointsType> double BoundingBoxBase<PointType, APointsType>::radius() const
+template <class PointType, typename APointsType> coordf_t BoundingBoxBase<PointType, APointsType>::radius() const
 {
     assert(this->defined);
-    return 0.5 * (this->max - this->min).template cast<double>().norm();
+    return 0.5 * (this->max - this->min).template cast<coordf_t>().norm();
 }
 template double BoundingBoxBase<Point, Points>::radius() const;
 template double BoundingBoxBase<Vec2d>::radius() const;
@@ -240,6 +285,30 @@ void BoundingBox::align_to_grid(const coord_t cell_size)
         min.x() = Slic3r::align_to_grid(min.x(), cell_size);
         min.y() = Slic3r::align_to_grid(min.y(), cell_size);
     }
+}
+
+Point BoundingBox::nearest_point(const Point &outside_pt) const
+{
+    assert(this->defined || this->min.x() >= this->max.x() || this->min.y() >= this->max.y());
+    Point best = this->min;
+    double best_dist_sqr = Line(this->min, Point(this->min.x(), this->max.y())).distance_to_squared(outside_pt, &best);
+    Point candidate;
+    double candidate_dist_sqr = Line(Point(this->min.x(), this->max.y()), this->max).distance_to_squared(outside_pt, &candidate);
+    if (candidate_dist_sqr < best_dist_sqr) {
+        best_dist_sqr = candidate_dist_sqr;
+        best = candidate;
+    }
+    candidate_dist_sqr = Line(this->max, Point(this->max.x(), this->min.y())).distance_to_squared(outside_pt, &candidate);
+    if (candidate_dist_sqr < best_dist_sqr) {
+        best_dist_sqr = candidate_dist_sqr;
+        best = candidate;
+    }
+    candidate_dist_sqr = Line(Point(this->max.x(), this->min.y()), this->min).distance_to_squared(outside_pt, &candidate);
+    if (candidate_dist_sqr < best_dist_sqr) {
+        best_dist_sqr = candidate_dist_sqr;
+        best = candidate;
+    }
+    return best;
 }
 
 BoundingBoxf3 BoundingBoxf3::transformed(const Transform3d& matrix) const

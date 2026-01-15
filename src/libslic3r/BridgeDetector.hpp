@@ -6,15 +6,6 @@
 #ifndef slic3r_BridgeDetector_hpp_
 #define slic3r_BridgeDetector_hpp_
 
-#include <cmath>
-#include <string>
-#include <unordered_map>
-#include <vector>
-#include <algorithm>
-#include <limits>
-#include <tuple>
-#include <utility>
-
 #include "ClipperUtils.hpp"
 #include "Line.hpp"
 #include "Point.hpp"
@@ -23,6 +14,10 @@
 #include "PrincipalComponents2D.hpp"
 #include "libslic3r.h"
 #include "ExPolygon.hpp"
+#include <cmath>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace Slic3r {
 
@@ -41,17 +36,22 @@ public:
     // Lower slices, all regions.
     const ExPolygons   			&lower_slices;
     // Scaled extrusion width of the infill.
-    coord_t                      spacing;
+    const coord_t                spacing;
+    // precision, number of lines to use.
+    const coord_t                precision;
     // Angle resolution for the brute force search of the best bridging angle.
     double                       resolution;
     // The final optimal angle.
     double                       angle;
-    
-    BridgeDetector(ExPolygon _expolygon, const ExPolygons &_lower_slices, coord_t _extrusion_width);
-    BridgeDetector(const ExPolygons &_expolygons, const ExPolygons &_lower_slices, coord_t _extrusion_width);
+    // ignore bridges that are longer than that.
+    coordf_t                     max_bridge_length;
+
+    int layer_id = -1;
+
+    BridgeDetector(ExPolygon _expolygon, const ExPolygons &_lower_slices, coord_t _extrusion_spacing, coord_t _precision, int layer_id);
+    BridgeDetector(const ExPolygons &_expolygons, const ExPolygons &_lower_slices, coord_t _extrusion_spacing, coord_t _precision, int layer_id);
     // If bridge_direction_override != 0, then the angle is used instead of auto-detect.
-    bool detect_angle(double bridge_direction_override = 0.);
-    // Coverage is currently only used by the unit tests. It is extremely slow and unreliable!
+    bool detect_angle(double bridge_direction_override = -1);
     Polygons coverage(double angle = -1) const;
     void unsupported_edges(double angle, Polylines* unsupported) const;
     Polylines unsupported_edges(double angle = -1) const;
@@ -63,19 +63,27 @@ private:
     void initialize();
 
     struct BridgeDirection {
-        BridgeDirection(double a = -1.) : angle(a), coverage(0.), max_length(0.) {}
-        // the best direction is the one causing most lines to be bridged (thus most coverage)
-        bool operator<(const BridgeDirection &other) const {
-            // Initial sort by coverage only - comparator must obey strict weak ordering
-            return this->coverage > other.coverage;
-        };
+        BridgeDirection(double a = -1., float along_perimeter = 0) : angle(a), coverage(0.), along_perimeter_length(along_perimeter){}
+
         double angle;
         double coverage;
-        double max_length;
-    };
 
+        float along_perimeter_length;
+        coordf_t total_length_anchored = 0;
+        coordf_t median_length_anchor = 0;
+        coordf_t max_length_anchored = 0;
+        // number of lines that are anchored at both ends, ie a real bridge
+        uint32_t nb_lines_anchored = 0;
+        // number of lines that are anchored but never go in an unsupported area (useless bridge, that can create problems with flow)
+        uint32_t nb_lines_fake_bridge = 0;
+        coordf_t total_length_free = 0;
+        coordf_t max_length_free = 0;
+        // number of lines that overhangs or floating in the air
+        uint32_t nb_lines_free = 0;
+    };
+public:
     // Get possible briging direction candidates.
-    std::vector<double> bridge_direction_candidates() const;
+    std::vector<BridgeDirection> bridge_direction_candidates(bool only_from_polygon = false) const;
 
     // Open lines representing the supporting edges.
     Polylines _edges;

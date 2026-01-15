@@ -2,9 +2,10 @@
 #define slic3r_GCode_LabelObjects_hpp_
 
 #include <string>
-#include <vector>
+#include <unordered_map>
+#include "../BoundingBox.hpp"
 
-#include "libslic3r/Print.hpp"
+#include "../BoundingBox.hpp"
 
 namespace Slic3r {
 
@@ -12,52 +13,45 @@ enum GCodeFlavor : unsigned char;
 enum class LabelObjectsStyle;
 struct PrintInstance;
 class Print;
-class GCodeWriter;
+class PrintObject;
+
 
 namespace GCode {
 
-class LabelObjects
-{
+
+class LabelObjects {
 public:
-    void init(const SpanOfConstPtrs<PrintObject>& objects, LabelObjectsStyle label_object_style, GCodeFlavor gcode_flavor);
-    std::string all_objects_header() const;
-    std::string all_objects_header_singleline_json() const;
-
-    bool update(const PrintInstance *instance);
-
-    std::string maybe_start_instance(GCodeWriter& writer);
-
-    std::string maybe_stop_instance();
-
-    std::string maybe_change_instance(GCodeWriter& writer);
-
-    bool has_active_instance();
-
-private:
-    struct LabelData
-    {
-        const PrintInstance* pi;
-        std::string name;
-        std::string center;
-        std::string polygon;
-        int unique_id;
-    };
-
     enum class IncludeName {
         No,
         Yes
     };
-
+    void init(const Print& print);
+    std::string all_objects_header(BoundingBoxf3 &global_bounding_box, coordf_t resolution = scale_d(0.05f)) const;
     std::string start_object(const PrintInstance& print_instance, IncludeName include_name) const;
     std::string stop_object(const PrintInstance& print_instance) const;
+    
+    int get_object_id(const PrintObject &object) const;
+    std::string get_object_name(const PrintObject &object) const;
+    int get_unique_id(const PrintInstance &instance) const;
+    int get_copy_id(const PrintInstance &instance) const;
+    std::string get_unique_name(const PrintInstance &instance) const;
 
-    const PrintInstance* current_instance{nullptr};
-    const PrintInstance* last_operation_instance{nullptr};
+private:
+    struct LabelData {
+        std::string unique_name;
+        int unique_id;
+        std::string object_name;
+        int object_id;
+        int copy_id;
+    };
 
     LabelObjectsStyle m_label_objects_style;
     GCodeFlavor       m_flavor;
-    std::vector<LabelData> m_label_data;
+    std::unordered_map<const PrintInstance*, LabelData> m_label_data;
+
 };
+
+
 } // namespace GCode
 } // namespace Slic3r
 

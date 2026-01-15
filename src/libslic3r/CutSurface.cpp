@@ -27,41 +27,18 @@
 //#define DEBUG_OUTPUT_DIR std::string("C:/data/temp/cutSurface/")
 
 using namespace Slic3r;
+#include "ExPolygonsIndex.hpp"
+
 #include <CGAL/Polygon_mesh_processing/corefinement.h>
 #include <CGAL/Exact_integer.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Cartesian_converter.h>
-#include <oneapi/tbb/blocked_range.h>
 #include <oneapi/tbb/parallel_for.h>
-#include <boost/property_map/property_map.hpp>
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <iterator>
-#include <limits>
-#include <map>
-#include <optional>
-#include <queue>
-#include <set>
-#include <tuple>
-#include <utility>
-#include <cassert>
 
-#include "ExPolygonsIndex.hpp"
 // libslic3r
 #include "TriangleMesh.hpp" // its_merge
 #include "Utils.hpp" // next_highest_power_of_2
-#include "admesh/stl.h"
-#include "libslic3r/AABBTreeIndirect.hpp"
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/Emboss.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/libslic3r.h"
+#include "ClipperUtils.hpp" // union_ex + offset_ex
 
 namespace priv {
 
@@ -219,6 +196,21 @@ const std::string face_shape_map_name = "f:IntersectingElement";
 
 // stored in surface source
 const std::string vert_shape_map_name = "v:IntersectingElement";
+
+
+/// <summary>
+/// The method `result.add_property_map<a, b>(something)` return a pair in cgal 2.5 and an optional in 2.6
+/// these two templated method below are here to take care of the two cases.
+/// </summary>
+
+// used for cgal-6
+template <typename T>
+auto access_pmap(std::optional<T> opt) -> T {
+    return opt.value();
+}
+// used for cgal-5
+template <typename Pair>
+auto access_pmap(Pair pair) { return pair.first; }
 
 /// <summary>
 /// Flag for faces in CGAL mesh
@@ -544,10 +536,9 @@ void store(const Emboss::IProjection &projection, const Point &point_to_project,
 } // namespace privat
 
 #ifdef DEBUG_OUTPUT_DIR
+#include "libslic3r/SVG.hpp"
 #include <boost/log/trivial.hpp>
 #include <filesystem>
-
-#include "libslic3r/SVG.hpp"
 #endif // DEBUG_OUTPUT_DIR
 
 SurfaceCut Slic3r::cut_surface(const ExPolygons &shapes,
@@ -730,7 +721,7 @@ using IsOnSides = std::vector<std::array<bool, 4>>;
 /// <param name="t">Triangle</param>
 /// <param name="is_on_sides">Flag is vertex index out of plane</param>
 /// <returns>True when triangle is out of one of plane</returns>
-bool is_all_on_one_side(const Vec3i &t, const IsOnSides& is_on_sides);
+bool is_all_on_one_side(const Vec3i32 &t, const IsOnSides& is_on_sides);
 
 } // namespace priv
 
@@ -742,7 +733,7 @@ bool priv::is_out_of(const Vec3d &v, const PointNormal &point_normal)
     return signed_distance > 1e-5;
 };
 
-bool priv::is_all_on_one_side(const Vec3i &t, const IsOnSides& is_on_sides) {
+bool priv::is_all_on_one_side(const Vec3i32 &t, const IsOnSides& is_on_sides) {
     for (size_t side = 0; side < 4; side++) {
         bool result = true;
         for (auto vi : t) {
@@ -1015,14 +1006,15 @@ bool priv::exist_duplicit_vertex(const CutMesh &mesh) {
     return it != points.end();
 }
 
+
 priv::CutMesh priv::to_cgal(const ExPolygons  &shapes,
                             const Project     &projection)
 {
     if (shapes.empty()) return {};
         
     CutMesh result;
-    EdgeShapeMap edge_shape_map = result.add_property_map<EI, IntersectingElement>(edge_shape_map_name).first;
-    FaceShapeMap face_shape_map = result.add_property_map<FI, IntersectingElement>(face_shape_map_name).first;
+    EdgeShapeMap edge_shape_map = access_pmap(result.add_property_map<EI, IntersectingElement>(edge_shape_map_name));
+    FaceShapeMap face_shape_map = access_pmap(result.add_property_map<FI, IntersectingElement>(face_shape_map_name));
 
     std::vector<VI> indices;
     auto insert_contour = [&projection, &indices, &result, 
@@ -1432,7 +1424,7 @@ priv::CutAOIs priv::cut_from_model(CutMesh                &cgal_model,
                                    const ExPolygonsIndices &s2i)
 {
     // pointer to edge or face shape_map
-    VertexShapeMap vert_shape_map = cgal_model.add_property_map<VI, const IntersectingElement*>(vert_shape_map_name, nullptr).first;
+    VertexShapeMap vert_shape_map = access_pmap(cgal_model.add_property_map<VI, const IntersectingElement*>(vert_shape_map_name, nullptr));
     
     // detect anomalities in visitor.
     bool is_valid = true;
@@ -1442,7 +1434,7 @@ priv::CutAOIs priv::cut_from_model(CutMesh                &cgal_model,
     Visitor visitor{cgal_model, cgal_shape, edge_shape_map, face_shape_map, vert_shape_map, &is_valid};
 
     // a property map containing the constrained-or-not status of each edge
-    EdgeBoolMap ecm = cgal_model.add_property_map<EI, bool>(is_constrained_edge_name, false).first;
+    EdgeBoolMap ecm = access_pmap(cgal_model.add_property_map<EI, bool>(is_constrained_edge_name, false));
     const auto &p = CGAL::parameters::visitor(visitor)
                         .edge_is_constrained_map(ecm)
                         .throw_on_self_intersection(false);
@@ -1451,7 +1443,7 @@ priv::CutAOIs priv::cut_from_model(CutMesh                &cgal_model,
 
     if (!is_valid) return {};
 
-    FaceTypeMap face_type_map = cgal_model.add_property_map<FI, FaceType>(face_type_map_name, FaceType::not_constrained).first;
+    FaceTypeMap face_type_map = access_pmap(cgal_model.add_property_map<FI, FaceType>(face_type_map_name, FaceType::not_constrained));
 
     // Select inside and outside face in model
     set_face_type(face_type_map, cgal_model, vert_shape_map, ecm, cgal_shape, s2i);
@@ -1803,7 +1795,6 @@ priv::VDistances priv::calc_distances(const SurfacePatches &patches,
 
 #include "libslic3r/AABBTreeLines.hpp"
 #include "libslic3r/Line.hpp"
-
 // functions for choose_best_distance
 namespace priv {
 
@@ -1916,8 +1907,8 @@ uint32_t priv::get_closest_point_index(const SearchData &sd,
         const Polygon   &poly  = (id.polygon_index == 0) ?
                                            shape.contour :
                                            shape.holes[id.polygon_index - 1];
-        Vec2i p_ = p.cast<int>();
-        return p_ == poly[id.point_index];
+        assert((p.cast<coord_t>() == poly[id.point_index]) == (Point::round(p) == poly[id.point_index]));
+        return Point::round(p) == poly[id.point_index];
     };
 
     if (use_index) { 
@@ -2585,7 +2576,6 @@ void priv::create_face_types(FaceTypeMap           &map,
 
 #include <CGAL/Polygon_mesh_processing/clip.h>
 #include <CGAL/Polygon_mesh_processing/corefinement.h>
-
 bool priv::clip_cut(SurfacePatch &cut, CutMesh clipper)
 {
     CutMesh& tm = cut.mesh; 
@@ -2666,7 +2656,7 @@ priv::SurfacePatch priv::create_surface_patch(const std::vector<FI> &fis,
                                               /* const */ CutMesh   &mesh,
                                               const ReductionMap    *rmap)
 {
-    auto is_counted = mesh.add_property_map<VI, bool>("v:is_counted").first;
+    auto is_counted = access_pmap(mesh.add_property_map<VI, bool>("v:is_counted"));
     uint32_t count_vertices = 0;
     if (rmap == nullptr) {
         for (FI fi : fis) 
@@ -2696,7 +2686,7 @@ priv::SurfacePatch priv::create_surface_patch(const std::vector<FI> &fis,
     cm.reserve(count_vertices, count_edges, count_faces);
 
     // vertex conversion function from mesh VI to result VI
-    CvtVI2VI mesh2result = mesh.add_property_map<VI,VI>("v:mesh2result").first;
+    CvtVI2VI mesh2result = access_pmap(mesh.add_property_map<VI,VI>("v:mesh2result"));
 
     if (rmap == nullptr) {
         for (FI fi : fis) {
@@ -2748,7 +2738,7 @@ priv::SurfacePatch priv::create_surface_patch(const std::vector<FI> &fis,
     assert(count_edges >= cm.edges().size());
     
     // convert VI from this patch to source VI, when exist
-    CvtVI2VI cvt = cm.add_property_map<VI, VI>(patch_source_name).first;
+    CvtVI2VI cvt = access_pmap(cm.add_property_map<VI, VI>(patch_source_name));
     // vi_s .. VertexIndex into mesh (source)
     // vi_d .. new VertexIndex in cm (destination)
     for (VI vi_s : mesh.vertices()) { 
@@ -2982,7 +2972,7 @@ void priv::divide_patch(size_t i, SurfacePatchesEx &patches)
     CutMesh& cm = patch.mesh;
     assert(!cm.faces().empty());
     std::string patch_number_name = "f:patch_number";
-    CutMesh::Property_map<FI,bool> is_processed = cm.add_property_map<FI, bool>(patch_number_name, false).first;
+    CutMesh::Property_map<FI,bool> is_processed = access_pmap(cm.add_property_map<FI, bool>(patch_number_name, false));
     
     const CvtVI2VI& cvt_from = patch.mesh.property_map<VI, VI>(patch_source_name).first;
 
@@ -3085,7 +3075,7 @@ priv::SurfacePatches priv::diff_models(VCutAOIs            &cuts,
         CutAOIs &model_cuts = cuts[model_index];
         CutMesh &cut_model_ = cut_models[model_index];
         const CutMesh &cut_model = cut_model_;
-        ReductionMap vertex_reduction_map = cut_model_.add_property_map<VI, VI>(vertex_reduction_map_name).first;
+        ReductionMap vertex_reduction_map = access_pmap(cut_model_.add_property_map<VI, VI>(vertex_reduction_map_name));
         create_reduce_map(vertex_reduction_map, cut_model);
 
         for (size_t cut_index = 0; cut_index < model_cuts.size(); ++cut_index, ++index) {
@@ -3559,7 +3549,7 @@ SurfaceCut priv::patch2cut(SurfacePatch &patch)
 
     std::string convert_map_name = "v:convert";
     CutMesh::Property_map<VI, SurfaceCut::Index> convert_map = 
-        mesh.add_property_map<VI, SurfaceCut::Index>(convert_map_name).first;
+        access_pmap(mesh.add_property_map<VI, SurfaceCut::Index>(convert_map_name));
 
     size_t indices_size  = mesh.faces().size();
     size_t vertices_size = mesh.vertices().size();
@@ -3585,7 +3575,7 @@ SurfaceCut priv::patch2cut(SurfacePatch &patch)
         assert(mesh.next(mesh.next(mesh.next(hi))) == hi);
 
         // triangle indicies
-        Vec3i ti;
+        Vec3i32 ti;
         size_t i = 0;
         for (VI vi : { mesh.source(hi), 
                        mesh.target(hi), 
@@ -3708,7 +3698,7 @@ void priv::store(const CutMesh &mesh, const FaceTypeMap &face_type_map, const st
     }
 
     CutMesh &mesh_ = const_cast<CutMesh &>(mesh);
-    auto face_colors = mesh_.add_property_map<priv::FI, CGAL::Color>("f:color").first;    
+    auto face_colors = access_pmap(mesh_.add_property_map<priv::FI, CGAL::Color>("f:color"));
     for (FI fi : mesh.faces()) { 
         auto &color = face_colors[fi];
         switch (face_type_map[fi]) {
@@ -3734,7 +3724,7 @@ void priv::store(const CutMesh &mesh, const ReductionMap &reduction_map, const s
     std::string off_file = dir + "model" + std::to_string(reduction_order++) + ".off";
 
     CutMesh &mesh_ = const_cast<CutMesh &>(mesh);
-    auto vertex_colors = mesh_.add_property_map<priv::VI, CGAL::Color>("v:color").first;    
+    auto vertex_colors = access_pmap(mesh_.add_property_map<priv::VI, CGAL::Color>("v:color"));
     // initialize to gray color
     for (VI vi: mesh.vertices())
         vertex_colors[vi] = CGAL::Color{127, 127, 127};
@@ -3768,7 +3758,7 @@ indexed_triangle_set priv::create_indexed_triangle_set(
         HI hi_end = hi;
 
         int   ti = 0;
-        Vec3i t;
+        Vec3i32 t;
 
         do {
             VI   vi  = mesh.source(hi);
@@ -3828,8 +3818,8 @@ void priv::store(const CutAOIs &aois, const CutMesh &mesh, const std::string &di
             size_t bi2 = its.vertices.size();
             its.vertices.push_back(b + dir);
 
-            its.indices.push_back(Vec3i(ai, ai2, bi));
-            its.indices.push_back(Vec3i(ai2, bi2, bi));
+            its.indices.push_back(Vec3i32(ai, ai2, bi));
+            its.indices.push_back(Vec3i32(ai2, bi2, bi));
         }
         return its;    
     };
@@ -4028,8 +4018,8 @@ indexed_triangle_set priv::create_contour_its(
         size_t bi2 = result.vertices.size();
         result.vertices.push_back(b + dir);
 
-        result.indices.push_back(Vec3i(ai, bi, ai2));
-        result.indices.push_back(Vec3i(ai2, bi, bi2));
+        result.indices.push_back(Vec3i32(ai, bi, ai2));
+        result.indices.push_back(Vec3i32(ai2, bi, bi2));
         prev_vi = vi;
     }
     return result;

@@ -6,15 +6,10 @@
 #include "MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TryCatchSignal.hpp"
-#include "libslic3r/Point.hpp"
-
 #undef PI
 
 // Include igl first. It defines "L" macro which then clashes with our localization
-#include <igl/copyleft/cgal/mesh_boolean.h> // IWYU pragma: keep
-#include <igl/MeshBooleanType.h>
-#include <boost/property_map/property_map.hpp>
-
+#include <igl/copyleft/cgal/mesh_boolean.h>
 #undef L
 
 // CGAL headers
@@ -22,10 +17,6 @@
 #include <CGAL/Exact_integer.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Cartesian_converter.h>
-#include <algorithm>
-#include <set>
-#include <csignal>
-#include <map>
 
 namespace Slic3r {
 namespace MeshBoolean {
@@ -170,7 +161,7 @@ indexed_triangle_set cgal_to_indexed_triangle_set(const _Mesh &cgalmesh)
         auto vtc = cgalmesh.vertices_around_face(cgalmesh.halfedge(face));
 
         int i = 0;
-        Vec3i facet;
+        Vec3i32 facet;
         for (auto v : vtc) {
             int iv = v;
             if (i > 2 || iv < 0 || iv >= vsize) { i = 0; break; }

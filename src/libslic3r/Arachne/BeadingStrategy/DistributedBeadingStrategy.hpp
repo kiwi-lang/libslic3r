@@ -5,7 +5,6 @@
 #define DISTRIBUTED_BEADING_STRATEGY_H
 
 #include "BeadingStrategy.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r::Arachne
 {
@@ -35,9 +34,6 @@ public:
 
     Beading compute(coord_t thickness, coord_t bead_count) const override;
     coord_t getOptimalBeadCount(coord_t thickness) const override;
-
-private:
-    std::vector<float> calc_normalized_weights(coord_t to_be_divided, coord_t bead_count) const;
 };
 
 } // namespace Slic3r::Arachne

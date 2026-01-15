@@ -3,46 +3,25 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "OrganicSupport.hpp"
-
-#include <oneapi/tbb/blocked_range.h>
-#include <oneapi/tbb/parallel_for.h>
-#include <oneapi/tbb/partitioner.h>
-#include <boost/container/small_vector.hpp>
-#include <boost/container/vector.hpp>
-#include <cassert>
-#include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <limits>
-#include <optional>
-#include <utility>
-#include <cinttypes>
-#include <cstddef>
+#include "SupportCommon.hpp"
 
 #include "../AABBTreeLines.hpp"
 #include "../ClipperUtils.hpp"
 #include "../Polygon.hpp"
+#include "../Polyline.hpp"
 #include "../MutablePolygon.hpp"
 #include "../TriangleMeshSlicer.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/AABBTreeIndirect.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Print.hpp"
-#include "libslic3r/Slicing.hpp"
-#include "libslic3r/Support/TreeModelVolumes.hpp"
-#include "libslic3r/Support/TreeSupport.hpp"
-#include "libslic3r/Support/TreeSupportCommon.hpp"
-#include "libslic3r/Utils.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include <cassert>
+
+#include <oneapi/tbb/parallel_for.h>
 
 #define TREE_SUPPORT_ORGANIC_NUDGE_NEW 1
 
 #ifndef TREE_SUPPORT_ORGANIC_NUDGE_NEW
-    #include <openvdb/tools/VolumeToSpheres.h>
-
     // Old version using OpenVDB, works but it is extremely slow for complex meshes.
     #include "../OpenVDBUtilsLegacy.hpp"
+    #include <openvdb/tools/VolumeToSpheres.h>
 #endif // TREE_SUPPORT_ORGANIC_NUDGE_NEW
 
 namespace Slic3r
@@ -363,7 +342,7 @@ void smooth_trees_inside_influence_areas(Branch &root, bool is_root)
             int64_t min_dist = std::numeric_limits<int64_t>::max();
             Point   min_proj_scaled;
             for (const Polygon& polygon : el.influence_area) {
-                Point proj_scaled = polygon.point_projection(new_pos_scaled);
+                Point proj_scaled = polygon.point_projection(new_pos_scaled).first;
                 if (int64_t dist = (proj_scaled - new_pos_scaled).cast<int64_t>().squaredNorm(); dist < min_dist) {
                     min_dist = dist;
                     min_proj_scaled = proj_scaled;

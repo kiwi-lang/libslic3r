@@ -13,16 +13,18 @@
 	#endif // __APPLE__
 #endif
 
-#include <oneapi/tbb/blocked_range.h>
+#include <atomic>
+#include <codecvt>
+#include <condition_variable>
+#include <locale>
+#include <mutex>
+#include <random>
+#include <string>
+#include <thread>
+#include <time.h>
+#include <chrono>
 #include <oneapi/tbb/parallel_for.h>
 #include <oneapi/tbb/task_arena.h>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
-#include <algorithm>
-#include <ostream>
-#include <cassert>
-#include <cstddef>
 
 #include "Thread.hpp"
 #include "Utils.hpp"
@@ -131,8 +133,31 @@ std::optional<std::string> get_current_thread_name()
 		return std::nullopt;
 
 	wchar_t *ptr = nullptr;
-    s_fnGetThreadDescription(::GetCurrentThread(), &ptr);
-    return (ptr == nullptr) ? std::string() : boost::nowide::narrow(ptr);
+	s_fnGetThreadDescription(::GetCurrentThread(), &ptr);
+	return (ptr == nullptr) ? std::string() : boost::nowide::narrow(ptr);
+}
+
+
+void win_exec(const std::string &command) {
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    std::wstring wide = converter.from_bytes(command);
+
+    //system(command.c_str());
+    STARTUPINFO StartupInfo;
+    PROCESS_INFORMATION ProcessInfo;
+
+    ZeroMemory( &StartupInfo, sizeof( StartupInfo ) );
+    StartupInfo.cb = sizeof( StartupInfo );
+    ZeroMemory( &ProcessInfo, sizeof( ProcessInfo ) );
+
+    CreateProcess( wide.c_str(),
+                   NULL, NULL, NULL,
+                   NULL, NULL, NULL, NULL,
+                   &StartupInfo,
+                   &ProcessInfo
+                   );
+
+    return;
 }
 
 #else // _WIN32
@@ -219,10 +244,46 @@ bool is_main_thread_active()
 	return get_main_thread_id() == boost::this_thread::get_id();
 }
 
+#ifdef _DEBUGINFO
+void parallel_for(size_t begin, size_t size, std::function<void(size_t)> process_one_item) {
+    // TODO: sort the idx by difficulty (difficult first) (number of points, region, surfaces, .. ?)
+
+    //For now, this is just use in debug mode, to be able toswitch from // to sequential withotu recompiling evrything.
+
+    // normal step
+    tbb::parallel_for(begin, size, [&process_one_item](size_t item_idx) { process_one_item(item_idx); });
+    // if you need to debug without // stuff
+    //for (size_t idx = begin; idx < size; ++idx) {
+    //    process_one_item(idx);
+    //}
+}
+void not_parallel_for(size_t begin, size_t size, std::function<void(size_t)> process_one_item) {
+    for (size_t idx = begin; idx < size; ++idx) {
+        process_one_item(idx);
+    }
+}
+#endif
+
 static thread_local ThreadData s_thread_data;
 ThreadData& thread_data()
 {
 	return s_thread_data;
+}
+
+std::mt19937&   ThreadData::random_generator() {
+    if (! m_random_generator_initialized) {
+        std::random_device rd;
+        m_random_generator.seed(rd()); //can also be initialized by clock() + std::this_thread::get_id().hash()
+        m_random_generator_initialized = true;
+    }
+    return m_random_generator;
+}
+
+// Thread-safe function that returns a random number between 0 and max (inclusive, like rand()).
+int safe_rand(int max) {
+    std::mt19937 &generator = thread_data().random_generator();
+    std::uniform_int_distribution<int> distribution(0, max);
+    return distribution(generator);
 }
 
 // Spawn (n - 1) worker threads on Intel TBB thread pool and name them by an index and a system thread ID.
@@ -249,9 +310,10 @@ void name_tbb_thread_pool_threads_set_locale()
 	std::condition_variable cv;
 	std::mutex				cv_m;
 	auto					master_thread_id = std::this_thread::get_id();
+	auto					now = std::chrono::system_clock::now();
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, nthreads, 1),
-        [&nthreads_running, nthreads, &master_thread_id, &cv, &cv_m](const tbb::blocked_range<size_t> &range) {
+        [&nthreads_running, nthreads, &master_thread_id, &cv, &cv_m, &now](const tbb::blocked_range<size_t> &range) {
         	assert(range.begin() + 1 == range.end());
 			if (std::unique_lock<std::mutex> lk(cv_m);  ++nthreads_running == nthreads) {
 				lk.unlock();
@@ -260,14 +322,15 @@ void name_tbb_thread_pool_threads_set_locale()
     			cv.notify_all();
         	} else {
         		// Wait for the last thread to wake the others.
-			    cv.wait(lk, [&nthreads_running, nthreads]{return nthreads_running == nthreads;});
+                // here can be deadlock with the main that creates me.
+               cv.wait_until(lk, now + std::chrono::milliseconds(50), [&nthreads_running, nthreads]{return nthreads_running == nthreads;});
         	}
         	auto thread_id = std::this_thread::get_id();
 			if (thread_id == master_thread_id) {
 				// The calling thread runs the 0'th task.
-				assert(range.begin() == 0);
+                //assert(range.begin() == 0);
 			} else {
-				assert(range.begin() > 0);
+                //assert(range.begin() > 0);
 				std::ostringstream name;
 		        name << "slic3r_tbb_" << range.begin();
 		        set_current_thread_name(name.str().c_str());

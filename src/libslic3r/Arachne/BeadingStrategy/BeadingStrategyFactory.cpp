@@ -3,16 +3,13 @@
 
 #include "BeadingStrategyFactory.hpp"
 
-#include <boost/log/trivial.hpp>
-#include <memory>
-#include <utility>
-
 #include "LimitedBeadingStrategy.hpp"
 #include "WideningBeadingStrategy.hpp"
 #include "DistributedBeadingStrategy.hpp"
 #include "RedistributeBeadingStrategy.hpp"
 #include "OuterWallInsetBeadingStrategy.hpp"
-#include "libslic3r/Arachne/BeadingStrategy/BeadingStrategy.hpp"
+
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r::Arachne {
 

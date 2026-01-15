@@ -6,57 +6,30 @@
 #ifndef slic3r_SLAPrint_hpp_
 #define slic3r_SLAPrint_hpp_
 
-#include <boost/functional/hash.hpp>
-#include <stdlib.h>
 #include <cstdint>
 #include <mutex>
 #include <set>
-#include <Eigen/Geometry>
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <functional>
-#include <iterator>
-#include <limits>
-#include <memory>
-#include <string>
-#include <type_traits>
-#include <utility>
-#include <vector>
 
 #include "PrintBase.hpp"
 #include "SLA/SupportTree.hpp"
-#include "SLA/SupportPointGenerator.hpp" // SupportPointGeneratorData
 #include "Point.hpp"
 #include "Format/SLAArchiveWriter.hpp"
-#include "libslic3r/GCode/ThumbnailData.hpp"
+#include "GCode/ThumbnailData.hpp"
 #include "libslic3r/CSGMesh/CSGMesh.hpp"
 #include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/OpenVDBUtils.hpp"
-#include "admesh/stl.h"
-#include "libslic3r/AnyPtr.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/Model.hpp"
-#include "libslic3r/ObjectID.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/SLA/Hollowing.hpp"
-#include "libslic3r/SLA/Pad.hpp"
-#include "libslic3r/SLA/SupportPoint.hpp"
-#include "libslic3r/TriangleMesh.hpp"
-#include "libslic3r/libslic3r.h"
+
+#include <boost/functional/hash.hpp>
 
 namespace Slic3r {
-namespace sla {
-struct JobController;
-}  // namespace sla
 
-enum SLAPrintStep : unsigned int {
+enum SLAPrintStep : uint8_t {
     slapsMergeSlicesAndEval,
     slapsRasterize,
 	slapsCount
 };
 
-enum SLAPrintObjectStep : unsigned int {
+enum SLAPrintObjectStep : uint8_t {
     slaposAssembly,
     slaposHollowing,
     slaposDrillHoles,
@@ -368,9 +341,6 @@ private:
 
     std::vector<float>                      m_model_height_levels;
 
-    // Precalculated data needed for interactive automatic support placement.
-    sla::SupportPointGeneratorData          m_support_point_generator_data;
-
     struct SupportData
     {
         sla::SupportableMesh    input; // the input
@@ -436,15 +406,13 @@ struct SLAPrintStatistics
 {
     SLAPrintStatistics() { clear(); }
     double                          estimated_print_time;
-    double                          estimated_print_time_tolerance;
     double                          objects_used_material;
     double                          support_used_material;
     size_t                          slow_layers_count;
     size_t                          fast_layers_count;
     double                          total_cost;
     double                          total_weight;
-    std::vector<double>             layers_times_running_total;
-    std::vector<double>             layers_areas;
+    std::vector<double>             layers_times;
 
     // Config with the filled in print statistics.
     DynamicConfig           config() const;
@@ -455,15 +423,13 @@ struct SLAPrintStatistics
 
     void clear() {
         estimated_print_time = 0.;
-        estimated_print_time_tolerance = 0.;
         objects_used_material = 0.;
         support_used_material = 0.;
         slow_layers_count = 0;
         fast_layers_count = 0;
         total_cost = 0.;
         total_weight = 0.;
-        layers_times_running_total.clear();
-        layers_areas.clear();
+        layers_times.clear();
     }
 };
 
@@ -494,7 +460,7 @@ public:
     bool                empty() const override { return m_objects.empty(); }
     // List of existing PrintObject IDs, to remove notifications for non-existent IDs.
     std::vector<ObjectID> print_object_ids() const override;
-    ApplyStatus         apply(const Model &model, DynamicPrintConfig config, std::vector<std::string> *warnings = nullptr) override;
+    ApplyStatus         apply(const Model &model, DynamicPrintConfig config) override;
     void                set_task(const TaskParams &params) override { PrintBaseWithState<SLAPrintStep, slapsCount>::set_task_impl(params, m_objects); }
     void                process() override;
     void                finalize() override { PrintBaseWithState<SLAPrintStep, slapsCount>::finalize_impl(m_objects); }
@@ -533,7 +499,7 @@ public:
 
     const SLAPrintStatistics&   print_statistics() const { return m_print_statistics; }
 
-    std::string validate(std::vector<std::string>* warnings = nullptr) const override;
+    std::pair<PrintBase::PrintValidationError, std::string> validate(std::vector<std::string>* warnings = nullptr) const override;
 
     // An aggregation of SliceRecord-s from all the print objects for each
     // occupied layer. Slice record levels dont have to match exactly.
@@ -586,8 +552,6 @@ public:
     void export_print(const std::string    &fname,
                       const ThumbnailsList &thumbnails,
                       const std::string    &projectname = "");
-
-    static bool is_prusa_print(const std::string& printer_model);
     
 private:
     
@@ -621,7 +585,7 @@ private:
         void operator()(SLAPrint &         p,
                         double             st,
                         const std::string &msg,
-                        unsigned           flags = SlicingStatus::DEFAULT,
+                        uint16_t           flags = SlicingStatus::DEFAULT,
                         const std::string &logmsg = "");
         
         double status() const { return m_st; }

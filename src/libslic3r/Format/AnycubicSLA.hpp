@@ -6,21 +6,12 @@
 #ifndef _SLIC3R_FORMAT_PWMX_HPP_
 #define _SLIC3R_FORMAT_PWMX_HPP_
 
-#include <stdint.h>
 #include <string>
-#include <memory>
-#include <utility>
-#include <cinttypes>
 
 #include "SLAArchiveWriter.hpp"
 #include "SLAArchiveFormatRegistry.hpp"
-#include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/GCode/ThumbnailData.hpp"
-#include "libslic3r/SLA/RasterBase.hpp"
 
-namespace Slic3r {
-class SLAPrint;
-}  // namespace Slic3r
+#include "libslic3r/PrintConfig.hpp"
 
 constexpr uint16_t ANYCUBIC_SLA_FORMAT_VERSION_1 = 1;
 constexpr uint16_t ANYCUBIC_SLA_FORMAT_VERSION_515 = 515;
@@ -59,9 +50,9 @@ public:
                       const std::string    &projectname = "") override;
 };
 
-inline Slic3r::ArchiveEntry anycubic_sla_format_versioned(const char *fileformat, const char *desc, uint16_t version)
+inline Slic3r::ArchiveEntry anycubic_sla_format_versioned(OutputFormat format, const char *fileformat, const char *desc, uint16_t version)
 {
-    Slic3r::ArchiveEntry entry(fileformat);
+    Slic3r::ArchiveEntry entry(format, fileformat);
 
     entry.desc = desc;
     entry.ext  = fileformat;
@@ -70,9 +61,9 @@ inline Slic3r::ArchiveEntry anycubic_sla_format_versioned(const char *fileformat
     return entry;
 }
 
-inline Slic3r::ArchiveEntry anycubic_sla_format(const char *fileformat, const char *desc)
+inline Slic3r::ArchiveEntry anycubic_sla_format(OutputFormat format, const char *fileformat, const char *desc)
 {
-    return anycubic_sla_format_versioned(fileformat, desc, ANYCUBIC_SLA_FORMAT_VERSION_1);
+    return anycubic_sla_format_versioned(format, fileformat, desc, ANYCUBIC_SLA_FORMAT_VERSION_1);
 }
 
 } // namespace Slic3r::sla

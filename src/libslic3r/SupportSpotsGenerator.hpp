@@ -5,39 +5,23 @@
 #ifndef SRC_LIBSLIC3R_SUPPORTABLEISSUESSEARCH_HPP_
 #define SRC_LIBSLIC3R_SUPPORTABLEISSUESSEARCH_HPP_
 
-#include <boost/log/trivial.hpp>
-#include <cstddef>
-#include <vector>
-#include <algorithm>
-#include <optional>
-#include <string>
-#include <tuple>
-#include <utility>
-
 #include "Layer.hpp"
 #include "Line.hpp"
 #include "PrintBase.hpp"
 #include "PrintConfig.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/Point.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/libslic3r.h"
+#include <boost/log/trivial.hpp>
+#include <cstddef>
+#include <vector>
 
 namespace Slic3r {
-class ExtrusionEntity;
-class ExtrusionEntityCollection;
-class Layer;
-class PrintObject;
-class SupportLayer;
 
 namespace SupportSpotsGenerator {
 
 struct Params
 {
     Params(
-        const std::vector<std::string> &filament_types, float max_acceleration, int raft_layers_count, BrimType brim_type, float brim_width)
-        : max_acceleration(max_acceleration), raft_layers_count(raft_layers_count), brim_type(brim_type), brim_width(brim_width)
+        const std::vector<std::string> &filament_types, float max_acceleration, int raft_layers_count, float brim_width_outer, float brim_width_inner)
+        : max_acceleration(max_acceleration), raft_layers_count(raft_layers_count), brim_width_outer(brim_width_outer), brim_width_inner(brim_width_inner)
     {
         if (filament_types.size() > 1) {
             BOOST_LOG_TRIVIAL(warning)
@@ -59,8 +43,8 @@ struct Params
     const int raft_layers_count;
     std::string filament_type;
 
-    BrimType brim_type;
-    const float brim_width;
+    const float brim_width_outer;
+    const float brim_width_inner;
 
     const std::pair<float,float> malformation_distance_factors = std::pair<float, float> { 0.2, 1.1 };
     const float max_curled_height_factor = 10.0f;

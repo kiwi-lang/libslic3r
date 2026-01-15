@@ -5,27 +5,16 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "AnycubicSLA.hpp"
+#include "GCode/ThumbnailData.hpp"
+#include "SLA/RasterBase.hpp"
+#include "libslic3r/SLAPrint.hpp"
+
+#include <sstream>
+#include <iostream>
+#include <fstream>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/log/trivial.hpp>
-#include <fstream> // IWYU pragma: keep
-#include <algorithm>
-#include <array>
-#include <cstdint>
-#include <cstring>
-#include <exception>
-#include <iterator>
-#include <map>
-#include <vector>
-#include <cassert>
-#include <cstdio>
-
-#include "libslic3r/GCode/ThumbnailData.hpp"
-#include "libslic3r/SLA/RasterBase.hpp"
-#include "libslic3r/SLAPrint.hpp"
-#include "LocalesUtils.hpp"
-#include "libslic3r/Config.hpp"
-#include "libslic3r/libslic3r.h"
 
 
 #define TAG_INTRO "ANYCUBIC\0\0\0\0"
@@ -215,7 +204,7 @@ float get_cfg_value_f(const DynamicConfig &cfg,
 {
     if (cfg.has(key)) {
         if (auto opt = cfg.option(key))
-            return opt->getFloat();
+            return opt->get_float();
     }
 
     return def;
@@ -227,7 +216,7 @@ int get_cfg_value_i(const DynamicConfig &cfg,
 {
     if (cfg.has(key)) {
         if (auto opt = cfg.option(key))
-            return opt->getInt();
+            return opt->get_int();
     }
 
     return def;
@@ -388,15 +377,15 @@ std::unique_ptr<sla::RasterBase> AnycubicSLAArchive::create_raster() const
     sla::PixelDim       pxdim;
     std::array<bool, 2> mirror;
 
-    double w  = m_cfg.display_width.getFloat();
-    double h  = m_cfg.display_height.getFloat();
-    auto   pw = size_t(m_cfg.display_pixels_x.getInt());
-    auto   ph = size_t(m_cfg.display_pixels_y.getInt());
+    double w  = m_cfg.display_width.value;
+    double h  = m_cfg.display_height.value;
+    auto   pw = size_t(m_cfg.display_pixels_x.value);
+    auto   ph = size_t(m_cfg.display_pixels_y.value);
 
-    mirror[X] = m_cfg.display_mirror_x.getBool();
-    mirror[Y] = m_cfg.display_mirror_y.getBool();
+    mirror[X] = m_cfg.display_mirror_x.value;
+    mirror[Y] = m_cfg.display_mirror_y.value;
 
-    auto                         ro = m_cfg.display_orientation.getInt();
+    auto                         ro = m_cfg.display_orientation.value;
     sla::RasterBase::Orientation orientation =
         ro == sla::RasterBase::roPortrait ? sla::RasterBase::roPortrait :
                                             sla::RasterBase::roLandscape;
@@ -410,7 +399,7 @@ std::unique_ptr<sla::RasterBase> AnycubicSLAArchive::create_raster() const
     pxdim = sla::PixelDim{w / pw, h / ph};
     sla::RasterBase::Trafo tr{orientation, mirror};
 
-    double gamma = m_cfg.gamma_correction.getFloat();
+    double gamma = m_cfg.gamma_correction.value;
 
     return sla::create_raster_grayscale_aa(res, pxdim, gamma, tr);
 }

@@ -7,23 +7,18 @@
 //#undef SLIC3R_DEBUG
 //#define NDEBUG
 
+#include <cmath>
+#include <cassert>
+
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/box.hpp>
 #include <boost/geometry/geometries/point.hpp>
 #include <boost/geometry/geometries/point_xy.hpp>
+
 #include <boost/multi_array.hpp>
-#include <cmath>
-#include <cassert>
-#include <algorithm>
-#include <complex>
-#include <utility>
-#include <vector>
-#include <cstring>
 
 #include "libslic3r.h"
 #include "ExtrusionSimulator.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExtrusionEntity.hpp"
 
 #ifndef M_PI
 #define M_PI 3.1415926535897932384626433832795
@@ -661,7 +656,8 @@ void gcode_spread_points(
 	for (ExtrusionPoints::const_iterator it = points.begin(); it != points.end(); ++ it)
 		rmax = std::max(rmax, it->radius);
 	size_t n_rows_max  = size_t(ceil(rmax * 2.f + 2.f));
-	size_t n_cells_max = sqr(n_rows_max);
+    assert(n_rows_max < std::numeric_limits<int32_t>::max());
+	size_t n_cells_max = n_rows_max * n_rows_max;
 	std::vector<std::pair<float, float> > spans;
 	std::vector<Cell>  cells(n_cells_max, Cell());
 	std::vector<float> areas_sum(n_cells_max, 0.f);
@@ -970,12 +966,13 @@ void ExtrusionSimulator::reset_accumulator()
 	// printf("Reset accumulator, done.\n");
 }
 
+//not used
 void ExtrusionSimulator::extrude_to_accumulator(const ExtrusionPath &path, const Point &shift, ExtrusionSimulationType simulationType)
 {
 	// printf("Extruding a path. Nr points: %d, width: %f, height: %f\r\n", path.polyline.points.size(), path.width, path.height);
 	// Convert the path to V2f points, shift and scale them to the viewport.
 	std::vector<V2f> polyline;
-	polyline.reserve(path.polyline.points.size());
+	polyline.reserve(path.polyline.size());
 	float scalex  = float(viewport.size().x()) / float(bbox.size().x());
 	float scaley  = float(viewport.size().y()) / float(bbox.size().y());
 	float w = scale_(path.width()) * scalex;
@@ -983,10 +980,11 @@ void ExtrusionSimulator::extrude_to_accumulator(const ExtrusionPath &path, const
 	w = scale_(path.mm3_per_mm() / path.height()) * scalex;
 	// printf("scalex: %f, scaley: %f\n", scalex, scaley);
 	// printf("bbox: %d,%d %d,%d\n", bbox.min.x(), bbox.min.y, bbox.max.x(), bbox.max.y);
-	for (Points::const_iterator it = path.polyline.points.begin(); it != path.polyline.points.end(); ++ it) {
+	//for (Points::const_iterator it = path.polyline.get_points().begin(); it != path.polyline.get_points().end(); ++ it) {
+	for (Point &p : path.polyline.to_polyline()) {
 		// printf("point %d,%d\n", it->x+shift.x(), it->y+shift.y);
 		ExtrusionPoint ept;
-		ept.center = V2f(float((*it)(0)+shift.x()-bbox.min.x()) * scalex, float((*it)(1)+shift.y()-bbox.min.y()) * scaley);
+		ept.center = V2f(float(p.x()+shift.x()-bbox.min.x()) * scalex, float(p.y()+shift.y()-bbox.min.y()) * scaley);
 		ept.radius = w/2.f;
 		ept.height = 0.5f;
 		polyline.push_back(ept.center);

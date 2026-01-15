@@ -11,13 +11,6 @@
 #endif // _MSC_VER
 #include <openvdb/openvdb.h>
 #include <openvdb/tools/MeshToVolume.h>
-#include <openvdb/Grid.h>
-#include <openvdb/Metadata.h>
-#include <openvdb/Types.h>
-#include <openvdb/math/Transform.h>
-#include <openvdb/math/Vec3.h>
-#include <openvdb/math/Vec4.h>
-#include <openvdb/tools/Morphology.h>
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif // _MSC_VER
@@ -26,14 +19,6 @@
 #include <openvdb/tools/Composite.h>
 #include <openvdb/tools/LevelSetRebuild.h>
 #include <openvdb/tools/FastSweeping.h>
-#include <algorithm>
-#include <optional>
-#include <utility>
-#include <vector>
-#include <cstddef>
-
-#include "libslic3r/TriangleMesh.hpp"
-#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
@@ -67,7 +52,7 @@ template VoxelGridPtr make_voxelgrid<>();
 
 inline Vec3f to_vec3f(const openvdb::Vec3s &v) { return Vec3f{v.x(), v.y(), v.z()}; }
 inline Vec3d to_vec3d(const openvdb::Vec3s &v) { return to_vec3f(v).cast<double>(); }
-inline Vec3i to_vec3i(const openvdb::Vec3I &v) { return Vec3i{int(v[2]), int(v[1]), int(v[0])}; }
+inline Vec3i32 to_vec3i(const openvdb::Vec3I &v) { return Vec3i32{int32_t(v[2]), int32_t(v[1]), int32_t(v[0])}; }
 
 class TriangleMeshDataAdapter {
 public:

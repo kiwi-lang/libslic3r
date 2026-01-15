@@ -5,15 +5,11 @@
 #ifndef libslic3r_MeshBoolean_hpp_
 #define libslic3r_MeshBoolean_hpp_
 
-#include <libslic3r/TriangleMesh.hpp>
 #include <memory>
 #include <exception>
-#include <Eigen/Geometry>
-#include <utility>
-#include <vector>
 
-#include "admesh/stl.h"
-#include "libslic3r/Point.hpp"
+#include <libslic3r/TriangleMesh.hpp>
+#include <Eigen/Geometry>
 
 namespace Slic3r {
 
@@ -33,7 +29,6 @@ void self_union(TriangleMesh& mesh);
 namespace cgal {
 
 struct CGALMesh;
-
 struct CGALMeshDeleter { void operator()(CGALMesh *ptr); };
 using CGALMeshPtr = std::unique_ptr<CGALMesh, CGALMeshDeleter>;
 

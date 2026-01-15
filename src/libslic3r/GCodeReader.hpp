@@ -5,28 +5,18 @@
 #ifndef slic3r_GCodeReader_hpp_
 #define slic3r_GCodeReader_hpp_
 
-#include <stdint.h>
-#include <string.h>
+#include "libslic3r.h"
 #include <cmath>
 #include <cstdlib>
 #include <functional>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
-#include <cinttypes>
-#include <cstring>
-
-#include "libslic3r.h"
 #include "PrintConfig.hpp"
-#include "libslic3r/Point.hpp"
 
 namespace Slic3r {
 
 class GCodeReader {
 public:
-    typedef std::function<void(float)> ProgressCallback;
-
     class GCodeLine {
     public:
         GCodeLine() { reset(); }
@@ -86,6 +76,11 @@ public:
 
         static bool cmd_is(const std::string &gcode_line, const char *cmd_test) {
             const char *cmd = GCodeReader::skip_whitespaces(gcode_line.c_str());
+            // Skip line number
+            if (*cmd == 'N') {
+                cmd = skip_word(cmd);
+                cmd = skip_whitespaces(cmd);
+            }
             size_t len = strlen(cmd_test); 
             return strncmp(cmd, cmd_test, len) == 0 && GCodeReader::is_end_of_word(cmd[len]);
         }
@@ -106,6 +101,14 @@ public:
         float            m_axis[NUM_AXES];
         uint32_t         m_mask;
         friend class GCodeReader;
+    };
+    class FakeGCodeLine : public GCodeLine {
+    public:
+        void set_x(float x) { m_axis[X] = x; m_mask = (m_mask | (1 << int(X))); }
+        void set_y(float y) { m_axis[Y] = y; m_mask = (m_mask | (1 << int(Y))); }
+        void set_z(float z) { m_axis[Z] = z; m_mask = (m_mask | (1 << int(Z))); }
+        void set_e(float e) { m_axis[E] = e; m_mask = (m_mask | (1 << int(E))); }
+        void set_f(float f) { m_axis[F] = f; m_mask = (m_mask | (1 << int(F))); }
     };
 
     typedef std::function<void(GCodeReader&, const GCodeLine&)> callback_t;
@@ -174,8 +177,6 @@ public:
     char   extrusion_axis() const { return m_extrusion_axis; }
 //  void   set_extrusion_axis(char axis) { m_extrusion_axis = axis; }
 
-    void set_progress_callback(ProgressCallback cb) { m_progress_callback = cb; }
-
 private:
     template<typename ParseLineCallback, typename LineEndCallback>
     bool        parse_file_raw_internal(const std::string &filename, ParseLineCallback parse_line_callback, LineEndCallback line_end_callback);
@@ -207,8 +208,6 @@ private:
     bool        m_verbose;
     // To be set by the callback to stop parsing.
     bool        m_parsing{ false };
-
-    ProgressCallback m_progress_callback{ nullptr };
 };
 
 } /* namespace Slic3r */

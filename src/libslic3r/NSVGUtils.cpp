@@ -3,21 +3,13 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "NSVGUtils.hpp"
-
-#include <boost/nowide/fstream.hpp>
-#include <nanosvg/nanosvg.h>
 #include <array>
-#include <algorithm>
-#include <sstream>
-#include <cassert>
-#include <cstring>
+#include <charconv> // to_chars
 
+#include <boost/nowide/iostream.hpp>
+#include <boost/nowide/fstream.hpp>
+#include "ClipperUtils.hpp"
 #include "Emboss.hpp" // heal for shape
-#include "libslic3r/ClipperUtils.hpp"
-#include "libslic3r/EmbossShape.hpp"
-#include "libslic3r/Exception.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
 
 namespace {    
 using namespace Slic3r; // Polygon

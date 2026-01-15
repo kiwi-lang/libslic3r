@@ -16,30 +16,18 @@
 #ifndef slic3r_Geometry_hpp_
 #define slic3r_Geometry_hpp_
 
-// Serialization through the Cereal library
-#include <cereal/access.hpp>
-#include <assert.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <cereal/cereal.hpp>
-#include <Eigen/Geometry>
-#include <cmath>
-#include <string>
-#include <utility>
-#include <vector>
-#include <cassert>
-#include <cinttypes>
-#include <cstdlib>
-
 #include "libslic3r.h"
 #include "BoundingBox.hpp"
 #include "ExPolygon.hpp"
 #include "Polygon.hpp"
 #include "Polyline.hpp"
-#include "libslic3r/Line.hpp"
-#include "libslic3r/Point.hpp"
 
-namespace Slic3r::Geometry {
+// Serialization through the Cereal library
+#include <cereal/access.hpp>
+
+namespace Slic3r { 
+
+namespace Geometry {
 
 // Generic result of an orientation predicate.
 enum Orientation
@@ -55,14 +43,24 @@ enum Orientation
 // As the points are limited to 30 bits + signum,
 // the temporaries u, v, w are limited to 61 bits + signum,
 // and d is limited to 63 bits + signum and we are good.
-static inline Orientation orient(const Point &a, const Point &b, const Point &c)
-{
-    static_assert(sizeof(coord_t) * 2 == sizeof(int64_t), "orient works with 32 bit coordinates");
+//note: now coord_t is int64_t, so the algorithm is now adjusted to fallback to double is too big.
+static inline Orientation orient(const Point &a, const Point &b, const Point &c) {
+    //static_assert(sizeof(coord_t) * 2 == sizeof(int64_t), "orient works with 32 bit coordinates");
+    // BOOST_STATIC_ASSERT(sizeof(coord_t) == sizeof(int64_t));
+    if (a.x() <= 0xffffffff && b.x() <= 0xffffffff && c.x() <= 0xffffffff &&
+        a.y() <= 0xffffffff && b.y() <= 0xffffffff && c.y() <= 0xffffffff) {
     int64_t u = int64_t(b.x()) * int64_t(c.y()) - int64_t(b.y()) * int64_t(c.x());
     int64_t v = int64_t(a.x()) * int64_t(c.y()) - int64_t(a.y()) * int64_t(c.x());
     int64_t w = int64_t(a.x()) * int64_t(b.y()) - int64_t(a.y()) * int64_t(b.x());
-    int64_t d = u - v + w;
-    return (d > 0) ? ORIENTATION_CCW : ((d == 0) ? ORIENTATION_COLINEAR : ORIENTATION_CW);
+        int64_t d = u - v + w;
+        return (d > 0) ? ORIENTATION_CCW : ((d == 0) ? ORIENTATION_COLINEAR : ORIENTATION_CW);
+    } else {
+        double u = double(b(0)) * double(c(1)) - double(b(1)) * double(c(0));
+        double v = double(a(0)) * double(c(1)) - double(a(1)) * double(c(0));
+        double w = double(a(0)) * double(b(1)) - double(a(1)) * double(b(0));
+        double d = u - v + w;
+        return (d > 0) ? ORIENTATION_CCW : ((d == 0) ? ORIENTATION_COLINEAR : ORIENTATION_CW);
+    }
 }
 
 // Return orientation of the polygon by checking orientation of the left bottom corner of the polygon
@@ -404,6 +402,20 @@ Transform3d scale_transform(const Vec3d& scale);
 
 // Returns the euler angles extracted from the given rotation matrix
 // Warning -> The matrix should not contain any scale or shear !!!
+Vec3d extract_euler_angles(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& rotation_matrix);
+
+// Returns the euler angles extracted from the given affine transform
+// Warning -> The transform should not contain any shear !!!
+Vec3d extract_euler_angles(const Transform3d& transform);
+
+// get rotation from two vectors.
+// Default output is axis-angle. If rotation_matrix pointer is provided, also output rotation matrix
+// Euler angles can be obtained by extract_euler_angles()
+void rotation_from_two_vectors(Vec3d from, Vec3d to, Vec3d &rotation_axis, double &phi, Matrix3d *rotation_matrix = nullptr);
+
+
+// Returns the euler angles extracted from the given rotation matrix
+// Warning -> The matrix should not contain any scale or shear !!!
 Vec3d extract_rotation(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& rotation_matrix);
 
 // Returns the euler angles extracted from the given affine transform
@@ -472,22 +484,22 @@ public:
     Transform3d get_matrix_no_offset() const;
     Transform3d get_matrix_no_scaling_factor() const;
 
-    Transform3d get_matrix_with_applied_shrinkage_compensation(const Vec3d &shrinkage_compensation) const;
-
     void set_matrix(const Transform3d& transform) { m_matrix = transform; }
 
     Transformation operator * (const Transformation& other) const;
+    bool operator==(const Transformation& trsf) const;
+    bool operator!=(const Transformation& trsf) const { return !operator==(trsf); }
 
 private:
-    friend class cereal::access;
+	friend class cereal::access;
     template<class Archive> void serialize(Archive& ar) { ar(m_matrix); }
     explicit Transformation(int) {}
     template <class Archive> static void load_and_construct(Archive& ar, cereal::construct<Transformation>& construct)
-    {
-        // Calling a private constructor with special "int" parameter to indicate that no construction is necessary.
-        construct(1);
+	{
+		// Calling a private constructor with special "int" parameter to indicate that no construction is necessary.
+		construct(1);
         ar(construct.ptr()->m_matrix);
-    }
+	}
 };
 
 struct TransformationSVD
@@ -565,22 +577,6 @@ Vec<3, T> spheric_to_dir(const Pair &v)
     return spheric_to_dir<T>(plr, azm);
 }
 
-/**
- * Checks if a given point is inside a corner of a polygon.
- *
- * The corner of a polygon is defined by three points A, B, C in counterclockwise order.
- *
- * Adapted from CuraEngine LinearAlg2D::isInsideCorner by Tim Kuipers @BagelOrb
- * and @Ghostkeeper.
- *
- * @param a The first point of the corner.
- * @param b The second point of the corner (the common vertex of the two edges forming the corner).
- * @param c The third point of the corner.
- * @param query_point The point to be checked if is inside the corner.
- * @return True if the query point is inside the corner, false otherwise.
- */
-bool is_point_inside_polygon_corner(const Point &a, const Point &b, const Point &c, const Point &query_point);
-
-} // namespace Slic3r::Geometry
+} } // namespace Slicer::Geometry
 
 #endif

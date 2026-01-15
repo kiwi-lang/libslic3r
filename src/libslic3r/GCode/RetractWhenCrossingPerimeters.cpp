@@ -2,19 +2,11 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <algorithm>
-#include <cassert>
-
 #include "../ClipperUtils.hpp"
 #include "../Layer.hpp"
 #include "../Polyline.hpp"
+
 #include "RetractWhenCrossingPerimeters.hpp"
-#include "libslic3r/AABBTreeIndirect.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/LayerRegion.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Surface.hpp"
 
 namespace Slic3r {
 
@@ -28,7 +20,7 @@ bool RetractWhenCrossingPerimeters::travel_inside_internal_regions(const Layer &
         // Collect expolygons of internal slices.
         for (const LayerRegion *layerm : layer.regions())
             for (const Surface &surface : layerm->slices().surfaces)
-                if (surface.is_internal())
+                if (surface.has_pos_internal())
                     m_internal_islands.emplace_back(&surface.expolygon);
         // Calculate bounding boxes of internal slices.
         std::vector<AABBTreeIndirect::BoundingBoxWrapper> bboxes;

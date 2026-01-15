@@ -12,35 +12,34 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/split.hpp>
-#include <boost/algorithm/string/constants.hpp>
+#include "libslic3r.h"
+#include "Exception.hpp"
+#include "Geometry.hpp"
+#include "ClipperUtils.hpp"
+#include "ExPolygon.hpp"
+#include "Line.hpp"
+#include "clipper.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <list>
+#include <map>
+#include <numeric>
+#include <set>
 #include <utility>
+#include <stack>
 #include <vector>
-#include <array>
-#include <complex>
+#include <boost/log/trivial.hpp>
 
-#include "libslic3r.h"
-#include "Geometry.hpp"
-#include "ClipperUtils.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/MultiPoint.hpp"
-#include "libslic3r/Polygon.hpp"
-
-namespace boost {
-namespace polygon {
-template <typename T> class point_data;
-}  // namespace polygon
-}  // namespace boost
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/log/trivial.hpp>
 
 #if defined(_MSC_VER) && defined(__clang__)
 #define BOOST_NO_CXX17_HDR_STRING_VIEW
 #endif
 
-namespace Slic3r::Geometry {
+namespace Slic3r { namespace Geometry {
 
 bool directions_parallel(double angle1, double angle2, double max_diff)
 {
@@ -187,8 +186,8 @@ arrange(size_t total_parts, const Vec2d &part_size, coordf_t dist, const Boundin
     }
     
     // this is how many cells we have available into which to put parts
-    size_t cellw = floor((area(0) + dist) / part(0));
-    size_t cellh = floor((area(1) + dist) / part(1));
+    size_t cellw = (size_t)( floor((area(0) + dist) / part(0)) );
+    size_t cellh = (size_t)( floor((area(1) + dist) / part(1)) );
     if (total_parts > (cellw * cellh))
         return false;
     
@@ -409,6 +408,37 @@ Vec3d extract_rotation(const Transform3d& transform)
     m.col(1).normalize();
     m.col(2).normalize();
     return extract_rotation(m);
+}
+
+Vec3d extract_euler_angles(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& rotation_matrix)
+{
+    // The extracted "rotation" is a triplet of numbers such that Geometry::rotation_transform
+    // returns the original transform. Because of the chosen order of rotations, the triplet
+    // is not equivalent to Euler angles in the usual sense.
+    Vec3d angles = rotation_matrix.eulerAngles(2,1,0);
+    std::swap(angles(0), angles(2));
+    return angles;
+}
+
+Vec3d extract_euler_angles(const Transform3d& transform)
+{
+    // use only the non-translational part of the transform
+    Eigen::Matrix<double, 3, 3, Eigen::DontAlign> m = transform.matrix().block(0, 0, 3, 3);
+    // remove scale
+    m.col(0).normalize();
+    m.col(1).normalize();
+    m.col(2).normalize();
+    return extract_euler_angles(m);
+}
+
+void rotation_from_two_vectors(Vec3d from, Vec3d to, Vec3d& rotation_axis, double& phi, Matrix3d* rotation_matrix)
+{
+    const Matrix3d m = Eigen::Quaterniond().setFromTwoVectors(from, to).toRotationMatrix();
+    const Eigen::AngleAxisd aa(m);
+    rotation_axis = aa.axis();
+    phi           = aa.angle();
+    if (rotation_matrix)
+        *rotation_matrix = m;
 }
 
 Transform3d Transformation::get_offset_matrix() const
@@ -639,24 +669,15 @@ Transform3d Transformation::get_matrix_no_scaling_factor() const
     return copy.get_matrix();
 }
 
-Transform3d Transformation::get_matrix_with_applied_shrinkage_compensation(const Vec3d &shrinkage_compensation) const {
-    const Transform3d shrinkage_trafo = Geometry::scale_transform(shrinkage_compensation);
-    const Vec3d trafo_offset         = this->get_offset();
-    const Vec3d trafo_offset_xy      = Vec3d(trafo_offset.x(), trafo_offset.y(), 0.);
-
-    Transformation copy(*this);
-    copy.set_offset(Axis::X, 0.);
-    copy.set_offset(Axis::Y, 0.);
-
-    Transform3d trafo_after_shrinkage    = (shrinkage_trafo * copy.get_matrix());
-    trafo_after_shrinkage.translation() += trafo_offset_xy;
-
-    return trafo_after_shrinkage;
-}
-
 Transformation Transformation::operator * (const Transformation& other) const
 {
     return Transformation(get_matrix() * other.get_matrix());
+}
+
+
+bool Transformation::operator==(const Transformation& other) const
+{
+    return m_matrix.matrix() == other.m_matrix.matrix();
 }
 
 TransformationSVD::TransformationSVD(const Transform3d& trafo)
@@ -687,8 +708,8 @@ TransformationSVD::TransformationSVD(const Transform3d& trafo)
             if (num_zeros != 2 || num_ones != 1) {
                 rotation_90_degrees = false;
                 break;
-            }
-        }
+    }
+    }
         // Detect skew by brute force: check if the axes are still orthogonal after transformation
         const Matrix3d trafo_linear = trafo.linear();
         const std::array<Vec3d, 3> axes = { Vec3d::UnitX(), Vec3d::UnitY(), Vec3d::UnitZ() };
@@ -777,50 +798,4 @@ bool trafos_differ_in_rotation_by_z_and_mirroring_by_xy_only(const Transform3d &
     return std::abs(d * d) < EPSILON * lx2 * ly2;
 }
 
-bool is_point_inside_polygon_corner(const Point &a, const Point &b, const Point &c, const Point &query_point) {
-    // Cast all input points into int64_t to prevent overflows when points are close to max values of coord_t.
-    const Vec2i64 a_i64           = a.cast<int64_t>();
-    const Vec2i64 b_i64           = b.cast<int64_t>();
-    const Vec2i64 c_i64           = c.cast<int64_t>();
-    const Vec2i64 query_point_i64 = query_point.cast<int64_t>();
-
-    // Shift all points to have a base in vertex B.
-    // Then construct normalized vectors to ensure that we will work with vectors with endpoints on the unit circle.
-    const Vec2d ba = (a_i64 - b_i64).cast<double>().normalized();
-    const Vec2d bc = (c_i64 - b_i64).cast<double>().normalized();
-    const Vec2d bq = (query_point_i64 - b_i64).cast<double>().normalized();
-
-    // Points A and C has to be different.
-    assert(ba != bc);
-
-    // Construct a normal for the vector BQ that points to the left side of the vector BQ.
-    const Vec2d bq_left_normal = perp(bq);
-
-    const double proj_a_on_bq_normal = ba.dot(bq_left_normal); // Project point A on the normal of BQ.
-    const double proj_c_on_bq_normal = bc.dot(bq_left_normal); // Project point C on the normal of BQ.
-    if ((proj_a_on_bq_normal > 0. && proj_c_on_bq_normal <= 0.) || (proj_a_on_bq_normal <= 0. && proj_c_on_bq_normal > 0.)) {
-        // Q is between points A and C or lies on one of those vectors (BA or BC).
-
-        // Based on the CCW order of polygons (contours) and order of corner ABC,
-        // when this condition is met, the query point is inside the corner.
-        return proj_a_on_bq_normal > 0.;
-    } else {
-        // Q isn't between points A and C, but still it can be inside the corner.
-
-        const double proj_a_on_bq = ba.dot(bq); // Project point A on BQ.
-        const double proj_c_on_bq = bc.dot(bq); // Project point C on BQ.
-
-        // The value of proj_a_on_bq_normal is the same when we project the vector BA on the normal of BQ.
-        // So we can say that the Q is on the right side of the vector BA when proj_a_on_bq_normal > 0, and
-        // that the Q is on the left side of the vector BA proj_a_on_bq_normal < 0.
-        // Also, the Q is on the right side of the bisector of oriented angle ABC when proj_c_on_bq < proj_a_on_bq, and
-        // the Q is on the left side of the bisector of oriented angle ABC when proj_c_on_bq > proj_a_on_bq.
-
-        // So the Q is inside the corner when one of the following conditions is met:
-        //  * The Q is on the right side of the vector BA, and the Q is on the right side of the bisector of the oriented angle ABC.
-        //  * The Q is on the left side of the vector BA, and the Q is on the left side of the bisector of the oriented angle ABC.
-        return (proj_a_on_bq_normal > 0. && proj_c_on_bq < proj_a_on_bq) || (proj_a_on_bq_normal <= 0. && proj_c_on_bq >= proj_a_on_bq);
-    }
-}
-
-} // namespace Slic3r::Geometry
+}} // namespace Slic3r::Geometry

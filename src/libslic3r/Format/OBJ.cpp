@@ -6,17 +6,16 @@
 ///|/
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
-#include <boost/log/trivial.hpp>
-#include <string>
-#include <utility>
-#include <cassert>
-#include <cstring>
+#include "../libslic3r.h"
+#include "../Model.hpp"
+#include "../TriangleMesh.hpp"
 
-#include "libslic3r/Model.hpp"
-#include "libslic3r/TriangleMesh.hpp"
 #include "OBJ.hpp"
 #include "objparser.hpp"
-#include "admesh/stl.h"
+
+#include <string>
+
+#include <boost/log/trivial.hpp>
 
 #ifdef _WIN32
 #define DIR_SEPARATOR '\\'

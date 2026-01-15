@@ -5,16 +5,9 @@
 #ifndef slic3r_AvoidCrossingPerimeters_hpp_
 #define slic3r_AvoidCrossingPerimeters_hpp_
 
-#include <vector>
-
-#include "libslic3r/libslic3r.h"
-#include "libslic3r/ExPolygon.hpp"
-#include "libslic3r/EdgeGrid.hpp"
-#include "libslic3r/BoundingBox.hpp"
-#include "libslic3r/Layer.hpp"
-#include "libslic3r/Polygon.hpp"
-#include "libslic3r/Polyline.hpp"
-#include "libslic3r/ShortestPath.hpp"
+#include "../libslic3r.h"
+#include "../ExPolygon.hpp"
+#include "../EdgeGrid.hpp"
 
 namespace Slic3r {
 
@@ -28,12 +21,14 @@ class AvoidCrossingPerimeters
 public:
     // Routing around the objects vs. inside a single object.
     void        use_external_mp(bool use = true) { m_use_external_mp = use; };
-    bool        used_external_mp_once() { return use_external_mp_once; }
+    void        use_external_mp_once()  { m_use_external_mp_once = true; }
+    bool        used_external_mp_once() { return m_use_external_mp_once; }
     void        disable_once()          { m_disabled_once = true; }
     bool        disabled_once() const   { return m_disabled_once; }
-    void        reset_once_modifiers()  { use_external_mp_once = false; m_disabled_once = false; }
+    void        reset_once_modifiers()  { m_use_external_mp_once = false; m_disabled_once = false; }
 
     void        init_layer(const Layer &layer);
+    bool        is_init() { return m_init; }
 
     Polyline    travel_to(const GCodeGenerator &gcodegen, const Point& point)
     {
@@ -46,28 +41,52 @@ public:
     struct Boundary {
         // Collection of boundaries used for detection of crossing perimeters for travels
         Polygons                        boundaries;
+        // this is empty if m_use_external_mp, or the size of boundaries if not.
+        // each entry is the boundary's island id. the island id is the boundary index of the contour.
+        std::vector<size_t>             islands;
         // Bounding box of boundaries
         BoundingBoxf                    bbox;
+        std::vector<BoundingBox>        bboxes;
         // Precomputed distances of all points in boundaries
         std::vector<std::vector<float>> boundaries_params;
         // Used for detection of intersection between line and any polygon from boundaries
         EdgeGrid::Grid                  grid;
+        // grid for searching in the contour of one island. the id of the island is the idx of the contour in boundaries
+        std::map<int, EdgeGrid::Grid>   island_to_grid;
+        //used to move the point inside the boundary
+        std::vector<std::pair<ExPolygon, ExPolygon>> boundary_growth;
+        // area (top) where you don't want to travel, even more so than over voids.
+        ExPolygons to_avoid;
+        // Used for detection of intersection between line and any polygon from to_avoid
+        EdgeGrid::Grid to_avoid_grid;
 
         void clear()
         {
             boundaries.clear();
+            islands.clear();
+            bbox = BoundingBoxf();
+            bboxes.clear();
             boundaries_params.clear();
+            grid = EdgeGrid::Grid();
+            island_to_grid.clear();
+            boundary_growth.clear();
+            to_avoid.clear();
+            to_avoid_grid = EdgeGrid::Grid();
         }
     };
 
-    // just for the next travel move
-    bool           use_external_mp_once { false };
 private:
     bool           m_use_external_mp { false };
+    // just for the next travel move
+    bool           m_use_external_mp_once { false };
     // this flag disables avoid_crossing_perimeters just for the next travel move
     // we enable it by default for the first travel move in print
     bool           m_disabled_once { true };
 
+    bool m_init{ false };
+
+    // for assert, to see if we are correctly initialized
+    const Layer             *m_init_to;
     // Lslices offseted by half an external perimeter width. Used for detection if line or polyline is inside of any polygon.
     ExPolygons               m_lslices_offset;
     std::vector<BoundingBox> m_lslices_offset_bboxes;
