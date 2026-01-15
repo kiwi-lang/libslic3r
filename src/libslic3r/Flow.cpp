@@ -1,160 +1,294 @@
+///|/ Copyright (c) Prusa Research 2016 - 2023 Pavel Mikuš @Godrak, Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros
+///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
+///|/
+///|/ ported from lib/Slic3r/Flow.pm:
+///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2012 - 2014 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #include "Flow.hpp"
+
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/format.hpp>
 #include <cmath>
-#include <assert.h>
+
+#include "I18N.hpp"
+#include "Print.hpp"
+#include "libslic3r/Config.hpp"
+#include "libslic3r/Exception.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
-/* This constructor builds a Flow object from an extrusion width config setting
-   and other context properties. */
-Flow
-Flow::new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height, float bridge_flow_ratio) {
-    // we need layer height unless it's a bridge
-    if (height <= 0 && bridge_flow_ratio == 0) CONFESS("Invalid flow height supplied to new_from_config_width()");
-    
-    float w;
-    if (bridge_flow_ratio > 0) {
-        // if bridge flow was requested, calculate bridge width
-        height = w = Flow::_bridge_width(nozzle_diameter, bridge_flow_ratio);
-    } else if (!width.percent && width.value == 0) {
-        // if user left option to 0, calculate a sane default width
-        w = Flow::_auto_width(role, nozzle_diameter, height);
-    } else {
-        // if user set a manual value, use it
-        w = width.get_abs_value(height);
-    }
-    
-    return Flow(w, height, nozzle_diameter, bridge_flow_ratio > 0);
-}
+FlowErrorNegativeSpacing::FlowErrorNegativeSpacing() : 
+	FlowError("Flow::spacing() produced negative spacing. Did you set some extrusion width too small?") {}
 
-/* This constructor builds a Flow object from a given centerline spacing. */
-Flow
-Flow::new_from_spacing(float spacing, float nozzle_diameter, float height, bool bridge) {
-    // we need layer height unless it's a bridge
-    if (height <= 0 && !bridge) CONFESS("Invalid flow height supplied to new_from_spacing()");
+FlowErrorNegativeFlow::FlowErrorNegativeFlow() :
+    FlowError("Flow::mm3_per_mm() produced negative flow. Did you set some extrusion width too small?") {}
 
-    float w = Flow::_width_from_spacing(spacing, nozzle_diameter, height, bridge);
-    if (bridge) height = w;
-    return Flow(w, height, nozzle_diameter, bridge);
-}
-
-/* This method returns the centerline spacing between two adjacent extrusions 
-   having the same extrusion width (and other properties). */
-float
-Flow::spacing() const {
-    if (this->bridge) {
-        return this->width + BRIDGE_EXTRA_SPACING;
-    }
-    
-    // rectangle with semicircles at the ends
-    float min_flow_spacing = this->width - this->height * (1.0 - PI/4.0);
-    return this->width - OVERLAP_FACTOR * (this->width - min_flow_spacing);
-}
-
-void
-Flow::set_spacing(float spacing) {
-    this->width = Flow::_width_from_spacing(spacing, this->nozzle_diameter, this->height, this->bridge);
-}
-
-/* This method returns the centerline spacing between an extrusion using this
-   flow and another one using another flow.
-   this->spacing(other) shall return the same value as other.spacing(*this) */
-float
-Flow::spacing(const Flow &other) const {
-    assert(this->height == other.height);
-    assert(this->bridge == other.bridge);
-    
-    if (this->bridge) {
-        return this->width/2.0 + other.width/2.0 + BRIDGE_EXTRA_SPACING;
-    }
-    
-    return this->spacing()/2.0 + other.spacing()/2.0;
-}
-
-/* This method returns extrusion volume per head move unit. */
-double
-Flow::mm3_per_mm() const {
-    if (this->bridge) {
-        return (this->width * this->width) * PI/4.0;
-    }
-    
-    // rectangle with semicircles at the ends
-    return this->width * this->height + (this->height*this->height) / 4.0 * (PI-4.0);
-}
-
-/* This static method returns bridge width for a given nozzle diameter. */
-float
-Flow::_bridge_width(float nozzle_diameter, float bridge_flow_ratio) {
-    if (bridge_flow_ratio == 1) return nozzle_diameter;  // optimization to avoid sqrt()
-    return sqrt(bridge_flow_ratio * (nozzle_diameter*nozzle_diameter));
-}
-
-/* This static method returns a sane extrusion width default. */
-float
-Flow::_auto_width(FlowRole role, float nozzle_diameter, float height) {
-    // here we calculate a sane default by matching the flow speed (at the nozzle) and the feed rate
-    // shape: rectangle with semicircles at the ends
-    float width = ((nozzle_diameter*nozzle_diameter) * PI + (height*height) * (4.0 - PI)) / (4.0 * height);
-    
-    float min = nozzle_diameter * 1.05;
-    float max = nozzle_diameter * 1.25; // cap width to 1.25x nozzle diameter
-    if (role == frExternalPerimeter || role == frSupportMaterial || role == frSupportMaterialInterface) {
-        min = max = nozzle_diameter*1.1;
-    } else if (role != frInfill) {
-        // limit width a bit for sparse infill to avoid unwanted overextrusion.
-        max = nozzle_diameter * 1.4;
-    }
-    if (width > max) width = max;
-    if (width < min) width = min;
-    
-    return width;
-}
-
-/* This static method returns the extrusion width value corresponding to the supplied centerline spacing. */
-float
-Flow::_width_from_spacing(float spacing, float nozzle_diameter, float height, bool bridge) {
-    if (bridge) {
-        return spacing - BRIDGE_EXTRA_SPACING;
-    }
-    
-    // rectangle with semicircles at the ends
-    return spacing + OVERLAP_FACTOR * height * (1 - PI/4.0);
-}
-
-/// Calculate a new spacing to fill width with possibly integer number of lines,
-/// the first and last line being centered at the interval ends.
-/// This function possibly increases the spacing, never decreases, 
-/// and for a narrow width the increase in spacing may become severe,
-/// therefore the adjustment is limited to 20% increase.
-template <class T>
-T
-Flow::solid_spacing(const T total_width, const T spacing)
+// This static method returns a sane extrusion width default.
+float Flow::auto_extrusion_width(FlowRole role, float nozzle_diameter)
 {
-    assert(total_width >= 0);
-    assert(spacing > 0);
-    const int number_of_intervals = floor(total_width / spacing);
-    if (number_of_intervals == 0) return spacing;
-    
-    T spacing_new = (total_width / number_of_intervals);
-    
-    const double factor = (double)spacing_new / (double)spacing;
-    assert(factor > 1. - 1e-5);
-    
-    // How much could the extrusion width be increased? By 20%.
-    // Because of this limit, this method is not idempotent: each run
-    // will increment spacing by 20%.
-    const double factor_max = 1.2;
-    if (factor > factor_max)
-        spacing_new = floor((double)spacing * factor_max + 0.5);
-    // There is an edge case where spacing with the max factor still ends up to be 0
-    // In this case, use the full factor and don't round it
-    if (spacing_new == 0)
-        spacing_new = (static_cast<double>(spacing) * factor);
-    
-    assert((spacing_new * number_of_intervals) <= total_width);
-    
-    return spacing_new;
+    switch (role) {
+    case frSupportMaterial:
+    case frSupportMaterialInterface:
+    case frTopSolidInfill:
+        return nozzle_diameter;
+    default:
+    case frExternalPerimeter:
+    case frPerimeter:
+    case frSolidInfill:
+    case frInfill:
+        return 1.125f * nozzle_diameter;
+    }
 }
-template coord_t Flow::solid_spacing<coord_t>(const coord_t total_width, const coord_t spacing);
-template coordf_t Flow::solid_spacing<coordf_t>(const coordf_t total_width, const coordf_t spacing);
-template int Flow::solid_spacing<int>(const int total_width, const int spacing);
+
+// Used by the Flow::extrusion_width() funtion to provide hints to the user on default extrusion width values,
+// and to provide reasonable values to the PlaceholderParser.
+static inline FlowRole opt_key_to_flow_role(const std::string &opt_key)
+{
+ 	if (opt_key == "perimeter_extrusion_width" || 
+ 		// or all the defaults:
+ 		opt_key == "extrusion_width" || opt_key == "first_layer_extrusion_width")
+        return frPerimeter;
+    else if (opt_key == "external_perimeter_extrusion_width")
+        return frExternalPerimeter;
+    else if (opt_key == "infill_extrusion_width")
+        return frInfill;
+    else if (opt_key == "solid_infill_extrusion_width")
+        return frSolidInfill;
+	else if (opt_key == "top_infill_extrusion_width")
+		return frTopSolidInfill;
+	else if (opt_key == "support_material_extrusion_width")
+    	return frSupportMaterial;
+    else 
+    	throw Slic3r::RuntimeError("opt_key_to_flow_role: invalid argument");
+};
+
+static inline void throw_on_missing_variable(const std::string &opt_key, const char *dependent_opt_key) 
+{
+	throw FlowErrorMissingVariable((boost::format(_u8L("Cannot calculate extrusion width for %1%: Variable \"%2%\" not accessible.")) % opt_key % dependent_opt_key).str());
+}
+
+// Used to provide hints to the user on default extrusion width values, and to provide reasonable values to the PlaceholderParser.
+double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionFloatOrPercent* opt, const ConfigOptionResolver& config, const unsigned int first_printing_extruder)
+{
+	assert(opt != nullptr);
+
+	bool first_layer = boost::starts_with(opt_key, "first_layer_");
+
+#if 0
+// This is the logic used for skit / brim, but not for the rest of the 1st layer.
+	if (opt->value == 0. && first_layer) {
+		// The "first_layer_extrusion_width" was set to zero, try a substitute.
+		opt = config.option<ConfigOptionFloatOrPercent>("perimeter_extrusion_width");
+		if (opt == nullptr)
+    		throw_on_missing_variable(opt_key, "perimeter_extrusion_width");
+	}
+#endif
+
+	if (opt->value == 0.) {
+		// The role specific extrusion width value was set to zero, try the role non-specific extrusion width.
+		opt = config.option<ConfigOptionFloatOrPercent>("extrusion_width");
+		if (opt == nullptr)
+    		throw_on_missing_variable(opt_key, "extrusion_width");
+    	// Use the "layer_height" instead of "first_layer_height".
+    	first_layer = false;
+	}
+
+	if (opt->percent) {
+		auto opt_key_layer_height = first_layer ? "first_layer_height" : "layer_height";
+        auto opt_layer_height = config.option(opt_key_layer_height);
+    	if (opt_layer_height == nullptr)
+    		throw_on_missing_variable(opt_key, opt_key_layer_height);
+        assert(! first_layer || ! static_cast<const ConfigOptionFloatOrPercent*>(opt_layer_height)->percent);
+		return opt->get_abs_value(opt_layer_height->getFloat());
+	}
+
+	if (opt->value == 0.) {
+        // If user left option to 0, calculate a sane default width.
+    	auto opt_nozzle_diameters = config.option<ConfigOptionFloats>("nozzle_diameter");
+    	if (opt_nozzle_diameters == nullptr)
+    		throw_on_missing_variable(opt_key, "nozzle_diameter");
+        return auto_extrusion_width(opt_key_to_flow_role(opt_key), float(opt_nozzle_diameters->get_at(first_printing_extruder)));
+    }
+
+	return opt->value;
+}
+
+// Used to provide hints to the user on default extrusion width values, and to provide reasonable values to the PlaceholderParser.
+double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionResolver &config, const unsigned int first_printing_extruder)
+{
+    return extrusion_width(opt_key, config.option<ConfigOptionFloatOrPercent>(opt_key), config, first_printing_extruder);
+}
+
+// This constructor builds a Flow object from an extrusion width config setting
+// and other context properties.
+Flow Flow::new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height)
+{
+    if (height <= 0)
+        throw Slic3r::InvalidArgument("Invalid flow height supplied to new_from_config_width()");
+
+    float w;
+    if (! width.percent && width.value == 0.) {
+        // If user left option to 0, calculate a sane default width.
+        w = auto_extrusion_width(role, nozzle_diameter);
+    } else {
+        // If user set a manual value, use it.
+        w = float(width.get_abs_value(height));
+    }
+    
+    return Flow(w, height, rounded_rectangle_extrusion_spacing(w, height), nozzle_diameter, false);
+}
+
+// Adjust extrusion flow for new extrusion line spacing, maintaining the old spacing between extrusions.
+Flow Flow::with_spacing(float new_spacing) const
+{
+    Flow out = *this;
+    if (m_bridge) {
+        // Diameter of the rounded extrusion.
+        assert(m_width == m_height);
+        float gap          = m_spacing - m_width;
+        auto  new_diameter = new_spacing - gap;
+        out.m_width        = out.m_height = new_diameter;
+    } else {
+        assert(m_width >= m_height);
+        out.m_width += new_spacing - m_spacing;
+        if (out.m_width < out.m_height)
+            throw Slic3r::InvalidArgument("Invalid spacing supplied to Flow::with_spacing()");
+    }
+    out.m_spacing = new_spacing;
+    return out;
+}
+
+// Adjust the width / height of a rounded extrusion model to reach the prescribed cross section area while maintaining extrusion spacing.
+Flow Flow::with_cross_section(float area_new) const
+{
+    assert(! m_bridge);
+    assert(m_width >= m_height);
+
+    // Adjust for bridge_flow_ratio, maintain the extrusion spacing.
+    float area = this->mm3_per_mm();
+    if (area_new > area + EPSILON) {
+        // Increasing the flow rate.
+        float new_full_spacing = area_new / m_height;
+        if (new_full_spacing > m_spacing) {
+            // Filling up the spacing without an air gap. Grow the extrusion in height.
+            float height = area_new / m_spacing;
+            return Flow(rounded_rectangle_extrusion_width_from_spacing(m_spacing, height), height, m_spacing, m_nozzle_diameter, false);
+        } else {
+            return this->with_width(rounded_rectangle_extrusion_width_from_spacing(area / m_height, m_height));
+        }
+    } else if (area_new < area - EPSILON) {
+        // Decreasing the flow rate.
+        float width_new = m_width - (area - area_new) / m_height;
+        assert(width_new > 0);
+        if (width_new > m_height) {
+            // Shrink the extrusion width.
+            return this->with_width(width_new);
+        } else {
+            // Create a rounded extrusion.
+            auto dmr = 2.0 * float(sqrt(area_new / M_PI));
+            return Flow(dmr, dmr, m_spacing, m_nozzle_diameter, false);
+        }
+    } else
+        return *this;
+}
+
+float Flow::rounded_rectangle_extrusion_spacing(float width, float height)
+{
+    auto out = width - height * float(1. - 0.25 * PI);
+    if (out <= 0.f)
+        throw FlowErrorNegativeSpacing();
+    return out;
+}
+
+float Flow::rounded_rectangle_extrusion_width_from_spacing(float spacing, float height)
+{
+    return float(spacing + height * (1. - 0.25 * PI));
+}
+
+float Flow::bridge_extrusion_spacing(float dmr)
+{
+    return dmr + BRIDGE_EXTRA_SPACING;
+}
+
+// This method returns extrusion volume per head move unit.
+double Flow::mm3_per_mm() const
+{
+    float res = m_bridge ?
+        // Area of a circle with dmr of this->width.
+        float((m_width * m_width) * 0.25 * PI) :
+        // Rectangle with semicircles at the ends. ~ h (w - 0.215 h)
+        float(m_height * (m_width - m_height * (1. - 0.25 * PI)));
+    //assert(res > 0.);
+	if (res <= 0.)
+		throw FlowErrorNegativeFlow();
+    return res;
+}
+
+static float min_nozzle_diameter(const PrintObject &print_object)
+{
+    const ConfigOptionFloats &nozzle_diameters    = print_object.print()->config().nozzle_diameter;
+    float                     min_nozzle_diameter = std::numeric_limits<float>::max();
+
+    for (const double nozzle_diameter : nozzle_diameters.values) {
+        min_nozzle_diameter = std::min(min_nozzle_diameter, static_cast<float>(nozzle_diameter));
+    }
+
+    return min_nozzle_diameter;
+}
+
+Flow support_material_flow(const PrintObject *object, float layer_height)
+{
+    const PrintConfig &print_config = object->print()->config();
+    const int          extruder     = object->config().support_material_extruder - 1;
+
+    // If object->config().support_material_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), use the smallest nozzle diameter.
+    const float nozzle_diameter = extruder >= 0 ? static_cast<float>(print_config.nozzle_diameter.get_at(extruder)) : min_nozzle_diameter(*object);
+
+    return Flow::new_from_config_width(
+        frSupportMaterial,
+        // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
+        (object->config().support_material_extrusion_width.value > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width,
+        nozzle_diameter,
+        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
+}
+
+Flow support_material_1st_layer_flow(const PrintObject *object, float layer_height)
+{
+    const PrintConfig &print_config = object->print()->config();
+    const int          extruder     = object->config().support_material_extruder - 1;
+
+    // If object->config().support_material_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), use the smallest nozzle diameter.
+    const float nozzle_diameter = extruder >= 0 ? static_cast<float>(print_config.nozzle_diameter.get_at(extruder)) : min_nozzle_diameter(*object);
+    const auto &width           = (print_config.first_layer_extrusion_width.value > 0) ? print_config.first_layer_extrusion_width : object->config().support_material_extrusion_width;
+
+    return Flow::new_from_config_width(
+        frSupportMaterial,
+        // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
+        (width.value > 0) ? width : object->config().extrusion_width,
+        nozzle_diameter,
+        (layer_height > 0.f) ? layer_height : float(print_config.first_layer_height.get_abs_value(object->config().layer_height.value)));
+}
+
+Flow support_material_interface_flow(const PrintObject *object, float layer_height)
+{
+    const PrintConfig &print_config = object->print()->config();
+    const int          extruder     = object->config().support_material_interface_extruder - 1;
+
+    // If object->config().support_material_interface_extruder == 0 (which means to not trigger tool change, but use the current extruder instead), use the smallest nozzle diameter.
+    const float nozzle_diameter = extruder >= 0 ? static_cast<float>(print_config.nozzle_diameter.get_at(extruder)) : min_nozzle_diameter(*object);
+
+    return Flow::new_from_config_width(
+        frSupportMaterialInterface,
+        // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
+        (object->config().support_material_extrusion_width > 0) ? object->config().support_material_extrusion_width : object->config().extrusion_width,
+        nozzle_diameter,
+        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
+}
+
 }

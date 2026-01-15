@@ -1,29 +1,57 @@
+///|/ Copyright (c) Prusa Research 2016 - 2020 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
+///|/
+///|/ ported from lib/Slic3r/Fill/Honeycomb.pm:
+///|/ Copyright (c) Prusa Research 2016 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2012 - 2015 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_FillHoneycomb_hpp_
 #define slic3r_FillHoneycomb_hpp_
 
+#include <math.h>
+#include <stddef.h>
 #include <map>
+#include <utility>
+#include <cmath>
+#include <cstddef>
 
-#include "../libslic3r.h"
-
-#include "Fill.hpp"
+#include "libslic3r/libslic3r.h"
+#include "FillBase.hpp"
+#include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/Point.hpp"
+#include "libslic3r/Polyline.hpp"
 
 namespace Slic3r {
 
 class FillHoneycomb : public Fill
 {
 public:
-    virtual ~FillHoneycomb() {}
+    ~FillHoneycomb() override {}
+    bool is_self_crossing() override { return false; }
 
 protected:
-    virtual Fill* clone() const { return new FillHoneycomb(*this); };
-	virtual void _fill_surface_single(
+    Fill* clone() const override { return new FillHoneycomb(*this); };
+	void _fill_surface_single(
+	    const FillParams                &params, 
 	    unsigned int                     thickness_layers,
-	    const direction_t               &direction, 
-	    ExPolygon                       &expolygon, 
-	    Polylines*                      polylines_out
-	);
+	    const std::pair<float, Point>   &direction, 
+	    ExPolygon                 		 expolygon,
+	    Polylines                       &polylines_out) override;
 
-	// Cache the hexagon math.
+	// Caching the 
+	struct CacheID 
+	{
+		CacheID(float adensity, coordf_t aspacing) : 
+			density(adensity), spacing(aspacing) {}
+		float		density;
+		coordf_t	spacing;
+		bool operator<(const CacheID &other) const 
+			{ return (density < other.density) || (density == other.density && spacing < other.spacing); }
+		bool operator==(const CacheID &other) const 
+			{ return density == other.density && spacing == other.spacing; }
+	};
 	struct CacheData
 	{
 		coord_t	distance;
@@ -35,11 +63,10 @@ protected:
         coord_t	y_offset;
         Point	hex_center;
     };
-    typedef std::pair<float,coordf_t> CacheID;  // density, spacing
     typedef std::map<CacheID, CacheData> Cache;
 	Cache cache;
 
-    virtual float _layer_angle(size_t idx) const { return float(M_PI/3.) * (idx % 3); }
+    float _layer_angle(size_t idx) const override { return float(M_PI/3.) * (idx % 3); }
 };
 
 } // namespace Slic3r

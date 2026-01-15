@@ -1,166 +1,108 @@
+///|/ Copyright (c) Prusa Research 2017 - 2021 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
+///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2015 Maksim Derbasov @ntfshard
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#include <algorithm>
+#include <vector>
+#include <cmath>
+#include <cstddef>
+
+#include "Exception.hpp"
 #include "Print.hpp"
+#include "libslic3r/Config.hpp"
+#include "libslic3r/Flow.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
-PrintRegion::PrintRegion(Print* print)
-    : _print(print)
+// 1-based extruder identifier for this region and role.
+unsigned int PrintRegion::extruder(FlowRole role) const
 {
+    size_t extruder = 0;
+    if (role == frPerimeter || role == frExternalPerimeter)
+        extruder = m_config.perimeter_extruder;
+    else if (role == frInfill)
+        extruder = m_config.infill_extruder;
+    else if (role == frSolidInfill || role == frTopSolidInfill)
+        extruder = m_config.solid_infill_extruder;
+    else
+        throw Slic3r::InvalidArgument("Unknown role");
+    return extruder;
 }
 
-PrintRegion::~PrintRegion()
+Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_height, bool first_layer) const
 {
-}
-
-Print*
-PrintRegion::print()
-{
-    return this->_print;
-}
-
-Flow
-PrintRegion::flow(FlowRole role, double layer_height, bool bridge, bool first_layer, double width, const PrintObject &object) const
-{
-    ConfigOptionFloatOrPercent config_width;
-    if (width != -1) {
-        // use the supplied custom width, if any
-        config_width.value = width;
-        config_width.percent = false;
-    } else {
-        // otherwise, get extrusion width from configuration
-        // (might be an absolute value, or a percent value, or zero for auto)
-        if (first_layer && this->_print->config.first_layer_extrusion_width.value > 0) {
-            config_width = this->_print->config.first_layer_extrusion_width;
-        } else if (role == frExternalPerimeter) {
-            config_width = this->config.external_perimeter_extrusion_width;
-        } else if (role == frPerimeter) {
-            config_width = this->config.perimeter_extrusion_width;
-        } else if (role == frInfill) {
-            config_width = this->config.infill_extrusion_width;
-        } else if (role == frSolidInfill) {
-            config_width = this->config.solid_infill_extrusion_width;
-        } else if (role == frTopSolidInfill) {
-            config_width = this->config.top_infill_extrusion_width;
-        } else {
-            CONFESS("Unknown role");
-        }
-    }
-    if (config_width.value == 0) {
-        config_width = object.config.extrusion_width;
-    }
-    
-    // get the configured nozzle_diameter for the extruder associated
-    // to the flow role requested
-    size_t extruder = 0;    // 1-based
-    if (role == frPerimeter || role == frExternalPerimeter) {
-        extruder = this->config.perimeter_extruder;
+    const PrintConfig          &print_config = object.print()->config();
+    ConfigOptionFloatOrPercent  config_width;
+    // Get extrusion width from configuration.
+    // (might be an absolute value, or a percent value, or zero for auto)
+    if (first_layer && print_config.first_layer_extrusion_width.value > 0) {
+        config_width = print_config.first_layer_extrusion_width;
+    } else if (role == frExternalPerimeter) {
+        config_width = m_config.external_perimeter_extrusion_width;
+    } else if (role == frPerimeter) {
+        config_width = m_config.perimeter_extrusion_width;
     } else if (role == frInfill) {
-        extruder = this->config.infill_extruder;
-    } else if (role == frSolidInfill || role == frTopSolidInfill) {
-        extruder = this->config.solid_infill_extruder;
+        config_width = m_config.infill_extrusion_width;
+    } else if (role == frSolidInfill) {
+        config_width = m_config.solid_infill_extrusion_width;
+    } else if (role == frTopSolidInfill) {
+        config_width = m_config.top_infill_extrusion_width;
     } else {
-        CONFESS("Unknown role $role");
+        throw Slic3r::InvalidArgument("Unknown role");
     }
-    double nozzle_diameter = this->_print->config.nozzle_diameter.get_at(extruder-1);
+
+    if (config_width.value == 0)
+        config_width = object.config().extrusion_width;
     
-    return Flow::new_from_config_width(role, config_width, nozzle_diameter, layer_height, bridge ? (float)this->config.bridge_flow_ratio : 0.0);
+    // Get the configured nozzle_diameter for the extruder associated to the flow role requested.
+    // Here this->extruder(role) - 1 may underflow to MAX_INT, but then the get_at() will follback to zero'th element, so everything is all right.
+    auto nozzle_diameter = float(print_config.nozzle_diameter.get_at(this->extruder(role) - 1));
+    return Flow::new_from_config_width(role, config_width, nozzle_diameter, float(layer_height));
 }
 
-bool
-PrintRegion::invalidate_state_by_config(const PrintConfigBase &config)
+coordf_t PrintRegion::nozzle_dmr_avg(const PrintConfig &print_config) const
 {
-    const t_config_option_keys diff = this->config.diff(config);
-    
-    std::set<PrintObjectStep> steps;
-    bool all = false;
-    
-    for (const t_config_option_key &opt_key : diff) {
-        if (opt_key == "perimeters"
-            || opt_key == "extra_perimeters"
-            || opt_key == "min_shell_thickness"
-            || opt_key == "gap_fill_speed"
-            || opt_key == "overhangs"
-            || opt_key == "first_layer_extrusion_width"
-            || opt_key == "perimeter_extrusion_width"
-            || opt_key == "thin_walls"
-            || opt_key == "external_perimeters_first") {
-            steps.insert(posPerimeters);
-        } else if (opt_key == "first_layer_extrusion_width") {
-            steps.insert(posSupportMaterial);
-        } else if (opt_key == "solid_infill_below_area") {
-            const float &cur_value = config.opt<ConfigOptionFloat>(opt_key)->value;
-            const float &new_value = this->config.solid_infill_below_area.value;
-            if (new_value >= cur_value) {
-                steps.insert(posPrepareInfill);
-            } else {
-                // prepare_infill is not idempotent when solid_infill_below_area is reduced
-                steps.insert(posPerimeters);
-            }
-        } else if (opt_key == "infill_every_layers"
-            || opt_key == "solid_infill_every_layers"
-            || opt_key == "bottom_solid_layers"
-            || opt_key == "top_solid_layers"
-            || opt_key == "min_top_bottom_shell_thickness"
-            || opt_key == "min_shell_thickness"
-            || opt_key == "infill_extruder"
-            || opt_key == "solid_infill_extruder"
-            || opt_key == "infill_extrusion_width") {
-            steps.insert(posPrepareInfill);
-        } else if (opt_key == "top_infill_pattern"
-            || opt_key == "bottom_infill_pattern"
-            || opt_key == "fill_angle"
-            || opt_key == "fill_pattern"
-            || opt_key == "top_infill_extrusion_width"
-            || opt_key == "first_layer_extrusion_width"
-            || opt_key == "infill_overlap") {
-            steps.insert(posInfill);
-        } else if (opt_key == "solid_infill_extrusion_width") {
-            steps.insert(posPerimeters);
-            steps.insert(posPrepareInfill);
-        } else if (opt_key == "fill_density") {
-            const float &cur_value = config.opt<ConfigOptionFloat>("fill_density")->value;
-            const float &new_value = this->config.fill_density.value;
-            if ((cur_value == 0) != (new_value == 0) || (cur_value == 100) != (new_value == 100))
-                steps.insert(posPerimeters);
-            
-            steps.insert(posInfill);
-        } else if (opt_key == "external_perimeter_extrusion_width"
-            || opt_key == "perimeter_extruder") {
-            steps.insert(posPerimeters);
-            steps.insert(posSupportMaterial);
-        } else if (opt_key == "bridge_flow_ratio") {
-            steps.insert(posPerimeters);
-            steps.insert(posInfill);
-        } else if (opt_key == "bridge_speed"
-            || opt_key == "external_perimeter_speed"
-            || opt_key == "infill_speed"
-            || opt_key == "perimeter_speed"
-            || opt_key == "small_perimeter_speed"
-            || opt_key == "solid_infill_speed"
-            || opt_key == "top_solid_infill_speed") {
-            // these options only affect G-code export, so nothing to invalidate
-        } else {
-            // for legacy, if we can't handle this option let's invalidate all steps
-            all = true;
-            break;
-        }
-    }
-    
-    if (!diff.empty())
-        this->config.apply(config, true);
-    
-    bool invalidated = false;
-    if (all) {
-        for (PrintObject* object : this->print()->objects)
-            if (object->invalidate_all_steps())
-                invalidated = true;
-    } else {
-        for (const PrintObjectStep &step : steps)
-            for (PrintObject* object : this->print()->objects)
-                if (object->invalidate_step(step))
-                    invalidated = true;
-    }
-    
-    return invalidated;
+    return (print_config.nozzle_diameter.get_at(m_config.perimeter_extruder.value    - 1) + 
+            print_config.nozzle_diameter.get_at(m_config.infill_extruder.value       - 1) + 
+            print_config.nozzle_diameter.get_at(m_config.solid_infill_extruder.value - 1)) / 3.;
+}
+
+coordf_t PrintRegion::bridging_height_avg(const PrintConfig &print_config) const
+{
+    return this->nozzle_dmr_avg(print_config) * sqrt(m_config.bridge_flow_ratio.value);
+}
+
+void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_config, const PrintRegionConfig &region_config, const bool has_brim, std::vector<unsigned int> &object_extruders)
+{
+    // These checks reflect the same logic used in the GUI for enabling/disabling extruder selection fields.
+    auto num_extruders = (int)print_config.nozzle_diameter.size();
+    auto emplace_extruder = [num_extruders, &object_extruders](int extruder_id) {
+    	int i = std::max(0, extruder_id - 1);
+        object_extruders.emplace_back((i >= num_extruders) ? 0 : i);
+    };
+    if (region_config.perimeters.value > 0 || has_brim)
+    	emplace_extruder(region_config.perimeter_extruder);
+    if (region_config.fill_density.value > 0)
+    	emplace_extruder(region_config.infill_extruder);
+    if (region_config.top_solid_layers.value > 0 || region_config.bottom_solid_layers.value > 0)
+    	emplace_extruder(region_config.solid_infill_extruder);
+}
+
+void PrintRegion::collect_object_printing_extruders(const Print &print, std::vector<unsigned int> &object_extruders) const
+{
+    // PrintRegion, if used by some PrintObject, shall have all the extruders set to an existing printer extruder.
+    // If not, then there must be something wrong with the Print::apply() function.
+#ifndef NDEBUG
+    auto num_extruders = int(print.config().nozzle_diameter.size());
+    assert(this->config().perimeter_extruder    <= num_extruders);
+    assert(this->config().infill_extruder       <= num_extruders);
+    assert(this->config().solid_infill_extruder <= num_extruders);
+#endif
+    collect_object_printing_extruders(print.config(), this->config(), print.has_brim(), object_extruders);
 }
 
 }

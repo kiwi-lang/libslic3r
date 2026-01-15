@@ -1,61 +1,71 @@
+///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2013 - 2015 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_SurfaceCollection_hpp_
 #define slic3r_SurfaceCollection_hpp_
 
+#include <stddef.h>
+#include <initializer_list>
+#include <vector>
+#include <utility>
+#include <cstddef>
+
 #include "libslic3r.h"
 #include "Surface.hpp"
-#include <vector>
+#include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/Polygon.hpp"
 
 namespace Slic3r {
 
 class SurfaceCollection
 {
-    public:
+public:
     Surfaces surfaces;
     
-    SurfaceCollection() {};
-    SurfaceCollection(const Surfaces &_surfaces)
-        : surfaces(_surfaces) {};
-    operator Polygons() const;
-    operator ExPolygons() const;
+    SurfaceCollection() = default;
+    SurfaceCollection(const Surfaces& surfaces) : surfaces(surfaces) {};
+    SurfaceCollection(Surfaces &&surfaces) : surfaces(std::move(surfaces)) {};
+
     void simplify(double tolerance);
-    /// Unifies straight multi-segment lines to a single line (artifacts from stl-triangulation)
-    void remove_collinear_points();
-    void group(std::vector<SurfacesConstPtr> *retval) const;
-    template <class T> bool any_internal_contains(const T &item) const;
-    template <class T> bool any_bottom_contains(const T &item) const;
-    SurfacesPtr filter_by_type(SurfaceType type) {
-        return this->filter_by_type({ type });
-    };
-    SurfacesPtr filter_by_type(std::initializer_list<SurfaceType> types);
-    void filter_by_type(SurfaceType type, Polygons* polygons);
-    SurfacesConstPtr filter_by_type(SurfaceType type) const {
-        return this->filter_by_type({ type });
-    };
-    SurfacesConstPtr filter_by_type(std::initializer_list<SurfaceType> types) const;
-
-    /// deletes all surfaces that match the supplied type.
-    void remove_type(const SurfaceType type);
-
-    void remove_types(std::initializer_list<SurfaceType> types);
-
-    template<int N>
-    void remove_types(std::array<SurfaceType, N> types) {
-        remove_types(types.data(), types.size());
+    void group(std::vector<SurfacesPtr> *retval) const;
+    template <class T> bool any_internal_contains(const T &item) const {
+        for (const Surface &surface : this->surfaces) if (surface.is_internal() && surface.expolygon.contains(item)) return true;
+        return false;
     }
-    /// group surfaces by common properties
-    std::vector<SurfacesPtr> group();
-    void group(std::vector<SurfacesPtr> *retval);
-
-    /// Deletes every surface other than the ones that match the provided type.
+    template <class T> bool any_bottom_contains(const T &item) const {
+        for (const Surface &surface : this->surfaces) if (surface.is_bottom() && surface.expolygon.contains(item)) return true;
+        return false;
+    }
+    SurfacesPtr filter_by_type(const SurfaceType type) const;
+    SurfacesPtr filter_by_types(std::initializer_list<SurfaceType> types) const;
     void keep_type(const SurfaceType type);
-    /// Deletes every surface other than the ones that match the provided types.
     void keep_types(std::initializer_list<SurfaceType> types);
+    void remove_type(const SurfaceType type);
+    void remove_types(std::initializer_list<SurfaceType> types);
+    void filter_by_type(SurfaceType type, Polygons *polygons) const;
+    void remove_type(const SurfaceType type, ExPolygons *polygons);
+    void set_type(SurfaceType type) {
+    	for (Surface &surface : this->surfaces)
+    		surface.surface_type = type;
+    }
 
-    /// Deletes every surface other than the ones that match the provided types.
-    void keep_types(const SurfaceType *types, size_t ntypes);
+    void clear() { surfaces.clear(); }
+    bool empty() const { return surfaces.empty(); }
+	size_t size() const { return surfaces.size(); }
+    bool has(SurfaceType type) const { 
+        for (const Surface &surface : this->surfaces) 
+            if (surface.surface_type == type) return true;
+        return false;
+    }
 
-    /// deletes all surfaces that match the supplied aggregate of types.
-    void remove_types(const SurfaceType *types, size_t ntypes);
+    Surfaces::const_iterator    cbegin() const { return this->surfaces.cbegin(); }
+    Surfaces::const_iterator    cend()   const { return this->surfaces.cend(); }
+    Surfaces::const_iterator    begin()  const { return this->surfaces.cbegin(); }
+    Surfaces::const_iterator    end()    const { return this->surfaces.cend(); }
+    Surfaces::iterator          begin()        { return this->surfaces.begin(); }
+    Surfaces::iterator          end()          { return this->surfaces.end(); }
 
     void set(const SurfaceCollection &coll) { surfaces = coll.surfaces; }
     void set(SurfaceCollection &&coll) { surfaces = std::move(coll.surfaces); }
@@ -66,22 +76,17 @@ class SurfaceCollection
     void set(ExPolygons &&src, const Surface &surfaceTempl) { clear(); this->append(std::move(src), surfaceTempl); }
     void set(Surfaces &&src) { clear(); this->append(std::move(src)); }
 
-    void append(const SurfaceCollection &coll);
-    void append(const Surface &surface);
-    void append(const Surfaces &surfaces);
-    void append(const ExPolygons &src, const Surface &templ);
-    void append(const ExPolygons &src, SurfaceType surfaceType);
-    size_t polygons_count() const;
-    bool empty() const { return this->surfaces.empty(); };
-    size_t size() const { return this->surfaces.size(); };
-    void clear() { this->surfaces.clear(); };
-    void erase(size_t i) { this->surfaces.erase(this->surfaces.begin() + i); };
-    Surfaces::iterator begin() { return this->surfaces.begin();}
-    Surfaces::iterator end() { return this->surfaces.end();}
-    Surfaces::const_iterator cbegin() const { return this->surfaces.cbegin();}
-    Surfaces::const_iterator cend() const { return this->surfaces.cend();}
-    Surfaces::const_iterator begin() const { return this->surfaces.cbegin();}
-    Surfaces::const_iterator end() const { return this->surfaces.cend();}
+    void append(const SurfaceCollection &coll) { this->append(coll.surfaces); }
+    void append(SurfaceCollection &&coll) { this->append(std::move(coll.surfaces)); }
+    void append(const ExPolygons &src, SurfaceType surfaceType) { surfaces_append(this->surfaces, src, surfaceType); }
+    void append(const ExPolygons &src, const Surface &surfaceTempl) { surfaces_append(this->surfaces, src, surfaceTempl); }
+    void append(const Surfaces &src) { surfaces_append(this->surfaces, src); }
+    void append(ExPolygons &&src, SurfaceType surfaceType) { surfaces_append(this->surfaces, std::move(src), surfaceType); }
+    void append(ExPolygons &&src, const Surface &surfaceTempl) { surfaces_append(this->surfaces, std::move(src), surfaceTempl); }
+    void append(Surfaces &&src) { surfaces_append(this->surfaces, std::move(src)); }
+
+    // For debugging purposes:
+    void export_to_svg(const char *path, bool show_labels);
 };
 
 }

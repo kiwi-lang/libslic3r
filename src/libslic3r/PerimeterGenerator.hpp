@@ -1,95 +1,141 @@
+///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas
+///|/ Copyright (c) Slic3r 2015 - 2016 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2015 Maksim Derbasov @ntfshard
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_PerimeterGenerator_hpp_
 #define slic3r_PerimeterGenerator_hpp_
 
-#include "libslic3r.h"
 #include <vector>
-#include "ExPolygonCollection.hpp"
+
+#include "libslic3r.h"
+#include "ExtrusionEntityCollection.hpp"
 #include "Flow.hpp"
 #include "Polygon.hpp"
 #include "PrintConfig.hpp"
 #include "SurfaceCollection.hpp"
+#include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/ExtrusionEntity.hpp"
+#include "libslic3r/ExtrusionRole.hpp"
+#include "libslic3r/Point.hpp"
 
 namespace Slic3r {
+class ExtrusionEntityCollection;
+class LayerRegion;
+class Surface;
+class PrintRegion;
+struct ThickPolyline;
 
-// Hierarchy of perimeters.
-class PerimeterGeneratorLoop {
-public:
-    // Polygon of this contour.
-    Polygon polygon;
-    // Is it a contour or a hole?
-    // Contours are CCW oriented, holes are CW oriented.
-    bool is_contour;
-    // Depth in the hierarchy. External perimeter has depth = 0. An external perimeter could be both a contour and a hole.
-    unsigned short depth;
-    // Children contour, may be both CCW and CW oriented (outer contours or holes).
-    std::vector<PerimeterGeneratorLoop> children;
-    
-    PerimeterGeneratorLoop(Polygon polygon, unsigned short depth)
-        : polygon(polygon), is_contour(false), depth(depth)
-        {};
-    // External perimeter. It may be CCW or CW oriented (outer contour or hole contour).
-    bool is_external() const { return this->depth == 0; }
-    // An island, which may have holes, but it does not have another internal island.
-    bool is_internal_contour() const;
+struct PerimeterRegion
+{
+    const PrintRegion *region;
+    ExPolygons         expolygons;
+    BoundingBox        bbox;
+
+    explicit PerimeterRegion(const LayerRegion &layer_region);
+
+    // If there is any incompatibility, we don't need to create separate LayerRegions.
+    // Because it is enough to split perimeters by PerimeterRegions.
+    static bool has_compatible_perimeter_regions(const PrintRegionConfig &config, const PrintRegionConfig &other_config);
+
+    static void merge_compatible_perimeter_regions(std::vector<PerimeterRegion> &perimeter_regions);
 };
 
-typedef std::vector<PerimeterGeneratorLoop> PerimeterGeneratorLoops;
+using PerimeterRegions = std::vector<PerimeterRegion>;
 
-class PerimeterGenerator {
-public:
-    // Inputs:
-    const SurfaceCollection* slices;
-    const ExPolygonCollection* lower_slices;
-    double layer_height;
-    int layer_id;
-    Flow perimeter_flow;
-    Flow ext_perimeter_flow;
-    Flow overhang_flow;
-    Flow solid_infill_flow;
-    PrintRegionConfig* config;
-    PrintObjectConfig* object_config;
-    PrintConfig* print_config;
-    // Outputs:
-    ExtrusionEntityCollection* loops;
-    ExtrusionEntityCollection* gap_fill;
-    SurfaceCollection* fill_surfaces;
-    
-    PerimeterGenerator(
-        // Input:
-        const SurfaceCollection*    slices, 
+} // namespace Slic3r
+
+namespace Slic3r::PerimeterGenerator {
+
+struct Parameters {    
+    Parameters(
         double                      layer_height,
-        Flow                        flow,
-        PrintRegionConfig*          config,
-        PrintObjectConfig*          object_config,
-        PrintConfig*                print_config,
-        // Output:
-        // Loops with the external thin walls
-        ExtrusionEntityCollection*  loops,
-        // Gaps without the thin walls
-        ExtrusionEntityCollection*  gap_fill,
-        // Infills without the gap fills
-        SurfaceCollection*          fill_surfaces)
-        : slices(slices), lower_slices(NULL), layer_height(layer_height),
-            layer_id(-1), perimeter_flow(flow), ext_perimeter_flow(flow),
-            overhang_flow(flow), solid_infill_flow(flow),
-            config(config), object_config(object_config), print_config(print_config),
-            loops(loops), gap_fill(gap_fill), fill_surfaces(fill_surfaces),
-            _ext_mm3_per_mm(-1), _mm3_per_mm(-1), _mm3_per_mm_overhang(-1)
-        {};
-    void process();
-    
-    private:
-    double _ext_mm3_per_mm;
-    double _mm3_per_mm;
-    double _mm3_per_mm_overhang;
-    Polygons _lower_slices_p;
-    
-    ExtrusionEntityCollection _traverse_loops(const PerimeterGeneratorLoops &loops,
-        ThickPolylines &thin_walls) const;
-    ExtrusionEntityCollection _variable_width
-        (const ThickPolylines &polylines, ExtrusionRole role, Flow flow) const;
+        int                         layer_id,
+        Flow                        perimeter_flow,
+        Flow                        ext_perimeter_flow,
+        Flow                        overhang_flow,
+        Flow                        solid_infill_flow,
+        const PrintRegionConfig    &config,
+        const PrintObjectConfig    &object_config,
+        const PrintConfig          &print_config,
+        const PerimeterRegions     &perimeter_regions,
+        const bool                  spiral_vase) :   
+            layer_height(layer_height),
+            layer_id(layer_id),
+            perimeter_flow(perimeter_flow), 
+            ext_perimeter_flow(ext_perimeter_flow),
+            overhang_flow(overhang_flow), 
+            solid_infill_flow(solid_infill_flow),
+            config(config), 
+            object_config(object_config), 
+            print_config(print_config),
+            perimeter_regions(perimeter_regions),
+            spiral_vase(spiral_vase),
+            scaled_resolution(scaled<double>(print_config.gcode_resolution.value)),
+            mm3_per_mm(perimeter_flow.mm3_per_mm()),
+            ext_mm3_per_mm(ext_perimeter_flow.mm3_per_mm()), 
+            mm3_per_mm_overhang(overhang_flow.mm3_per_mm())
+        {
+        }
+
+    // Input parameters
+    double                       layer_height;
+    int                          layer_id;
+    Flow                         perimeter_flow;
+    Flow                         ext_perimeter_flow;
+    Flow                         overhang_flow;
+    Flow                         solid_infill_flow;
+    const PrintRegionConfig     &config;
+    const PrintObjectConfig     &object_config;
+    const PrintConfig           &print_config;
+    const PerimeterRegions      &perimeter_regions;
+
+    // Derived parameters
+    bool                         spiral_vase;
+    double                       scaled_resolution;
+    double                       ext_mm3_per_mm;
+    double                       mm3_per_mm;
+    double                       mm3_per_mm_overhang;
+
+private:
+    Parameters() = delete;
 };
 
-}
+void process_classic(
+    // Inputs:
+    const Parameters           &params,
+    const Surface              &surface,
+    const ExPolygons           *lower_slices,
+    const ExPolygons           *upper_slices,
+    // Cache:
+    Polygons                   &lower_slices_polygons_cache,
+    // Output:
+    // Loops with the external thin walls
+    ExtrusionEntityCollection  &out_loops,
+    // Gaps without the thin walls
+    ExtrusionEntityCollection  &out_gap_fill,
+    // Infills without the gap fills
+    ExPolygons                 &out_fill_expolygons);
+
+void process_arachne(
+    // Inputs:
+    const Parameters           &params,
+    const Surface              &surface,
+    const ExPolygons           *lower_slices,
+    const ExPolygons           *upper_slices,
+    // Cache:
+    Polygons                   &lower_slices_polygons_cache,
+    // Output:
+    // Loops with the external thin walls
+    ExtrusionEntityCollection  &out_loops,
+    // Gaps without the thin walls
+    ExtrusionEntityCollection  &out_gap_fill,
+    // Infills without the gap fills
+    ExPolygons                 &out_fill_expolygons);
+
+ExtrusionMultiPath thick_polyline_to_multi_path(const ThickPolyline &thick_polyline, ExtrusionRole role, const Flow &flow, float tolerance, float merge_tolerance, const std::optional<uint32_t> &perimeter_index = std::nullopt);
+
+} // namespace Slic3r::PerimeterGenerator
 
 #endif

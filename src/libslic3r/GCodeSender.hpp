@@ -1,3 +1,8 @@
+///|/ Copyright (c) Prusa Research 2016 - 2021 Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
+///|/ Copyright (c) Slic3r 2014 - 2016 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_GCodeSender_hpp_
 #define slic3r_GCodeSender_hpp_
 
@@ -6,24 +11,12 @@
 #include <string>
 #include <vector>
 #include <boost/asio.hpp>
-
-#include <boost/version.hpp>
-#if BOOST_VERSION >= 107300
 #include <boost/bind/bind.hpp>
-#else
-#include <boost/bind.hpp>
-#endif
 #include <boost/thread.hpp>
-#include <boost/core/noncopyable.hpp>
 
 namespace Slic3r {
 
 namespace asio = boost::asio;
-
-#if BOOST_VERSION >= 107300
-using boost::placeholders::_1;
-using boost::placeholders::_2;
-#endif
 
 class GCodeSender : private boost::noncopyable {
     public:
@@ -63,7 +56,7 @@ class GCodeSender : private boost::noncopyable {
     bool can_send;
     bool queue_paused;
     size_t sent;
-    std::vector<std::string> last_sent;
+    std::deque<std::string> last_sent;
     
     // this mutex guards log, T, B
     mutable boost::mutex log_mutex;
@@ -80,6 +73,6 @@ class GCodeSender : private boost::noncopyable {
     void send();
 };
 
-}
+} // namespace Slic3r
 
-#endif
+#endif /* slic3r_GCodeSender_hpp_ */

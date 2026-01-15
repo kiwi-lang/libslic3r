@@ -1,30 +1,22 @@
+///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2013 - 2015 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #include "SurfaceCollection.hpp"
-#include <map>
+
+#include <algorithm>
+#include <cstdio>
+
+#include "BoundingBox.hpp"
+#include "SVG.hpp"
+#include "libslic3r/Point.hpp"
+#include "libslic3r/Surface.hpp"
 
 namespace Slic3r {
 
-SurfaceCollection::operator Polygons() const
-{
-    Polygons polygons;
-    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
-        Polygons surface_p = surface->expolygon;
-        polygons.insert(polygons.end(), surface_p.begin(), surface_p.end());
-    }
-    return polygons;
-}
-
-SurfaceCollection::operator ExPolygons() const
-{
-    ExPolygons expp;
-    expp.reserve(this->surfaces.size());
-    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
-        expp.push_back(surface->expolygon);
-    }
-    return expp;
-}
-
-void
-SurfaceCollection::simplify(double tolerance)
+void SurfaceCollection::simplify(double tolerance)
 {
     Surfaces ss;
     for (Surfaces::const_iterator it_s = this->surfaces.begin(); it_s != this->surfaces.end(); ++it_s) {
@@ -39,187 +31,57 @@ SurfaceCollection::simplify(double tolerance)
     this->surfaces = ss;
 }
 
-void
-SurfaceCollection::remove_collinear_points()
-{
-    for(Surface &surface : this->surfaces) {
-        surface.expolygon.remove_colinear_points();
-    }
-}
-
 /* group surfaces by common properties */
-void
-SurfaceCollection::group(std::vector<SurfacesConstPtr> *retval) const
+void SurfaceCollection::group(std::vector<SurfacesPtr> *retval) const
 {
-    for (Surfaces::const_iterator it = this->surfaces.begin(); it != this->surfaces.end(); ++it) {
+    for (const Surface &surface : this->surfaces) {
         // find a group with the same properties
-        SurfacesConstPtr* group = NULL;
-        for (std::vector<SurfacesConstPtr>::iterator git = retval->begin(); git != retval->end(); ++git) {
-            const Surface* gkey = git->front();
-            if (   gkey->surface_type      == it->surface_type
-                && gkey->thickness         == it->thickness
-                && gkey->thickness_layers  == it->thickness_layers
-                && gkey->bridge_angle      == it->bridge_angle) {
+        SurfacesPtr *group = nullptr;
+        for (std::vector<SurfacesPtr>::iterator git = retval->begin(); git != retval->end(); ++git)
+            if (! git->empty() && surfaces_could_merge(*git->front(), surface)) {
                 group = &*git;
                 break;
             }
-        }
-        
         // if no group with these properties exists, add one
-        if (group == NULL) {
+        if (group == nullptr) {
             retval->resize(retval->size() + 1);
             group = &retval->back();
         }
-        
         // append surface to group
-        group->push_back(&*it);
+        group->push_back(&surface);
     }
 }
 
-template <class T>
-bool
-SurfaceCollection::any_internal_contains(const T &item) const
-{
-    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
-        if (surface->is_internal() && surface->expolygon.contains(item)) return true;
-    }
-    return false;
-}
-template bool SurfaceCollection::any_internal_contains<Polyline>(const Polyline &item) const;
-
-template <class T>
-bool
-SurfaceCollection::any_bottom_contains(const T &item) const
-{
-    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
-        if (surface->is_bottom() && surface->expolygon.contains(item)) return true;
-    }
-    return false;
-}
-template bool SurfaceCollection::any_bottom_contains<Polyline>(const Polyline &item) const;
-
-SurfacesPtr
-SurfaceCollection::filter_by_type(std::initializer_list<SurfaceType> types)
+SurfacesPtr SurfaceCollection::filter_by_type(const SurfaceType type) const
 {
     SurfacesPtr ss;
-    for (Surface& s : this->surfaces)
-        for (const SurfaceType& t : types)
-            if (s.surface_type == t) {
-                ss.push_back(&s);
-                break;
-            }
+    for (const Surface &surface : this->surfaces)
+        if (surface.surface_type == type)
+            ss.push_back(&surface);
     return ss;
 }
 
-SurfacesConstPtr
-SurfaceCollection::filter_by_type(std::initializer_list<SurfaceType> types) const
+SurfacesPtr SurfaceCollection::filter_by_types(std::initializer_list<SurfaceType> types) const
 {
-    SurfacesConstPtr ss;
-    for (const Surface& s : this->surfaces)
-        for (const SurfaceType& t : types)
-            if (s.surface_type == t) {
-                ss.push_back(&s);
-                break;
-            }
+    SurfacesPtr ss;
+    for (const Surface &surface : this->surfaces)
+        if (std::find(types.begin(), types.end(), surface.surface_type) != types.end())
+            ss.push_back(&surface);
     return ss;
 }
 
-void
-SurfaceCollection::filter_by_type(SurfaceType type, Polygons* polygons)
+void SurfaceCollection::filter_by_type(SurfaceType type, Polygons *polygons) const
 {
-    for (Surfaces::iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
-        if (surface->surface_type == type)
-            append_to(*polygons, (Polygons)surface->expolygon);
-    }
+    for (const Surface &surface : this->surfaces)
+        if (surface.surface_type == type)
+            polygons_append(*polygons, to_polygons(surface.expolygon));
 }
 
-void
-SurfaceCollection::append(const SurfaceCollection &coll)
-{
-    this->append(coll.surfaces);
-}
-
-void
-SurfaceCollection::append(const Surface &surface)
-{
-    this->surfaces.push_back(surface);
-}
-
-void
-SurfaceCollection::append(const Surfaces &surfaces)
-{
-    append_to(this->surfaces, surfaces);
-}
-
-void
-SurfaceCollection::append(const ExPolygons &src, const Surface &templ)
-{
-    this->surfaces.reserve(this->surfaces.size() + src.size());
-    for (ExPolygons::const_iterator it = src.begin(); it != src.end(); ++ it) {
-        this->surfaces.push_back(templ);
-        this->surfaces.back().expolygon = *it;
-    }
-}
-
-void
-SurfaceCollection::append(const ExPolygons &src, SurfaceType surfaceType)
-{
-    this->surfaces.reserve(this->surfaces.size() + src.size());
-    for (ExPolygons::const_iterator it = src.begin(); it != src.end(); ++ it)
-        this->surfaces.push_back(Surface(surfaceType, *it));
-}
-
-size_t
-SurfaceCollection::polygons_count() const
-{
-    size_t count = 0;
-    for (Surfaces::const_iterator it = this->surfaces.begin(); it != this->surfaces.end(); ++ it)
-        count += 1 + it->expolygon.holes.size();
-    return count;
-}
-void
-SurfaceCollection::remove_type(const SurfaceType type)
-{
-    // Use stl remove_if to remove 
-    auto ptr = std::remove_if(surfaces.begin(), surfaces.end(),[type] (Surface& s) { return s.surface_type == type; });
-    surfaces.erase(ptr, surfaces.cend());
-}
-
-void
-SurfaceCollection::remove_types(const SurfaceType *types, size_t ntypes) 
-{
-    for (size_t i = 0; i < ntypes; ++i)
-        this->remove_type(types[i]);
-}
-
-void 
-SurfaceCollection::remove_types(std::initializer_list<SurfaceType> types) {
-    for (const auto& t : types) {
-        this->remove_type(t);
-    }
-}
-
-void
-SurfaceCollection::keep_type(const SurfaceType type)
-{
-    // Use stl remove_if to remove 
-    auto ptr = std::remove_if(surfaces.begin(), surfaces.end(),[type] (const Surface& s) { return s.surface_type != type; });
-    surfaces.erase(ptr, surfaces.cend());
-}
-
-void
-SurfaceCollection::keep_types(const SurfaceType *types, size_t ntypes) 
+void SurfaceCollection::keep_type(const SurfaceType type)
 {
     size_t j = 0;
     for (size_t i = 0; i < surfaces.size(); ++ i) {
-        bool keep = false;
-        for (size_t k = 0; k < ntypes; ++ k) {
-            if (surfaces[i].surface_type == types[k]) {
-                keep = true;
-                break;
-            }
-        }
-        if (keep) {
+        if (surfaces[i].surface_type == type) {
             if (j < i)
                 std::swap(surfaces[i], surfaces[j]);
             ++ j;
@@ -229,42 +91,84 @@ SurfaceCollection::keep_types(const SurfaceType *types, size_t ntypes)
         surfaces.erase(surfaces.begin() + j, surfaces.end());
 }
 
-void 
-SurfaceCollection::keep_types(std::initializer_list<SurfaceType> types) {
-    for (const auto& t : types) {
-        this->keep_type(t);
-    }
-}
-/* group surfaces by common properties */
-std::vector<SurfacesPtr>
-SurfaceCollection::group()
+void SurfaceCollection::keep_types(std::initializer_list<SurfaceType> types)
 {
-    std::vector<SurfacesPtr> retval;
-    this->group(&retval);
-    return retval;
-}
-
-void
-SurfaceCollection::group(std::vector<SurfacesPtr> *retval)
-{
-    for (Surfaces::iterator it = this->surfaces.begin(); it != this->surfaces.end(); ++it) {
-        // find a group with the same properties
-        SurfacesPtr* group = NULL;
-        for (std::vector<SurfacesPtr>::iterator git = retval->begin(); git != retval->end(); ++git)
-            if (! git->empty() && surfaces_could_merge(*git->front(), *it)) {
-                group = &*git;
-                break;
-            }
-        // if no group with these properties exists, add one
-        if (group == NULL) {
-            retval->resize(retval->size() + 1);
-            group = &retval->back();
+    size_t j = 0;
+    for (size_t i = 0; i < surfaces.size(); ++ i)
+        if (std::find(types.begin(), types.end(), surfaces[i].surface_type) != types.end()) {
+            if (j < i)
+                std::swap(surfaces[i], surfaces[j]);
+            ++ j;
         }
-        // append surface to group
-        group->push_back(&*it);
-    }
+    if (j < surfaces.size())
+        surfaces.erase(surfaces.begin() + j, surfaces.end());
 }
 
+void SurfaceCollection::remove_type(const SurfaceType type)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < surfaces.size(); ++ i) {
+        if (surfaces[i].surface_type != type) {
+            if (j < i)
+                std::swap(surfaces[i], surfaces[j]);
+            ++ j;
+        }
+    }
+    if (j < surfaces.size())
+        surfaces.erase(surfaces.begin() + j, surfaces.end());
+}
 
+void SurfaceCollection::remove_type(const SurfaceType type, ExPolygons *polygons)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < surfaces.size(); ++ i) {
+        if (Surface &surface = surfaces[i]; surface.surface_type == type) {
+            polygons->emplace_back(std::move(surface.expolygon));
+        } else {
+            if (j < i)
+                std::swap(surfaces[i], surfaces[j]);
+            ++ j;
+        }
+    }
+    if (j < surfaces.size())
+        surfaces.erase(surfaces.begin() + j, surfaces.end());
+}
 
-} // namespace Slic3r
+void SurfaceCollection::remove_types(std::initializer_list<SurfaceType> types)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < surfaces.size(); ++ i)
+        if (std::find(types.begin(), types.end(), surfaces[i].surface_type) == types.end()) {
+            if (j < i)
+                std::swap(surfaces[i], surfaces[j]);
+            ++ j;
+        }
+    if (j < surfaces.size())
+        surfaces.erase(surfaces.begin() + j, surfaces.end());
+}
+
+void SurfaceCollection::export_to_svg(const char *path, bool show_labels) 
+{
+    BoundingBox bbox;
+    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface)
+        bbox.merge(get_extents(surface->expolygon));
+    Point legend_size = export_surface_type_legend_to_svg_box_size();
+    Point legend_pos(bbox.min(0), bbox.max(1));
+    bbox.merge(Point(std::max(bbox.min(0) + legend_size(0), bbox.max(0)), bbox.max(1) + legend_size(1)));
+
+    SVG svg(path, bbox);
+    const float transparency = 0.5f;
+    for (Surfaces::const_iterator surface = this->surfaces.begin(); surface != this->surfaces.end(); ++surface) {
+        svg.draw(surface->expolygon, surface_type_to_color_name(surface->surface_type), transparency);
+        if (show_labels) {
+            int idx = int(surface - this->surfaces.begin());
+            char label[64];
+            sprintf(label, "%d", idx);
+            svg.draw_text(surface->expolygon.contour.points.front(), label, "black");
+        }
+    }
+    export_surface_type_legend_to_svg(svg, legend_pos);
+    svg.Close();
+}
+
+}

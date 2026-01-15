@@ -1,32 +1,49 @@
+///|/ Copyright (c) Prusa Research 2018 - 2020 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
+///|/ Copyright (c) SuperSlicer 2018 Remi Durand @supermerill
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_FillGyroid_hpp_
 #define slic3r_FillGyroid_hpp_
 
-#include "../libslic3r.h"
+#include <utility>
 
-#include "Fill.hpp"
+#include "libslic3r/libslic3r.h"
+#include "FillBase.hpp"
+#include "libslic3r/ExPolygon.hpp"
+#include "libslic3r/Polyline.hpp"
 
 namespace Slic3r {
+class Point;
 
 class FillGyroid : public Fill
 {
 public:
+    FillGyroid() {}
+    Fill* clone() const override { return new FillGyroid(*this); }
 
-    FillGyroid(){}
-    virtual Fill* clone() const { return new FillGyroid(*this); };
-    virtual ~FillGyroid() {}
+    // require bridge flow since most of this pattern hangs in air
+    bool use_bridge_flow() const override { return false; }
+    bool is_self_crossing() override { return false; }
 
-    /// require bridge flow since most of this pattern hangs in air
-	// but it's not useful as most of it is on the previous layer.
-	// it's just slowing it down => set it to false!
-    virtual bool use_bridge_flow() const { return false; }
+    // Correction applied to regular infill angle to maximize printing
+    // speed in default configuration (degrees)
+    static constexpr float CorrectionAngle = -45.;
+
+    // Density adjustment to have a good %of weight.
+    static constexpr double DensityAdjust = 2.44;
+
+    // Gyroid upper resolution tolerance (mm^-2)
+    static constexpr double PatternTolerance = 0.2;
+
 
 protected:
-
-    virtual void _fill_surface_single(
+    void _fill_surface_single(
+        const FillParams                &params, 
         unsigned int                     thickness_layers,
         const std::pair<float, Point>   &direction, 
-        ExPolygon                       &expolygon, 
-        Polylines                       *polylines_out);
+        ExPolygon                        expolygon,
+        Polylines                       &polylines_out) override;
 };
 
 } // namespace Slic3r
