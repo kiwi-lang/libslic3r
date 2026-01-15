@@ -1,34 +1,18 @@
 #ifndef BBS_3MF_hpp_
 #define BBS_3MF_hpp_
 
-#include "../PrintConfig.hpp"
 #include "../GCode/ThumbnailData.hpp"
-//#include "libslic3r/ProjectTask.hpp"
-//#include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/ProjectTask.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include <functional>
 
 namespace Slic3r {
 class Model;
+class ModelObject;
 struct ConfigSubstitutionContext;
 class DynamicPrintConfig;
 class Preset;
-struct GCodeProcessorResult;
-class ModelObject;
-//struct ThumbnailData;
-
-struct FilamentInfo
-{
-    int         id;         // filament id = extruder id, start with 0.
-    std::string type;
-    std::string color;
-    std::string filament_id;
-    std::string brand;
-    float       used_m;
-    float       used_g;
-    int         tray_id;    // start with 0
-    float       distance;
-    int         mapping_result = 0;
-};
+struct FilamentInfo;
 struct ThumbnailData;
 
 
@@ -37,6 +21,7 @@ struct ThumbnailData;
 
 #define GCODE_FILE_FORMAT               "Metadata/plate_%1%.gcode"
 #define THUMBNAIL_FILE_FORMAT           "Metadata/plate_%1%.png"
+#define NO_LIGHT_THUMBNAIL_FILE_FORMAT  "Metadata/plate_no_light_%1%.png"
 #define TOP_FILE_FORMAT                 "Metadata/top_%1%.png"
 #define PICK_FILE_FORMAT                "Metadata/pick_%1%.png"
 //#define PATTERN_FILE_FORMAT             "Metadata/plate_%1%_pattern_layer_0.png"
@@ -91,6 +76,7 @@ struct PlateData
     std::string     gcode_file;
     std::string     gcode_file_md5;
     std::string     thumbnail_file;
+    std::string     no_light_thumbnail_file;
     ThumbnailData   plate_thumbnail;
     std::string     top_file;
     std::string     pick_file;
@@ -109,8 +95,7 @@ struct PlateData
     bool            is_label_object_enabled {false};
     int             timelapse_warning_code = 0; // 1<<0 sprial vase, 1<<1 by object
 
-    //std::vector<GCodeProcessorResult::SliceWarning> warnings;
-    std::vector<std::string> warnings;
+    std::vector<GCodeProcessorResult::SliceWarning> warnings;
 
     std::string get_gcode_prediction_str() {
         return gcode_prediction;
@@ -230,27 +215,25 @@ struct StoreParams
     std::vector<Preset*> project_presets;
     DynamicPrintConfig* config;
     std::vector<ThumbnailData*> thumbnail_data;
+    std::vector<ThumbnailData*> no_light_thumbnail_data;
     std::vector<ThumbnailData*> top_thumbnail_data;
     std::vector<ThumbnailData*> pick_thumbnail_data;
     std::vector<ThumbnailData*> calibration_thumbnail_data;
     SaveStrategy strategy = SaveStrategy::Zip64;
     Export3mfProgressFn proFn = nullptr;
-    //std::vector<PlateBBoxData*> id_bboxes;
-    //BBLProject* project = nullptr;
-    //BBLProfile* profile = nullptr;
+    std::vector<PlateBBoxData*> id_bboxes;
+    BBLProject* project = nullptr;
+    BBLProfile* profile = nullptr;
 
     StoreParams() {}
 };
 
 
-// Returns true if the 3mf file with the given filename is a bambu/orca project file (i.e. if it contains a config).
-extern bool is_project_bambu_3mf(const std::string& filename);
-
 //BBS: add plate data list related logic
 // add restore logic
 // Load the content of a 3mf file into the given model and preset bundle.
 extern bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions, Model* model, PlateDataPtrs* plate_data_list, std::vector<Preset*>* project_presets,
-        bool* is_bbl_3mf, Semver* file_version, Import3mfProgressFn proFn = nullptr, LoadStrategy strategy = LoadStrategy::Default, /*BBLProject *project = nullptr,*/ int plate_id = 0);
+        bool* is_bbl_3mf, Semver* file_version, Import3mfProgressFn proFn = nullptr, LoadStrategy strategy = LoadStrategy::Default, BBLProject *project = nullptr, int plate_id = 0);
 
 extern std::string bbs_3mf_get_thumbnail(const char * path);
 
@@ -276,42 +259,39 @@ extern bool store_bbs_3mf(const char* path,
                           bool silence = true);
 */
 
+extern bool store_bbs_3mf(StoreParams& store_params);
 
-/////////////////////// EXPORT /////////////////////////////
-//
-//extern bool store_bbs_3mf(StoreParams& store_params);
-//
-//extern void release_PlateData_list(PlateDataPtrs& plate_data_list);
-//
-//// backup & restore project
-//
-//extern void save_object_mesh(ModelObject& object);
-//
-//extern void delete_object_mesh(ModelObject& object);
-//
-//extern void backup_soon();
-//
-//extern void remove_backup(Model& model, bool removeAll);
-//
-//extern void set_backup_interval(long interval);
-//
-//extern void set_backup_callback(std::function<void(int)> callback);
-//
-//extern void run_backup_ui_tasks();
-//
-//extern bool has_restore_data(std::string & path, std::string & origin);
-//
-//extern void put_other_changes();
-//
-//extern void clear_other_changes(bool backup);
-//
-//extern bool has_other_changes(bool backup);
-//
-//class SaveObjectGaurd {
-//public:
-//    SaveObjectGaurd(ModelObject& object);
-//    ~SaveObjectGaurd();
-//};
+extern void release_PlateData_list(PlateDataPtrs& plate_data_list);
+
+// backup & restore project
+
+extern void save_object_mesh(ModelObject& object);
+
+extern void delete_object_mesh(ModelObject& object);
+
+extern void backup_soon();
+
+extern void remove_backup(Model& model, bool removeAll);
+
+extern void set_backup_interval(long interval);
+
+extern void set_backup_callback(std::function<void(int)> callback);
+
+extern void run_backup_ui_tasks();
+
+extern bool has_restore_data(std::string & path, std::string & origin);
+
+extern void put_other_changes();
+
+extern void clear_other_changes(bool backup);
+
+extern bool has_other_changes(bool backup);
+
+class SaveObjectGaurd {
+public:
+    SaveObjectGaurd(ModelObject& object);
+    ~SaveObjectGaurd();
+};
 
 } // namespace Slic3r
 

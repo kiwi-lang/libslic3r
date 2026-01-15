@@ -132,7 +132,7 @@ public:
         BOOST_LOG_TRIVIAL(info) << CostItems::field_names();
         std::cout << CostItems::field_names() << std::endl;
         for (int i = 0; i < orientations.size();i++) {
-            Vec3f orientation = -orientations[i];
+            auto orientation = -orientations[i];
 
             project_vertices(orientation);
 
@@ -230,10 +230,10 @@ public:
     {
         std::unordered_map<stl_normal, float, VecHash> alignments;
         // init to 0
-        for (size_t i = 0; i < size_t(areas_.size()); i++)
+        for (size_t i = 0; i < areas_.size(); i++)
             alignments.insert(std::pair(normals_.row(i), 0));
         // cumulate areas
-        for (size_t i = 0; i < size_t(areas_.size()); i++)
+        for (size_t i = 0; i < areas_.size(); i++)
         {
             alignments[normals_.row(i)] += areas_(i);
         }
@@ -257,11 +257,11 @@ public:
         Vec3f n1 = { 0, 0, 0 };
         std::vector<float> current_areas = {0, 0};
         // init to 0
-        for (size_t i = 0; i < size_t(areas_.size()); i++) {
+        for (size_t i = 0; i < areas_.size(); i++) {
             alignments_.insert(std::pair(quantize_normals_.row(i), std::pair(current_areas, n1)));
         }
         // cumulate areas
-        for (size_t i = 0; i < size_t(areas_.size()); i++)
+        for (size_t i = 0; i < areas_.size(); i++)
         {
             alignments_[quantize_normals_.row(i)].first[1] += areas_(i);
             if (areas_(i) > alignments_[quantize_normals_.row(i)].first[0]){
@@ -283,12 +283,12 @@ public:
     }
     void add_supplements()
     {
-        std::vector<Vec3f> vecs = { {0, 0, -1} ,{0.70710678f, 0, -0.70710678f},{0, 0.70710678f, -0.70710678f},
-            {-0.70710678f, 0, -0.70710678f},{0, -0.70710678f, -0.70710678f},
-            {1, 0, 0},{0.70710678f, 0.70710678f, 0},{0, 1, 0},{-0.70710678f, 0.70710678f, 0},
-            {-1, 0, 0},{-0.70710678f, -0.70710678f, 0},{0, -1, 0},{0.70710678f, -0.70710678f, 0},
-            {0.70710678f, 0, 0.70710678f},{0, 0.70710678f, 0.70710678f},
-            {-0.70710678f, 0, 0.70710678f},{0, -0.70710678f, 0.70710678f},{0, 0, 1} };
+        std::vector<Vec3f> vecs = { {0, 0, -1} ,{0.70710678, 0, -0.70710678},{0, 0.70710678, -0.70710678},
+            {-0.70710678, 0, -0.70710678},{0, -0.70710678, -0.70710678},
+            {1, 0, 0},{0.70710678, 0.70710678, 0},{0, 1, 0},{-0.70710678, 0.70710678, 0},
+            {-1, 0, 0},{-0.70710678, -0.70710678, 0},{0, -1, 0},{0.70710678, -0.70710678, 0},
+            {0.70710678, 0, 0.70710678},{0, 0.70710678, 0.70710678},
+            {-0.70710678, 0, 0.70710678},{0, -0.70710678, 0.70710678},{0, 0, 1} };
         orientations.insert(orientations.end(), vecs.begin(), vecs.end());
     }
 
@@ -339,7 +339,7 @@ public:
 
         z_max_hull.resize(mesh_convex_hull.facets_count(), 1);
         its = mesh_convex_hull.its;
-        for (size_t i = 0; i < size_t(z_max_hull.rows()); i++)
+        for (size_t i = 0; i < z_max_hull.rows(); i++)
         {
             float z0 = its.get_vertex(i,0).dot(orientation);
             float z1 = its.get_vertex(i,1).dot(orientation);
@@ -382,9 +382,9 @@ public:
 
         float total_min_z = z_projected.minCoeff();
         // filter bottom area
-        auto bottom_condition = (z_max.array() < total_min_z + this->params.FIRST_LAY_H - EPSILON).eval();
-        auto bottom_condition_hull = (z_max_hull.array() < total_min_z + this->params.FIRST_LAY_H - EPSILON).eval();
-        auto bottom_condition_2nd  = (z_max.array() < total_min_z + this->params.FIRST_LAY_H / 2.f - EPSILON).eval();
+        auto bottom_condition = z_max.array() < total_min_z + this->params.FIRST_LAY_H - EPSILON;
+        auto bottom_condition_hull = z_max_hull.array() < total_min_z + this->params.FIRST_LAY_H - EPSILON;
+        auto bottom_condition_2nd = z_max.array() < total_min_z + this->params.FIRST_LAY_H/2.f - EPSILON;
         //The first layer is sliced on half of the first layer height. 
         //The bottom area is measured by accumulating first layer area with the facets area below first layer height.
         //By combining these two factors, we can avoid the wrong orientation of large planar faces while not influence the
@@ -393,12 +393,12 @@ public:
 
         // filter overhang
         Eigen::VectorXf normal_projection(normals.rows(), 1);// = this->normals.dot(orientation);
-        for (size_t i = 0; i < size_t(normals.rows()); i++)
+        for (size_t i = 0; i < normals.rows(); i++)
         {
             normal_projection(i) = normals.row(i).dot(orientation);
         }
-        auto areas_appearance = areas.cwiseProduct((is_apperance * params.APPERANCE_FACE_SUPP + Eigen::VectorXf::Ones(is_apperance.rows(), is_apperance.cols()))).eval();
-        auto overhang_areas = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd)).select(areas_appearance, 0).eval();
+        auto areas_appearance = areas.cwiseProduct((is_apperance * params.APPERANCE_FACE_SUPP + Eigen::VectorXf::Ones(is_apperance.rows(), is_apperance.cols())));
+        auto overhang_areas = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd)).select(areas_appearance, 0);
         Eigen::MatrixXf inner = normal_projection.array() - params.ASCENT;
         inner = inner.cwiseMin(0).cwiseAbs();
         if (min_volume)
@@ -437,7 +437,7 @@ public:
         costs.bottom_hull = (bottom_condition_hull).select(areas_hull, 0).sum();
 
         // low angle faces
-        auto normal_projection_abs = normal_projection.cwiseAbs().eval();
+        auto normal_projection_abs = normal_projection.cwiseAbs();
         Eigen::MatrixXf laf_areas = ((normal_projection_abs.array() < params.LAF_MAX) * (normal_projection_abs.array() > params.LAF_MIN) * (z_max.array() > total_min_z + params.FIRST_LAY_H)).select(areas, 0);
         costs.area_laf = laf_areas.sum();
 

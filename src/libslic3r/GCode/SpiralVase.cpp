@@ -1,20 +1,69 @@
-///|/ Copyright (c) Prusa Research 2017 - 2021 Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ ported from lib/Slic3r/GCode/SpiralVase.pm:
-///|/ Copyright (c) Prusa Research 2017 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2014 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #include "SpiralVase.hpp"
-#include "LocalesUtils.hpp"
 #include "GCode.hpp"
-#include "GCodeProcessor.hpp"
 #include <sstream>
+#include <cmath>
+#include <limits>
 
 namespace Slic3r {
 
-std::string SpiralVase::process_layer(const std::string &gcode)
+namespace SpiralVaseHelpers {
+/** == Smooth Spiral Helpers == */
+/** Distance between a and b */
+float distance(SpiralVase::SpiralPoint a, SpiralVase::SpiralPoint b) { return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2)); }
+
+SpiralVase::SpiralPoint subtract(SpiralVase::SpiralPoint a, SpiralVase::SpiralPoint b)
+{
+    return SpiralVase::SpiralPoint(a.x - b.x, a.y - b.y);
+}
+
+SpiralVase::SpiralPoint add(SpiralVase::SpiralPoint a, SpiralVase::SpiralPoint b) { return SpiralVase::SpiralPoint(a.x + b.x, a.y + b.y); }
+
+SpiralVase::SpiralPoint scale(SpiralVase::SpiralPoint a, float factor) { return SpiralVase::SpiralPoint(a.x * factor, a.y * factor); }
+
+/** dot product */
+float dot(SpiralVase::SpiralPoint a, SpiralVase::SpiralPoint b) { return a.x * b.x + a.y * b.y; }
+
+/** Find the point on line ab closes to point c */
+SpiralVase::SpiralPoint nearest_point_on_line(SpiralVase::SpiralPoint c, SpiralVase::SpiralPoint a, SpiralVase::SpiralPoint b, float& dist)
+{
+    SpiralVase::SpiralPoint ab      = subtract(b, a);
+    SpiralVase::SpiralPoint ca      = subtract(c, a);
+    float                   t       = dot(ca, ab) / dot(ab, ab);
+    t                               = t > 1 ? 1 : t;
+    t                               = t < 0 ? 0 : t;
+    SpiralVase::SpiralPoint closest = SpiralVase::SpiralPoint(add(a, scale(ab, t)));
+    dist                            = distance(c, closest);
+    return closest;
+}
+
+/** Given a set of lines defined by points such as line[n] is the line from points[n] to points[n+1],
+ *  find the closest point to p that falls on any of the lines */
+SpiralVase::SpiralPoint nearest_point_on_lines(SpiralVase::SpiralPoint               p,
+                                               std::vector<SpiralVase::SpiralPoint>* points,
+                                               bool&                                 found,
+                                               float&                                dist)
+{
+    if (points->size() < 2) {
+        found = false;
+        return SpiralVase::SpiralPoint(0, 0);
+    }
+    float                   min = std::numeric_limits<float>::max();
+    SpiralVase::SpiralPoint closest(0, 0);
+    for (unsigned long i = 0; i < points->size() - 1; i++) {
+        float                   currentDist = 0;
+        SpiralVase::SpiralPoint current     = nearest_point_on_line(p, points->at(i), points->at(i + 1), currentDist);
+        if (currentDist < min) {
+            min     = currentDist;
+            closest = current;
+            found   = true;
+        }
+    }
+    dist = min;
+    return closest;
+}
+} // namespace SpiralVase
+
+std::string SpiralVase::process_layer(const std::string &gcode, bool last_layer)
 {
     /*  This post-processor relies on several assumptions:
         - all layers are processed through it, including those that are not supposed
@@ -35,142 +84,127 @@ std::string SpiralVase::process_layer(const std::string &gcode)
     float total_layer_length = 0;
     float layer_height = 0;
     float z = 0.f;
-    std::string height_str = "";
+    
     {
         //FIXME Performance warning: This copies the GCodeConfig of the reader.
         GCodeReader r = m_reader;  // clone
         bool set_z = false;
-        bool milling = false;
-        r.parse_buffer(gcode, [&total_layer_length, &layer_height, &z, &set_z, &height_str, &milling]
+        r.parse_buffer(gcode, [&total_layer_length, &layer_height, &z, &set_z]
             (GCodeReader &reader, const GCodeReader::GCodeLine &line) {
-            if (boost::starts_with(line.comment(), " milling"))
-                milling = true;
-            if (!milling) {
-                if (line.cmd_is("G1")) {
-                    if (line.extruding(reader)) {
-                        total_layer_length += line.dist_XY(reader);
-                    } else if (line.has(Z)) {
-                        layer_height += line.dist_Z(reader);
-                        if (!set_z) {
-                            z = line.new_Z(reader);
-                            set_z = true;
-                        }
-                    }
-                } else {
-                    const std::string& comment = line.raw();
-                    if (comment.length() > 2 && comment.front() == ';') {
-                        std::string comment_str = comment.substr(1);
-                        if (boost::starts_with(comment_str, GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height))) {
-                            height_str = comment_str.substr(GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height).size());
-                        }
+            if (line.cmd_is("G1")) {
+                if (line.extruding(reader)) {
+                    total_layer_length += line.dist_XY(reader);
+                } else if (line.has(Z)) {
+                    layer_height += line.dist_Z(reader);
+                    if (!set_z) {
+                        z = line.new_Z(reader);
+                        set_z = true;
                     }
                 }
             }
         });
     }
-    
+
     // Remove layer height from initial Z.
     z -= layer_height;
-    
+
+    std::vector<SpiralVase::SpiralPoint>* current_layer = new std::vector<SpiralVase::SpiralPoint>();
+    std::vector<SpiralVase::SpiralPoint>* previous_layer = m_previous_layer;
+
+    bool smooth_spiral = m_smooth_spiral;
     std::string new_gcode;
+    std::string transition_gcode;
+    float max_xy_dist_for_smoothing = m_max_xy_smoothing;
     //FIXME Tapering of the transition layer only works reliably with relative extruder distances.
     // For absolute extruder distances it will be switched off.
     // Tapering the absolute extruder distances requires to process every extrusion value after the first transition
     // layer.
-    if (m_transition_layer) {
-        new_gcode += "; Began spiral\n";
-        if (!m_config.use_relative_e_distances.value) {
-            new_gcode += "G92 E0\n";
-        }
-        // remove constant height and replace by constant width
-        if (!height_str.empty()) {
-            new_gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height) + "0\n";
-        }
-    }
-    bool  keep_first_travel = m_transition_layer;
-    float layer_height_factor = layer_height / total_layer_length;
+    bool  transition_in = m_transition_layer && m_config.use_relative_e_distances.value;
+    bool  transition_out = last_layer && m_config.use_relative_e_distances.value;
     float len = 0.f;
-    double E_accumulator = 0;
-    double last_old_E = 0;
-    bool is_milling = false;
-    GCodeReader::GCodeLine line_last_position;
-    m_reader.parse_buffer(gcode, [this, &keep_first_travel , &new_gcode, &z, total_layer_length, layer_height_factor, &len, &E_accumulator, &last_old_E, &height_str, &is_milling, &line_last_position]
+    SpiralVase::SpiralPoint last_point = previous_layer != NULL && previous_layer->size() >0? previous_layer->at(previous_layer->size()-1): SpiralVase::SpiralPoint(0,0);
+    m_reader.parse_buffer(gcode, [&new_gcode, &z, total_layer_length, layer_height, transition_in, &len, &current_layer, &previous_layer, &transition_gcode, transition_out, smooth_spiral, &max_xy_dist_for_smoothing, &last_point]
         (GCodeReader &reader, GCodeReader::GCodeLine line) {
-        if (boost::starts_with(line.comment()," milling"))
-            is_milling = true;
-        if (!is_milling) {
-            if (line.cmd_is("G1")) {
-                if (line.has_z()) {
-                    // If this is the initial Z move of the layer, replace it with a
-                    // (redundant) move to the last Z of previous layer.
-                    line.set(reader, Z, z);
-                    new_gcode += line.raw() + '\n';
-                    return;
-                } else {
-                    float dist_XY = line.dist_XY(reader);
-                    if (dist_XY > 0) {
-                        // horizontal move
-                        if (line.extruding(reader)) {
-                            keep_first_travel = false;
-                            len += dist_XY;
-                            line.set(reader, Z, z + len * layer_height_factor);
-                            if (m_transition_layer && line.has(E)) {
-                                // Transition layer, modulate the amount of extrusion from zero to the final value.
-                                if (m_config.use_relative_e_distances.value) {
-                                    line.set(reader, E, line.value(E) * len / total_layer_length);
+        if (line.cmd_is("G1")) {
+            // Orca: Filter out retractions at layer change
+            if (line.retracting(reader) || (line.extruding(reader) && line.dist_XY(reader) < EPSILON)) return;
+            if (line.has_z() && !line.retracting(reader)) {
+                // If this is the initial Z move of the layer, replace it with a
+                // (redundant) move to the last Z of previous layer.
+                line.set(reader, Z, z);
+                new_gcode += line.raw() + '\n';
+                return;
+            } else {
+                float dist_XY = line.dist_XY(reader);
+                if (line.has_x() || line.has_y()) { // Sometimes lines have X/Y but the move is to the last position
+                    if (dist_XY > 0 && line.extruding(reader)) { // Exclude wipe and retract
+                        len += dist_XY;
+                        float factor = len / total_layer_length;
+                        if (transition_in)
+                            // Transition layer, interpolate the amount of extrusion from zero to the final value.
+                            line.set(reader, E, line.e() * factor, 5 /*decimal_digits*/);
+                        else if (transition_out) {
+                            // We want the last layer to ramp down extrusion, but without changing z height!
+                            // So clone the line before we mess with its Z and duplicate it into a new layer that ramps down E
+                            // We add this new layer at the very end
+                            GCodeReader::GCodeLine transitionLine(line);
+                            transitionLine.set(reader, E, line.e() * (1 - factor), 5 /*decimal_digits*/);
+                            transition_gcode += transitionLine.raw() + '\n';
+                        }
+                        // This line is the core of Spiral Vase mode, ramp up the Z smoothly
+                        line.set(reader, Z, z + factor * layer_height);
+                        if (smooth_spiral) {
+                            // Now we also need to try to interpolate X and Y
+                            SpiralVase::SpiralPoint p(line.x(), line.y()); // Get current x/y coordinates
+                            current_layer->push_back(p);       // Store that point for later use on the next layer
+                            if (previous_layer != NULL) {
+                                bool        found    = false;
+                                float       dist     = 0;
+                                SpiralVase::SpiralPoint nearestp = SpiralVaseHelpers::nearest_point_on_lines(p, previous_layer, found, dist);
+                                if (found && dist < max_xy_dist_for_smoothing) {
+                                    // Interpolate between the point on this layer and the point on the previous layer
+                                    SpiralVase::SpiralPoint target = SpiralVaseHelpers::add(SpiralVaseHelpers::scale(nearestp, 1 - factor), SpiralVaseHelpers::scale(p, factor));
+
+                                    // Remove tiny movement
+                                    // We need to figure out the distance of this new line!
+                                    float modified_dist_XY = SpiralVaseHelpers::distance(last_point, target);
+                                    if (modified_dist_XY < 0.001)
+                                        line.clear();
+                                    else {
+                                        line.set(reader, X, target.x);
+                                        line.set(reader, Y, target.y);
+                                        // Scale the extrusion amount according to change in length
+                                        line.set(reader, E, line.e() * modified_dist_XY / dist_XY, 5 /*decimal_digits*/);
+                                        last_point = target;
+                                    }
                                 } else {
-                                    last_old_E = line.value(E);
-                                    E_accumulator += line.dist_E(reader) * len / total_layer_length;
-                                    line.set(reader, E, E_accumulator);
+                                    last_point = p;
                                 }
                             }
-                            new_gcode += line.raw() + '\n';
-                        } else if (keep_first_travel) {
-                            //we can travel until the first spiral extrusion
-                            new_gcode += line.raw() + '\n';
                         }
-                        line_last_position = line;
-                        return;
-
-                        /*  Skip travel moves: the move to first perimeter point will
-                            cause a visible seam when loops are not aligned in XY; by skipping
-                            it we blend the first loop move in the XY plane (although the smoothness
-                            of such blend depend on how long the first segment is; maybe we should
-                            enforce some minimum length?).  */
+                        new_gcode += line.raw() + '\n';
                     }
-                }
-            } else if (!height_str.empty()) {
-                const std::string& comment = line.raw();
-                if (comment.length() > 2 && comment.front() == ';') {
-                    std::string comment_str = comment.substr(1);
-                    if (boost::starts_with(comment_str, GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height))) {
-                        //do not write it on the gcode
-                        return;
-                    }
+                    return;
+                    /*  Skip travel moves: the move to first perimeter point will
+                        cause a visible seam when loops are not aligned in XY; by skipping
+                        it we blend the first loop move in the XY plane (although the smoothness
+                        of such blend depend on how long the first segment is; maybe we should
+                        enforce some minimum length?).
+                        When smooth_spiral is enabled, we're gonna end up exactly where the next layer should
+                        start anyway, so we don't need the travel move */
                 }
             }
-            if (m_transition_layer && !m_config.use_relative_e_distances.value) {
-                new_gcode += "; End spiral transition layer\n";
-                new_gcode += "G92 E" + to_string_nozero(last_old_E, m_config.gcode_precision_e.value) + "\n";
-            }
-            new_gcode += line.raw() + '\n';
-        } else {
-            //milling, just copy
-            new_gcode += line.raw() + '\n';
+        }
+        new_gcode += line.raw() + '\n';
+        if(transition_out) {
+            transition_gcode += line.raw() + '\n';
         }
     });
-    if (m_transition_layer && !height_str.empty()) {
-        //restore height/width
-        new_gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height) + height_str +"\n";
-    }
-    if (is_milling) {
-        //travel back to last good position.
-        line_last_position.set(m_reader, Axis::E, 0);
-        new_gcode += "; return to spiral location\n";
-        new_gcode += line_last_position.raw() + "\n";
-    }
+
+    delete m_previous_layer;
+    m_previous_layer = current_layer;
     
-    return new_gcode;
+    return new_gcode + transition_gcode;
 }
 
 }

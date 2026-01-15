@@ -2,6 +2,7 @@
 // CuraEngine is released under the terms of the AGPLv3 or higher.
 
 #include <algorithm> //For std::partition_copy and std::min_element.
+#include <unordered_set>
 
 #include "WallToolPaths.hpp"
 
@@ -22,41 +23,58 @@
 namespace Slic3r::Arachne
 {
 
-WallToolPaths::WallToolPaths(const Polygons& outline, const coord_t bead_spacing_0, const coord_t bead_width_0,
-                             const coord_t bead_spacing_x, const coord_t bead_width_x,
-                             const size_t inset_count, const coord_t wall_0_inset, const coordf_t layer_height,
-                             const PrintRegionConfig &print_region_config, const PrintConfig &print_config)
+WallToolPathsParams make_paths_params(const int layer_id, const PrintObjectConfig &print_object_config, const PrintConfig &print_config)
+{
+    WallToolPathsParams input_params;
+    {
+        const double min_nozzle_diameter = *std::min_element(print_config.nozzle_diameter.values.begin(), print_config.nozzle_diameter.values.end());
+        if (const auto &min_feature_size_opt = print_object_config.min_feature_size)
+            input_params.min_feature_size = min_feature_size_opt.value * 0.01 * min_nozzle_diameter;
+
+        if (const auto &min_wall_length_factor_opt = print_object_config.min_length_factor)
+            input_params.min_length_factor = min_wall_length_factor_opt.value;
+        else
+            input_params.min_length_factor = 0.5f;
+
+        if (layer_id == 0) {
+            if (const auto &initial_layer_min_bead_width_opt = print_object_config.initial_layer_min_bead_width)
+                input_params.min_bead_width = initial_layer_min_bead_width_opt.value * 0.01 * min_nozzle_diameter;
+        } else {
+            if (const auto &min_bead_width_opt = print_object_config.min_bead_width)
+                input_params.min_bead_width = min_bead_width_opt.value * 0.01 * min_nozzle_diameter;
+        }
+
+        if (const auto &wall_transition_filter_deviation_opt = print_object_config.wall_transition_filter_deviation)
+            input_params.wall_transition_filter_deviation = wall_transition_filter_deviation_opt.value * 0.01 * min_nozzle_diameter;
+
+        if (const auto &wall_transition_length_opt = print_object_config.wall_transition_length)
+            input_params.wall_transition_length = wall_transition_length_opt.value * 0.01 * min_nozzle_diameter;
+
+        input_params.wall_transition_angle   = print_object_config.wall_transition_angle.value;
+        input_params.wall_distribution_count = print_object_config.wall_distribution_count.value;
+
+        input_params.is_top_or_bottom_layer = false; // Set to default value
+    }
+
+    return input_params;
+}
+
+WallToolPaths::WallToolPaths(const Polygons& outline, const coord_t bead_width_0, const coord_t bead_width_x,
+                             const size_t inset_count, const coord_t wall_0_inset, const coordf_t layer_height, const WallToolPathsParams &params)
     : outline(outline)
-    , perimeter_width_0(bead_width_0)
-    , perimeter_width_x(bead_width_x)
-    , bead_spacing_0(bead_spacing_0)
-    , bead_spacing_x(bead_spacing_x)
+    , bead_width_0(bead_width_0)
+    , bead_width_x(bead_width_x)
     , inset_count(inset_count)
     , wall_0_inset(wall_0_inset)
     , layer_height(layer_height)
     , print_thin_walls(Slic3r::Arachne::fill_outline_gaps)
-    , min_feature_size(scaled<coord_t>(print_region_config.min_feature_size.value))
-    , min_bead_width(scaled<coord_t>(print_region_config.min_bead_width.value))
+    , min_feature_size(scaled<coord_t>(params.min_feature_size))
+    , min_bead_width(scaled<coord_t>(params.min_bead_width))
     , small_area_length(static_cast<double>(bead_width_0) / 2.)
-    , wall_transition_filter_deviation(scaled<coord_t>(print_region_config.wall_transition_filter_deviation.value))
-    , wall_transition_length(scaled<coord_t>(print_region_config.wall_transition_length.value))
+    , wall_transition_filter_deviation(scaled<coord_t>(params.wall_transition_filter_deviation))
     , toolpaths_generated(false)
-    , print_region_config(print_region_config)
+    , m_params(params)
 {
-    assert(!print_config.nozzle_diameter.empty());
-    this->min_nozzle_diameter = float(*std::min_element(print_config.nozzle_diameter.get_values().begin(), print_config.nozzle_diameter.get_values().end()));
-
-    if (const auto &min_feature_size_opt = print_region_config.min_feature_size; min_feature_size_opt.percent)
-        this->min_feature_size = scaled<coord_t>(min_feature_size_opt.value * 0.01 * this->min_nozzle_diameter);
-
-    if (const auto &min_bead_width_opt = print_region_config.min_bead_width; min_bead_width_opt.percent)
-        this->min_bead_width = scaled<coord_t>(min_bead_width_opt.value * 0.01 * this->min_nozzle_diameter);
-
-    if (const auto &wall_transition_filter_deviation_opt = print_region_config.wall_transition_filter_deviation; wall_transition_filter_deviation_opt.percent)
-        this->wall_transition_filter_deviation = scaled<coord_t>(wall_transition_filter_deviation_opt.value * 0.01 * this->min_nozzle_diameter);
-
-    if (const auto &wall_transition_length_opt = print_region_config.wall_transition_length; wall_transition_length_opt.percent)
-        this->wall_transition_length = scaled<coord_t>(wall_transition_length_opt.value * 0.01 * this->min_nozzle_diameter);
 }
 
 void simplify(Polygon &thiss, const int64_t smallest_line_segment_squared, const int64_t allowed_error_distance_squared)
@@ -125,7 +143,7 @@ void simplify(Polygon &thiss, const int64_t smallest_line_segment_squared, const
         //h^2 = (L / b)^2     [square it]
         //h^2 = L^2 / b^2     [factor the divisor]
         const int64_t height_2 = double(area_removed_so_far) * double(area_removed_so_far) / double(base_length_2);
-        if ((height_2 <= Slic3r::sqr(scale_d(0.005)) //Almost exactly colinear (barring rounding errors).
+        if ((height_2 <= Slic3r::sqr(scaled<coord_t>(0.005)) //Almost exactly colinear (barring rounding errors).
              && Line::distance_to_infinite(current, previous, next) <= scaled<double>(0.005))) // make sure that height_2 is not small because of cancellation of positive and negative areas
             continue;
 
@@ -153,10 +171,7 @@ void simplify(Polygon &thiss, const int64_t smallest_line_segment_squared, const
                     current = intersection_point;
                     // If there was a previous point added, remove it.
                     if(!new_path.empty()) {
-                        if (new_path.points.back().coincides_with_epsilon(new_path.points.front())) {
-                            assert(false); // shouldn't happen
-                            new_path.points.pop_back();
-                        }
+                        new_path.points.pop_back();
                         previous = previous_previous;
                     }
                 }
@@ -238,7 +253,7 @@ std::unique_ptr<LocToLineGrid>                                               cre
 void fixSelfIntersections(const coord_t epsilon, Polygons &thiss)
 {
     if (epsilon < 1) {
-        ClipperLib::SimplifyPolygons(ClipperUtils::PolygonsProvider(thiss), ClipperLib::pftEvenOdd);
+        ClipperLib::SimplifyPolygons(ClipperUtils::PolygonsProvider(thiss));
         return;
     }
 
@@ -246,7 +261,7 @@ void fixSelfIntersections(const coord_t epsilon, Polygons &thiss)
 
     // Points too close to line segments should be moved a little away from those line segments, but less than epsilon,
     //   so at least half-epsilon distance between points can still be guaranteed.
-    constexpr coord_t grid_size  = scaled<coord_t>(2.);
+    const coord_t grid_size  = scaled<coord_t>(2.);
     auto              query_grid = createLocToLineGrid(thiss, grid_size);
 
     const auto    move_dist         = std::max<int64_t>(2L, half_epsilon - 2);
@@ -279,7 +294,7 @@ void fixSelfIntersections(const coord_t epsilon, Polygons &thiss)
         }
     }
 
-    ClipperLib::SimplifyPolygons(ClipperUtils::PolygonsProvider(thiss), ClipperLib::pftEvenOdd);
+    ClipperLib::SimplifyPolygons(ClipperUtils::PolygonsProvider(thiss));
 }
 
 /*!
@@ -346,7 +361,7 @@ void removeSmallAreas(Polygons &thiss, const double min_area_size, const bool re
         }
     } else {
         // For each polygon, computes the signed area, move small outlines at the end of the vector and keep pointer on small holes
-        Polygons small_holes;
+        std::vector<Polygon> small_holes;
         for (auto it = thiss.begin(); it < new_end;) {
             if (double area = ClipperLib::Area(to_path(*it)); fabs(area) < min_area_size) {
                 if (area >= 0) {
@@ -458,11 +473,11 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
     if (this->inset_count < 1)
         return toolpaths;
 
-    const coord_t smallest_segment = Slic3r::Arachne::meshfix_maximum_resolution;
-    const coord_t allowed_distance = Slic3r::Arachne::meshfix_maximum_deviation;
+    const coord_t smallest_segment = Slic3r::Arachne::meshfix_maximum_resolution();
+    const coord_t allowed_distance = Slic3r::Arachne::meshfix_maximum_deviation();
     const coord_t epsilon_offset = (allowed_distance / 2) - 1;
-    const double  transitioning_angle = Geometry::deg2rad(this->print_region_config.wall_transition_angle.value);
-    constexpr coord_t discretization_step_size = scaled<coord_t>(0.8);
+    const double  transitioning_angle = Geometry::deg2rad(m_params.wall_transition_angle);
+    const coord_t discretization_step_size = scaled<coord_t>(0.8);
 
     // Simplify outline for boost::voronoi consumption. Absolutely no self intersections or near-self intersections allowed:
     // TODO: Open question: Does this indeed fix all (or all-but-one-in-a-million) cases for manifold but otherwise possibly complex polygons?
@@ -487,15 +502,20 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
         return toolpaths;
     }
 
-    const double wall_split_middle_threshold = std::clamp(2. * unscaled(this->min_bead_width) / unscaled(this->perimeter_width_0) - 1., 0.01, 0.99); // For an uneven nr. of lines: When to split the middle wall into two.
-    const double wall_add_middle_threshold   = std::clamp(unscaled(this->min_bead_width) / unscaled(this->perimeter_width_x), 0.01, 0.99); // For an even nr. of lines: When to add a new middle in between the innermost two walls.
+    const float external_perimeter_extrusion_width = Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_0), float(this->layer_height));
+    const float perimeter_extrusion_width          = Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_x), float(this->layer_height));
 
-    const int wall_distribution_count = this->print_region_config.wall_distribution_count.value;
-    const size_t max_bead_count = (inset_count < size_t(std::numeric_limits<coord_t>::max() / 2)) ? 2 * inset_count : size_t(std::numeric_limits<coord_t>::max());
+    const coord_t wall_transition_length = scaled<coord_t>(this->m_params.wall_transition_length);
+	
+	const double wall_split_middle_threshold = std::clamp(2. * unscaled<double>(this->min_bead_width) / external_perimeter_extrusion_width - 1., 0.01, 0.99); // For an uneven nr. of lines: When to split the middle wall into two.
+    const double wall_add_middle_threshold   = std::clamp(unscaled<double>(this->min_bead_width) / perimeter_extrusion_width, 0.01, 0.99); // For an even nr. of lines: When to add a new middle in between the innermost two walls.
+    
+    const int wall_distribution_count = this->m_params.wall_distribution_count;
+    const size_t max_bead_count = (inset_count < std::numeric_limits<coord_t>::max() / 2) ? 2 * inset_count : std::numeric_limits<coord_t>::max();
     const auto beading_strat = BeadingStrategyFactory::makeStrategy
         (
-            bead_spacing_0,
-            bead_spacing_x,
+            bead_width_0,
+            bead_width_x,
             wall_transition_length,
             transitioning_angle,
             print_thin_walls,
@@ -521,7 +541,7 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
     );
     wall_maker.generateToolpaths(toolpaths);
 
-    stitchToolPaths(toolpaths, this->bead_spacing_x);
+    stitchToolPaths(toolpaths, this->bead_width_x);
 
     removeSmallLines(toolpaths);
 
@@ -626,7 +646,7 @@ void WallToolPaths::stitchToolPaths(std::vector<VariableWidthLines> &toolpaths, 
                 wall_polygon.junctions.emplace_back(wall_polygon.junctions.front());
             }
             wall_polygon.is_closed = true;
-            wall_lines.push_back(std::move(wall_polygon)); // add stitched polygons to result
+            wall_lines.emplace_back(std::move(wall_polygon)); // add stitched polygons to result
         }
 #ifdef DEBUG
         for (ExtrusionLine& line : wall_lines)
@@ -658,7 +678,8 @@ void WallToolPaths::removeSmallLines(std::vector<VariableWidthLines> &toolpaths)
             coord_t        min_width = std::numeric_limits<coord_t>::max();
             for (const ExtrusionJunction &j : line)
                 min_width = std::min(min_width, j.w);
-            if (line.is_odd && !line.is_closed && shorterThan(line, min_width / 2)) { // remove line
+            // Only use min_length_factor for non-topmost, to prevent top gaps. Otherwise use default value.
+            if (line.is_odd && !line.is_closed && shorterThan(line, m_params.is_top_or_bottom_layer ? (min_width / 2) : (min_width * m_params.min_length_factor))) { // remove line
                 line = std::move(inset.back());
                 inset.erase(--inset.end());
                 line_idx--; // reconsider the current position
@@ -671,9 +692,9 @@ void WallToolPaths::simplifyToolPaths(std::vector<VariableWidthLines> &toolpaths
 {
     for (size_t toolpaths_idx = 0; toolpaths_idx < toolpaths.size(); ++toolpaths_idx)
     {
-        const int64_t maximum_resolution = Slic3r::Arachne::meshfix_maximum_resolution;
-        const int64_t maximum_deviation = Slic3r::Arachne::meshfix_maximum_deviation;
-        const int64_t maximum_extrusion_area_deviation = Slic3r::Arachne::meshfix_maximum_extrusion_area_deviation; // unit: μm²
+        const int64_t maximum_resolution = Slic3r::Arachne::meshfix_maximum_resolution();
+        const int64_t maximum_deviation = Slic3r::Arachne::meshfix_maximum_deviation();
+        const int64_t maximum_extrusion_area_deviation = Slic3r::Arachne::meshfix_maximum_extrusion_area_deviation(); // unit: μm²
         for (auto& line : toolpaths[toolpaths_idx])
         {
             line.simplify(maximum_resolution * maximum_resolution, maximum_deviation * maximum_deviation, maximum_extrusion_area_deviation);
@@ -772,7 +793,6 @@ bool WallToolPaths::removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpa
 WallToolPaths::ExtrusionLineSet WallToolPaths::getRegionOrder(const std::vector<ExtrusionLine *> &input, const bool outer_to_inner)
 {
     ExtrusionLineSet order_requirements;
-
     // We build a grid where we map toolpath vertex locations to toolpaths,
     // so that we can easily find which two toolpaths are next to each other,
     // which is the requirement for there to be an order constraint.

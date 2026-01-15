@@ -2,10 +2,10 @@
 //CuraEngine is released under the terms of the AGPLv3 or higher.
 
 #include "DistanceField.hpp" //Class we're implementing.
-#include "../../ClipperUtils.hpp"
 #include "../FillRectilinear.hpp"
+#include "../../ClipperUtils.hpp"
 
-#include <oneapi/tbb/parallel_for.h>
+#include <tbb/parallel_for.h>
 
 #ifdef LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
 #include "../../SVG.hpp"
@@ -17,7 +17,7 @@ namespace Slic3r::FillLightning
 constexpr coord_t radius_per_cell_size = 6;  // The cell-size should be small compared to the radius, but not so small as to be inefficient.
 
 #ifdef LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
-void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::vector<DistanceField::UnsupportedCell> &unsupported_points, const Points &points = {})
+void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::list<DistanceField::UnsupportedCell> &unsupported_points, const Points &points = {})
 {
     coordf_t    stroke_width = scaled<coordf_t>(0.01);
     BoundingBox bbox         = get_extents(outline);
@@ -40,10 +40,11 @@ DistanceField::DistanceField(const coord_t& radius, const Polygons& current_outl
     m_supporting_radius(radius),
     m_unsupported_points_bbox(current_outlines_bbox)
 {
-    m_supporting_radius_sqr = Slic3r::coord_int_sqr(radius);
+    m_supporting_radius2 = Slic3r::sqr(int64_t(radius));
     // Sample source polygons with a regular grid sampling pattern.
     const BoundingBox overhang_bbox = get_extents(current_overhang);
-    for (const ExPolygon &expoly : union_ex(current_overhang)) {
+    ExPolygons expolys = offset2_ex(union_ex(current_overhang), -m_cell_size / 2, m_cell_size / 2); // remove dangling lines which causes sample_grid_pattern crash (fails the OUTER_LOW assertions)
+    for (const ExPolygon &expoly : expolys) {
         const Points sampled_points               = sample_grid_pattern(expoly, m_cell_size, overhang_bbox);
         const size_t unsupported_points_prev_size = m_unsupported_points.size();
         m_unsupported_points.resize(unsupported_points_prev_size + sampled_points.size());
@@ -124,7 +125,7 @@ void DistanceField::update(const Point& to_node, const Point& added_leaf)
         for (grid_addr.x() = grid.min.x(); grid_addr.x() <= grid.max.x(); ++grid_addr.x()) {
             grid_loc = this->from_grid_point(grid_addr);
             // Test inside a circle at the new leaf.
-            if (squared_int_norm(grid_loc - added_leaf) > m_supporting_radius_sqr) {
+            if ((grid_loc - added_leaf).cast<int64_t>().squaredNorm() > m_supporting_radius2) {
                 // Not inside a circle at the end of the new leaf.
                 // Test inside a rotated rectangle.
                 Vec2d  vx = (grid_loc - to_node).cast<double>();
@@ -140,7 +141,7 @@ void DistanceField::update(const Point& to_node, const Point& added_leaf)
             // Remove unsupported leafs at this grid location.
             if (const size_t cell_idx = m_unsupported_points_grid.find_cell_idx(grid_addr); cell_idx != std::numeric_limits<size_t>::max()) {
                 const UnsupportedCell &cell = m_unsupported_points[cell_idx];
-                if (squared_int_norm(cell.loc - added_leaf) <= m_supporting_radius_sqr) {
+                if ((cell.loc - added_leaf).cast<int64_t>().squaredNorm() <= m_supporting_radius2) {
                     m_unsupported_points_erased[cell_idx] = true;
                     m_unsupported_points_grid.mark_erased(grid_addr);
                 }
@@ -160,7 +161,7 @@ void DistanceField::update(const Point &to_node, const Point &added_leaf)
             if (auto it = m_unsupported_points_grid.find({grid_x, grid_y}); it != m_unsupported_points_grid.end()) {
                 std::list<UnsupportedCell>::iterator &list_it = it->second;
                 UnsupportedCell                      &cell    = *list_it;
-                if (squared_int_norm(cell.loc - added_leaf) <= m_supporting_radius_sqr) {
+                if ((cell.loc - added_leaf).cast<int64_t>().squaredNorm() <= m_supporting_radius2) {
                     m_unsupported_points.erase(list_it);
                     m_unsupported_points_grid.erase(it);
                 }

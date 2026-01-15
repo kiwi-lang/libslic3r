@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_TriangleMeshSlicer_hpp_
 #define slic3r_TriangleMeshSlicer_hpp_
 
@@ -47,9 +43,7 @@ struct MeshSlicingParamsEx : public MeshSlicingParams
     float         extra_offset { 0 };
     // Resolution for contour simplification, unscaled.
     // 0 = don't simplify.
-    double        resolution{ 0 };
-    // Resolution for colinear points silmplification
-    double        model_resolution{ 0 };
+    double        resolution { 0 };
 };
 
 // All the following slicing functions shall produce consistent results with the same mesh, same transformation matrix and slicing parameters.

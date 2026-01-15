@@ -1,34 +1,20 @@
-///|/ Copyright (c) Prusa Research 2020 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Lukáš Matěna @lukasmatena, Roman Beránek @zavorka
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifdef _WIN32
 	#include <windows.h>
 	#include <boost/nowide/convert.hpp>
 #else
 	// any posix system
 	#include <pthread.h>
-	#ifdef __APPLE__
-		#include <pthread/qos.h>
-	#endif // __APPLE__
 #endif
 
 #include <atomic>
-#include <codecvt>
 #include <condition_variable>
-#include <locale>
 #include <mutex>
-#include <random>
-#include <string>
 #include <thread>
-#include <time.h>
-#include <chrono>
-#include <oneapi/tbb/parallel_for.h>
-#include <oneapi/tbb/task_arena.h>
+#include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 #include "Thread.hpp"
 #include "Utils.hpp"
-#include "LocalesUtils.hpp"
 
 namespace Slic3r {
 
@@ -137,29 +123,6 @@ std::optional<std::string> get_current_thread_name()
 	return (ptr == nullptr) ? std::string() : boost::nowide::narrow(ptr);
 }
 
-
-void win_exec(const std::string &command) {
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    std::wstring wide = converter.from_bytes(command);
-
-    //system(command.c_str());
-    STARTUPINFO StartupInfo;
-    PROCESS_INFORMATION ProcessInfo;
-
-    ZeroMemory( &StartupInfo, sizeof( StartupInfo ) );
-    StartupInfo.cb = sizeof( StartupInfo );
-    ZeroMemory( &ProcessInfo, sizeof( ProcessInfo ) );
-
-    CreateProcess( wide.c_str(),
-                   NULL, NULL, NULL,
-                   NULL, NULL, NULL, NULL,
-                   &StartupInfo,
-                   &ProcessInfo
-                   );
-
-    return;
-}
-
 #else // _WIN32
 
 #ifdef __APPLE__
@@ -244,48 +207,6 @@ bool is_main_thread_active()
 	return get_main_thread_id() == boost::this_thread::get_id();
 }
 
-#ifdef _DEBUGINFO
-void parallel_for(size_t begin, size_t size, std::function<void(size_t)> process_one_item) {
-    // TODO: sort the idx by difficulty (difficult first) (number of points, region, surfaces, .. ?)
-
-    //For now, this is just use in debug mode, to be able toswitch from // to sequential withotu recompiling evrything.
-
-    // normal step
-    tbb::parallel_for(begin, size, [&process_one_item](size_t item_idx) { process_one_item(item_idx); });
-    // if you need to debug without // stuff
-    //for (size_t idx = begin; idx < size; ++idx) {
-    //    process_one_item(idx);
-    //}
-}
-void not_parallel_for(size_t begin, size_t size, std::function<void(size_t)> process_one_item) {
-    for (size_t idx = begin; idx < size; ++idx) {
-        process_one_item(idx);
-    }
-}
-#endif
-
-static thread_local ThreadData s_thread_data;
-ThreadData& thread_data()
-{
-	return s_thread_data;
-}
-
-std::mt19937&   ThreadData::random_generator() {
-    if (! m_random_generator_initialized) {
-        std::random_device rd;
-        m_random_generator.seed(rd()); //can also be initialized by clock() + std::this_thread::get_id().hash()
-        m_random_generator_initialized = true;
-    }
-    return m_random_generator;
-}
-
-// Thread-safe function that returns a random number between 0 and max (inclusive, like rand()).
-int safe_rand(int max) {
-    std::mt19937 &generator = thread_data().random_generator();
-    std::uniform_int_distribution<int> distribution(0, max);
-    return distribution(generator);
-}
-
 // Spawn (n - 1) worker threads on Intel TBB thread pool and name them by an index and a system thread ID.
 // Also it sets locale of the worker threads to "C" for the G-code generator to produce "." as a decimal separator.
 void name_tbb_thread_pool_threads_set_locale()
@@ -300,20 +221,20 @@ void name_tbb_thread_pool_threads_set_locale()
 //	const size_t nthreads_hw = std::thread::hardware_concurrency();
 	const size_t nthreads_hw = tbb::this_task_arena::max_concurrency();
 	size_t       nthreads    = nthreads_hw;
-    if (thread_count) {
-        nthreads = std::min(nthreads_hw, *thread_count);
-    }
 
-    enforce_thread_count(nthreads);
+#ifdef SLIC3R_PROFILE
+	// Shiny profiler is not thread safe, thus disable parallelization.
+	disable_multi_threading();
+	nthreads = 1;
+#endif
 
 	size_t                  nthreads_running(0);
 	std::condition_variable cv;
 	std::mutex				cv_m;
 	auto					master_thread_id = std::this_thread::get_id();
-	auto					now = std::chrono::system_clock::now();
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, nthreads, 1),
-        [&nthreads_running, nthreads, &master_thread_id, &cv, &cv_m, &now](const tbb::blocked_range<size_t> &range) {
+        [&nthreads_running, nthreads, &master_thread_id, &cv, &cv_m](const tbb::blocked_range<size_t> &range) {
         	assert(range.begin() + 1 == range.end());
 			if (std::unique_lock<std::mutex> lk(cv_m);  ++nthreads_running == nthreads) {
 				lk.unlock();
@@ -322,45 +243,34 @@ void name_tbb_thread_pool_threads_set_locale()
     			cv.notify_all();
         	} else {
         		// Wait for the last thread to wake the others.
-                // here can be deadlock with the main that creates me.
-               cv.wait_until(lk, now + std::chrono::milliseconds(50), [&nthreads_running, nthreads]{return nthreads_running == nthreads;});
+			    cv.wait(lk, [&nthreads_running, nthreads]{return nthreads_running == nthreads;});
         	}
         	auto thread_id = std::this_thread::get_id();
 			if (thread_id == master_thread_id) {
 				// The calling thread runs the 0'th task.
-                //assert(range.begin() == 0);
+				assert(range.begin() == 0);
 			} else {
-                //assert(range.begin() > 0);
+				assert(range.begin() > 0);
 				std::ostringstream name;
 		        name << "slic3r_tbb_" << range.begin();
 		        set_current_thread_name(name.str().c_str());
-                // Set locales of the worker thread to "C".
-                set_c_locales();
+		        // Set locales of the worker thread to "C".
+#ifdef _WIN32
+			    _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+			    std::setlocale(LC_ALL, "C");
+#else
+				// We are leaking some memory here, because the newlocale() produced memory will never be released.
+				// This is not a problem though, as there will be a maximum one worker thread created per physical thread.
+				uselocale(newlocale(
+#ifdef __APPLE__
+					LC_ALL_MASK
+#else // some Unix / Linux / BSD
+					LC_ALL
+#endif
+					, "C", nullptr));
+#endif
     		}
         });
-}
-
-void set_current_thread_qos()
-{
-#ifdef __APPLE__
-	// OSX specific: Set Quality of Service to "user initiated", so that the threads will be scheduled to high performance
-	// cores if available.
-	// With QOS_CLASS_USER_INITIATED the worker threads drop priority once slicer loses user focus.
-	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-#endif // __APPLE__
-}
-
-void ThreadData::tbb_worker_thread_set_c_locales()
-{
-//    static std::atomic<int> cnt = 0;
-//    std::cout << "TBBLocalesSetter Entering " << cnt ++ << " ID " << std::this_thread::get_id() << "\n";
-    if (! m_tbb_worker_thread_c_locales_set) {
-        // Set locales of the worker thread to "C".
-        set_c_locales();
-        // OSX specific: Elevate QOS on Apple Silicon.
-        set_current_thread_qos();
-        m_tbb_worker_thread_c_locales_set = true;
-    }
 }
 
 }

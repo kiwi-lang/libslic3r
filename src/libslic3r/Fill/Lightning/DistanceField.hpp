@@ -78,7 +78,7 @@ protected:
      * branch of a tree.
      */
     coord_t m_supporting_radius;
-    lengthsqr_t m_supporting_radius_sqr;
+    int64_t m_supporting_radius2;
 
     /*!
      * Represents a small discrete area of infill that needs to be supported.
@@ -196,11 +196,11 @@ protected:
      * Maps the point to the grid coordinates.
      */
     Point from_grid_point(const Point &point) const {
-        return Point(point.x() * double(m_cell_size), point.y() * double(m_cell_size)) + m_unsupported_points_bbox.min;
+        return point * m_cell_size + m_unsupported_points_bbox.min;
     }
 
 #ifdef LIGHTNING_DISTANCE_FIELD_DEBUG_OUTPUT
-    friend void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::vector<DistanceField::UnsupportedCell> &unsupported_points, const Points &points);
+    friend void export_distance_field_to_svg(const std::string &path, const Polygons &outline, const Polygons &overhang, const std::list<DistanceField::UnsupportedCell> &unsupported_points, const Points &points);
 #endif
 };
 

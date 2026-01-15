@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 // Tree supports by Thomas Rahm, losely based on Tree Supports by CuraEngine.
 // Original source of Thomas Rahm's tree supports:
 // https://github.com/ThomasRahm/CuraEngine
@@ -116,7 +112,7 @@ struct TreeSupportMeshGroupSettings {
     std::vector<double>             support_roof_angles                     {};
     // Support Roof Pattern (aka top interface)
     // The pattern with which the roofs of the support are printed.
-    InfillPattern                   support_roof_pattern                    { ipAuto };
+    SupportMaterialInterfacePattern support_roof_pattern                    { smipAuto };
     // Support Pattern
     // The pattern of the support structures of the print. The different options available result in sturdy or easy to remove support.
     SupportMaterialPattern          support_pattern                         { smpRectilinear };
@@ -314,7 +310,7 @@ public:
     /*!
      * \brief Pattern used in the support roof. May contain non relevant data if support roof is disabled.
      */
-    InfillPattern roof_pattern;
+    SupportMaterialInterfacePattern roof_pattern;
     /*!
      * \brief Pattern used in the support infill.
      */
@@ -452,7 +448,7 @@ private:
 
 static constexpr const bool polygons_strictly_simple = false;
 
-static constexpr const auto tiny_area_threshold = sqr(scaled<double>(0.001));
+inline double tiny_area_threshold() { return sqr(scaled<double>(0.001)); }
 
 void tree_supports_show_error(std::string_view message, bool critical);
 

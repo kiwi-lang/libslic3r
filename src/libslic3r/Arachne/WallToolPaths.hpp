@@ -5,7 +5,6 @@
 #define CURAENGINE_WALLTOOLPATHS_H
 
 #include <memory>
-
 #include <ankerl/unordered_dense.h>
 
 #include "BeadingStrategy/BeadingStrategyFactory.hpp"
@@ -17,9 +16,24 @@ namespace Slic3r::Arachne
 {
 
 constexpr bool    fill_outline_gaps                        = true;
-constexpr coord_t meshfix_maximum_resolution               = scaled<coord_t>(0.5);
-constexpr coord_t meshfix_maximum_deviation                = scaled<coord_t>(0.025);
-constexpr coord_t meshfix_maximum_extrusion_area_deviation = scaled<coord_t>(2.);
+inline coord_t    meshfix_maximum_resolution() { return scaled<coord_t>(0.5); }
+inline coord_t    meshfix_maximum_deviation() { return scaled<coord_t>(0.025); }
+inline coord_t    meshfix_maximum_extrusion_area_deviation() { return scaled<coord_t>(2.); }
+
+class WallToolPathsParams
+{
+public:
+    float   min_bead_width;
+    float   min_feature_size;
+    float   min_length_factor;
+    float   wall_transition_length;
+    float   wall_transition_angle;
+    float   wall_transition_filter_deviation;
+    int     wall_distribution_count;
+    bool    is_top_or_bottom_layer;
+};
+
+WallToolPathsParams make_paths_params(const int layer_id, const PrintObjectConfig &print_object_config, const PrintConfig &print_config);
 
 class WallToolPaths
 {
@@ -32,12 +46,7 @@ public:
      * \param inset_count The maximum number of parallel extrusion lines that make up the wall
      * \param wall_0_inset How far to inset the outer wall, to make it adhere better to other walls.
      */
-    WallToolPaths(const Polygons& outline,
-        coord_t bead_spacing_0,
-        coord_t bead_width_0,
-        coord_t bead_spacing_x,
-        coord_t bead_width_x,
-        size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const PrintRegionConfig &print_region_config, const PrintConfig &print_config);
+    WallToolPaths(const Polygons& outline, coord_t bead_width_0, coord_t bead_width_x, size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const WallToolPathsParams &params);
 
     /*!
      * Generates the Toolpaths
@@ -80,6 +89,7 @@ public:
     static bool removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpaths);
 
     using ExtrusionLineSet = ankerl::unordered_dense::set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>>;
+
     /*!
      * Get the order constraints of the insets when printing walls per region / hole.
      * Each returned pair consists of adjacent wall lines where the left has an inset_idx one lower than the right.
@@ -101,7 +111,7 @@ protected:
     /*!
      * Remove polylines shorter than half the smallest line width along that polyline.
      */
-    static void removeSmallLines(std::vector<VariableWidthLines> &toolpaths);
+    void removeSmallLines(std::vector<VariableWidthLines> &toolpaths);
 
     /*!
      * Simplifies the variable-width toolpaths by calling the simplify on every line in the toolpath using the provided
@@ -113,10 +123,8 @@ protected:
 
 private:
     const Polygons& outline; //<! A reference to the outline polygon that is the designated area
-    coord_t perimeter_width_0; //<! The nominal or first extrusion line width
-    coord_t perimeter_width_x; //<! The subsequently extrusion line width
-    coord_t bead_spacing_0; //<! The nominal or first extrusion line spacing with which libArachne generates its walls
-    coord_t bead_spacing_x; //<! The subsequently extrusion line spacing with which libArachne generates its walls if WallToolPaths was called with the nominal_bead_width Constructor this is the same as bead_width_0
+    coord_t bead_width_0; //<! The nominal or first extrusion line width with which libArachne generates its walls
+    coord_t bead_width_x; //<! The subsequently extrusion line width with which libArachne generates its walls if WallToolPaths was called with the nominal_bead_width Constructor this is the same as bead_width_0
     size_t inset_count; //<! The maximum number of walls to generate
     coord_t wall_0_inset; //<! How far to inset the outer wall. Should only be applied when printing the actual walls, not extra infill/skin/support walls.
     coordf_t layer_height;
@@ -125,12 +133,10 @@ private:
     coord_t min_bead_width;  //<! The minimum bead size to use when widening thin model features with the widening beading meta-strategy
     double small_area_length; //<! The length of the small features which are to be filtered out, this is squared into a surface
     coord_t wall_transition_filter_deviation; //!< The allowed line width deviation induced by filtering
-    coord_t wall_transition_length;
-    float min_nozzle_diameter;
     bool toolpaths_generated; //<! Are the toolpaths generated
     std::vector<VariableWidthLines> toolpaths; //<! The generated toolpaths
     Polygons inner_contour;  //<! The inner contour of the generated toolpaths
-    const PrintRegionConfig &print_region_config;
+    const WallToolPathsParams m_params;
 };
 
 } // namespace Slic3r::Arachne

@@ -1,26 +1,18 @@
-///|/ Copyright (c) Prusa Research 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_SupportParameters_hpp_
 #define slic3r_SupportParameters_hpp_
 
 #include "../libslic3r.h"
 #include "../Flow.hpp"
-#include "../PrintConfig.hpp"
 
 namespace Slic3r {
 
 class PrintObject;
-enum InfillPattern : uint8_t;
+enum InfillPattern : int;
 
 namespace FFFSupport {
 
 struct SupportParameters {
 	SupportParameters(const PrintObject &object);
-
-    //PrintRegionConfig for filling.
-    PrintRegionConfig      default_region_config;
 
     // Both top / bottom contacts and interfaces are soluble.
     bool                    soluble_interface;
@@ -55,27 +47,18 @@ struct SupportParameters {
 	Flow 					support_material_interface_flow;
 	// Flow at the bottom interfaces and contacts.
 	Flow 					support_material_bottom_interface_flow;
-	// Flow at raft layers.
-	Flow    				raft_flow;
 	// Flow at raft inteface & contact layers.
 	Flow    				raft_interface_flow;
-	// ratio for raft bridges flow.
-	float    				raft_bridge_flow_ratio;
 	// Is merging of regions allowed? Could the interface & base support regions be printed with the same extruder?
 	bool 					can_merge_support_regions;
 
-    double                  support_layer_height_min; //unscaled
+    coordf_t 				support_layer_height_min;
 //	coordf_t				support_layer_height_max;
 
 	coordf_t				gap_xy;
 
-    //scaled, resolution for supports
-    coord_t                 resolution = SCALED_EPSILON;
-
     float    				base_angle;
-	double                  base_angle_height; // unscaled
-    float                   interface_angle;
-    float                   interface_angle_incr;
+    float    				interface_angle;
 
     // Density of the top / bottom interface and contact layers.
     coordf_t 				interface_density;
@@ -91,8 +74,7 @@ struct SupportParameters {
     // Pattern of the raft interface and contact layers.
     InfillPattern           raft_interface_fill_pattern;
     // Pattern of the contact layers.
-    InfillPattern 			contact_top_fill_pattern;
-    InfillPattern 			contact_bottom_fill_pattern;
+    InfillPattern 			contact_fill_pattern;
     // Shall the sparse (base) layers be printed with a single perimeter line (sheath) for robustness?
     bool                    with_sheath;
     // Branches of organic supports with area larger than this threshold will be extruded with double lines.

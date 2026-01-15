@@ -1,36 +1,30 @@
-///|/ Copyright (c) Prusa Research 2017 - 2023 Oleksandra Iushchenko @YuSanka, Vojtěch Bubník @bubnikv, Pavel Mikuš @Godrak, David Kocík @kocikdav, Lukáš Matěna @lukasmatena, Enrico Turri @enricoturri1966, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Vojtěch Král @vojtechkral
-///|/ Copyright (c) SuperSlicer 2023 Remi Durand @supermerill
-///|/ 
-///|/ SuperSlicer and PrusaSlicer are released under the terms of the AGPLv3 or higher
-///|/
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
 #include "AppConfig.hpp"
-
-#include "libslic3r.h"
-#include "format.hpp"
+//BBS
+#include "Preset.hpp"
 #include "Exception.hpp"
-#include "I18N.hpp"
 #include "LocalesUtils.hpp"
 #include "Thread.hpp"
-#include "Utils.hpp"
-#include "Color.hpp"
+#include "format.hpp"
+#include "nlohmann/json.hpp"
 
 #include <utility>
 #include <vector>
 #include <stdexcept>
 
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/filesystem/directory.hpp>
+#include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
-#include <boost/format/format_fwd.hpp>
-#include <boost/locale.hpp>
-#include <boost/log/trivial.hpp>
 #include <boost/nowide/cenv.hpp>
 #include <boost/nowide/fstream.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/format/format_fwd.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #ifdef WIN32
 //FIXME replace the two following includes with <boost/md5.hpp> after it becomes mainstream.
@@ -38,789 +32,378 @@
 #include <boost/algorithm/hex.hpp>
 #endif
 
-#define L(s) Slic3r::I18N::translate(s)
+#define USE_JSON_CONFIG
+
+using namespace nlohmann;
 
 namespace Slic3r {
 
-static const std::string VENDOR_PREFIX = "vendor:";
-static const std::string MODEL_PREFIX = "model:";
-static const std::string VERSION_CHECK_URL = "https://api.github.com/repos/" "supermerill/superslicer" "/releases";
-// Url to index archive zip that contains latest indicies
-static const std::string INDEX_ARCHIVE_URL= "https://api.github.com/repos/" SLIC3R_GITHUB "-profiles/releases";
-//to get the slic3r idx: look at the json from INDEX_ARCHIVE_URL, and request the assets_url
-// then, in t8he json look for an entry with name == "vendor_indices.zip"
-
-// Url to folder with vendor profile files. Used when downloading new profiles that are not in resources folder.
-static const std::string PROFILE_FOLDER_URL = "https://raw.githubusercontent.com/" SLIC3R_GITHUB "-profiles/main/";
+static const std::string VERSION_CHECK_URL_STABLE = "https://api.github.com/repos/softfever/OrcaSlicer/releases/latest";
+static const std::string VERSION_CHECK_URL = "https://api.github.com/repos/softfever/OrcaSlicer/releases";
+static const std::string PROFILE_UPDATE_URL = "https://api.github.com/repos/OrcaSlicer/orcaslicer-profiles/releases/tags";
+static const std::string MODELS_STR = "models";
 
 const std::string AppConfig::SECTION_FILAMENTS = "filaments";
 const std::string AppConfig::SECTION_MATERIALS = "sla_materials";
 const std::string AppConfig::SECTION_EMBOSS_STYLE = "font";
 
+std::string AppConfig::get_language_code()
+{
+    std::string get_lang = get("language");
+    if (get_lang.empty()) return "";
+
+    if (get_lang == "zh_CN")
+    {
+        get_lang = "zh-cn";
+    }
+    else
+    {
+        if (get_lang.length() >= 2) { get_lang = get_lang.substr(0, 2); }
+    }
+
+    return get_lang;
+}
+
+std::string AppConfig::get_hms_host()
+{
+    std::string sel = get("iot_environment");
+    std::string host = "";
+// #if !BBL_RELEASE_TO_PUBLIC
+//     if (sel == ENV_DEV_HOST)
+//         host = "e-dev.bambu-lab.com";
+//     else if (sel == ENV_QAT_HOST)
+//         host = "e-qa.bambu-lab.com";
+//     else if (sel == ENV_PRE_HOST)
+//         host = "e-pre.bambu-lab.com";
+//     else if (sel == ENV_PRODUCT_HOST)
+//         host = "e.bambulab.com";
+//     return host;
+// #else
+    return "e.bambulab.com";
+// #endif
+}
+
 void AppConfig::reset()
 {
     m_storage.clear();
-    m_vendors.clear();
-    m_dirty = false;
-    m_orig_version = Semver::invalid();
-    m_legacy_datadir = false;
     set_defaults();
-    if (!m_data_dir.config_path.empty()) {
-        init_ui_layout();
-    }
 };
-
-uint32_t AppConfig::create_color(float saturation, float value, EAppColorType color_template)
-{
-    std::string hex_str;
-    switch (color_template) {
-    case EAppColorType::Highlight:
-        hex_str = get("color_dark");
-        break;
-    case EAppColorType::Platter:
-        hex_str = get("color_light");
-        break;
-    case EAppColorType::Main:
-    default:
-        hex_str = get("color");
-        break;
-    }
-
-    uint32_t int_color = hex2int(hex_str);
-    ColorRGB rgb_color = int2rgb(int_color);
-    hsv hsv_color = rgb2hsv(rgb_color);
-
-    //modify h& v
-    //saturation & value higher than 0.8will increase the sat/value
-    // values lower will decrease it
-    hsv_color.s = std::min(1., hsv_color.s * 1.25 * saturation);
-    hsv_color.v = std::min(1., hsv_color.v * 1.25 * value);
-
-    rgb_color = hsv2rgb(hsv_color);
-    
-    //use the other endian style
-    return rgb2int(rgb_color);
-}
 
 // Override missing or keys with their defaults.
 void AppConfig::set_defaults()
 {
-
     if (m_mode == EAppMode::Editor) {
-
+#ifdef SUPPORT_AUTO_CENTER
         // Reset the empty fields to defaults.
         if (get("autocenter").empty())
-            set("autocenter", "0");
+            set_bool("autocenter", true);
+#endif
+
+#ifdef SUPPORT_BACKGROUND_PROCESSING
         // Disable background processing by default as it is not stable.
         if (get("background_processing").empty())
-            set("background_processing", "0");
-        // Disable support issues alerts by default
-        if (get("alert_when_supports_needed").empty())
-            set("alert_when_supports_needed", "0");
-        // If set, the "Controller" tab for the control of the printer over serial line and the serial port settings are hidden.
-        // By default, Prusa has the controller hidden.
-        if (get("no_controller").empty())
-            set("no_controller", "1");
-        // If set, the "- default -" selections of print/filament/printer are suppressed, if there is a valid preset available.
-        if (get("no_defaults").empty())
-            set("no_defaults", "1");
-        if (get("no_templates").empty())
-            set("no_templates", "0");
-        if (get("show_incompatible_presets").empty())
-            set("show_incompatible_presets", "0");
+            set_bool("background_processing", false);
+#endif
 
+#ifdef SUPPORT_SHOW_DROP_PROJECT
         if (get("show_drop_project_dialog").empty())
-            set("show_drop_project_dialog", "1");
+            set_bool("show_drop_project_dialog", true);
+#endif
 
         if (get("drop_project_action").empty())
-            set("drop_project_action", "1");
-
-        if (get("freecad_path").empty() || get("freecad_path") == ".") {
-            set("freecad_path", ".");
-            //try to find it
-#ifdef _WIN32
-            //windows
-            boost::filesystem::path prg_files = "C:/Program Files";
-            boost::filesystem::path freecad_path;
-            if (boost::filesystem::exists(prg_files)) {
-                for (const boost::filesystem::directory_entry& prg_dir : boost::filesystem::directory_iterator(prg_files)) {
-                    if (prg_dir.status().type() == boost::filesystem::file_type::directory_file
-                         && boost::starts_with(prg_dir.path().filename().string(), "FreeCAD")
-                         && (freecad_path.empty() || freecad_path.filename().string() < prg_dir.path().filename().string())) {
-                        freecad_path = prg_dir.path();
-                    }
-                }
-            }
-            if (!freecad_path.empty())
-                set("freecad_path", freecad_path.string());
-#else
-#ifdef __APPLE__
-            //apple
-            if (boost::filesystem::exists("/Applications/FreeCAD.app/Contents/Frameworks/FreeCAD/lib"))
-                set("freecad_path", "/Applications/FreeCAD.app/Contents/Frameworks/FreeCAD");
-
-#else
-            // linux
-            if (boost::filesystem::exists("/usr/lib/freecad/lib"))
-                set("freecad_path", "/usr/lib/freecad");
-            else if (boost::filesystem::exists("/usr/local/bin/FreeCAD/lib"))
-                set("freecad_path", "/usr/local/bin/FreeCAD");
-#endif
-#endif
-        }
-
-        if (get("show_overwrite_dialog").empty())
-            set("show_overwrite_dialog", "1");
-
-        if (get("tab_icon_size").empty())
-            set("tab_icon_size", "32");
-
-        if (get("font_size").empty())
-            set("font_size", "0");
-
-        if (get("side_panel_width").empty())
-            set("side_panel_width", "42");
-
-        if (get("gcodeviewer_decimals").empty())
-            set("gcodeviewer_decimals", "2");
-
-        if (get("version_check").empty())
-            set("version_check", "1");
-
-        if (get("preset_update").empty())
-            set("preset_update", "0");
-
-        if (get("export_sources_full_pathnames").empty())
-            set("export_sources_full_pathnames", "0");
+            set_bool("drop_project_action", true);
 
 #ifdef _WIN32
         if (get("associate_3mf").empty())
-            set("associate_3mf", "0");
+            set_bool("associate_3mf", false);
         if (get("associate_stl").empty())
-            set("associate_stl", "0");
+            set_bool("associate_stl", false);
+        if (get("associate_step").empty())
+            set_bool("associate_step", false);
 
-        if (get("tabs_as_menu").empty())
-            set("tabs_as_menu", "0");
-
-        if (get("suppress_round_corners").empty())
-            set("suppress_round_corners", "1");
-
-        if (get("check_blacklisted_library").empty())
-            set("check_blacklisted_library", "1");
 #endif // _WIN32
-            //disable by default if amd graphic card detected, but can't know before the opengl is launched
-        //if (get("compress_png_texture").empty())
-            //set("compress_png_texture", (m_hardware&hGpuAmd) == hGpuAmd ? "0" : "1");
 
         // remove old 'use_legacy_opengl' parameter from this config, if present
         if (!get("use_legacy_opengl").empty())
-            erase("", "use_legacy_opengl");
+            erase("app", "use_legacy_opengl");
 
 #ifdef __APPLE__
         if (get("use_retina_opengl").empty())
-            set("use_retina_opengl", "1");
+            set_bool("use_retina_opengl", true);
 #endif
 
         if (get("single_instance").empty())
-            set("single_instance", 
-#ifdef __APPLE__
-                "1"
-#else // __APPLE__
-                "0"
-#endif // __APPLE__
-                );
+            set_bool("single_instance", false);
 
+#ifdef SUPPORT_REMEMBER_OUTPUT_PATH
         if (get("remember_output_path").empty())
-            set("remember_output_path", "1");
+            set_bool("remember_output_path", true);
 
         if (get("remember_output_path_removable").empty())
-            set("remember_output_path_removable", "1");
-
-        if (get("date_in_config_file").empty())
-            set("date_in_config_file", "1");
-        set_header_generate_with_date(get("date_in_config_file") == "1");
-
-        if (get("check_material_export").empty())
-            set("check_material_export", "0");
-
-        if (get("show_unknown_setting").empty())
-            set("show_unknown_setting", "1");
-
-        if (get("use_custom_toolbar_size").empty())
-            set("use_custom_toolbar_size", "0");
-
-        if (get("show_collapse_button").empty())
-            set("show_collapse_button", "1");
-
-        if (get("suppress_hyperlinks").empty())
-            set("suppress_hyperlinks", "confirm");
-
-        if (get("focus_platter_on_mouse").empty())
-            set("focus_platter_on_mouse", "1");
-
-        if (get("custom_toolbar_size").empty())
-            set("custom_toolbar_size", "100");
-
-        if (get("setting_icon").empty())
-            set("setting_icon", "1");
-
-        if (get("auto_toolbar_size").empty())
-            set("auto_toolbar_size", "100");
-
-        if (get("use_binary_gcode_when_supported").empty())
-            set("use_binary_gcode_when_supported", "1");
- 
-       if (get("notify_release").empty())
-           set("notify_release", "all"); // or "none" or "release"
-
-        if (get("auto_switch_preview").empty())
-            set("auto_switch_preview", "platter");
+            set_bool("remember_output_path_removable", true);
+#endif
+        if (get("toolkit_size").empty())
+            set("toolkit_size", "100");
 
 #if ENABLE_ENVIRONMENT_MAP
         if (get("use_environment_map").empty())
-            set("use_environment_map", "0");
+            set("use_environment_map", false);
 #endif // ENABLE_ENVIRONMENT_MAP
 
         if (get("use_inches").empty())
             set("use_inches", "0");
 
-        if (get("default_action_on_close_application").empty())
-            set("default_action_on_close_application", "none"); // , "discard" or "save" 
-
-        if (get("default_action_on_select_preset").empty())
-            set("default_action_on_select_preset", "none");     // , "transfer", "discard" or "save" 
-
-        if (get("default_action_on_new_project").empty())
-            set("default_action_on_new_project", "none");       // , "none" or 0
-
-        if (get("default_action_delete_all").empty())
-            set("default_action_delete_all", "1");
-
-        // change names, remove this if after 2024
-        if (get("color_manipulation_panel").empty() && !get("color_mapinulation_panel").empty())
-            set("color_manipulation_panel", get("color_mapinulation_panel"));
-        if (get("color_manipulation_panel").empty())
-            set("color_manipulation_panel", "0");
-
-        if (get("order_volumes").empty())
-            set("order_volumes", "1");
-
-        if (get("non_manifold_edges").empty())
-            set("non_manifold_edges", "1");
-
-        if (get("clear_undo_redo_stack_on_new_project").empty())
-            set("clear_undo_redo_stack_on_new_project", "1");
-
-        if (get("use_rich_tooltip").empty())
-            set("use_rich_tooltip", "0");
-
-        if (get("hide_slice_tooltip").empty())
-#ifdef _WIN32
-            set("hide_slice_tooltip", "1");
-#else
-            set("hide_slice_tooltip", "0");
-#endif // _WIN32
-
-        if (get("show_layer_height_doubleslider").empty())
-            set("show_layer_height_doubleslider", "1");
-
-        if (get("show_layer_time_doubleslider").empty())
-            set("show_layer_time_doubleslider", "0");
-
-        if (get("show_layer_area_doubleslider").empty())
-            set("show_layer_area_doubleslider", "0");
-
-	} else {
+        if (get("default_page").empty())
+            set("default_page", "0");
+    }
+    else {
 #ifdef _WIN32
         if (get("associate_gcode").empty())
-            set("associate_gcode", "0");
-        if (get("associate_bgcode").empty())
-            set("associate_bgcode", "0");
+            set_bool("associate_gcode", false);
 #endif // _WIN32
     }
-
-    if (get("seq_top_layer_only").empty())
-        set("seq_top_layer_only", "1");
 
     if (get("use_perspective_camera").empty())
-        set("use_perspective_camera", "1");
-
-    if (get("objects_always_expert").empty())
-        set("objects_always_expert", "1");
+        set_bool("use_perspective_camera", true);
 
     if (get("use_free_camera").empty())
-        set("use_free_camera", "0");
+        set_bool("use_free_camera", false);
 
-    if (get("3D_mouse_drag").empty())
-        set("3D_mouse_drag", "0");
-
-    if (get("mouse_middle_target").empty())
-        set("mouse_middle_target", "1");
+    if (get("camera_navigation_style").empty())
+        set("camera_navigation_style", "0");
 
     if (get("reverse_mouse_wheel_zoom").empty())
-        set("reverse_mouse_wheel_zoom", "0");
+        set_bool("reverse_mouse_wheel_zoom", false);
 
-    if (get("search_category").empty())
-        set("search_category", "1");
-    if (get("search_english").empty())
-        set("search_english", "0");
-    if (get("search_exact").empty())
-        set("search_exact", "0");
-    if (get("search_all_mode").empty())
-        set("search_all_mode", "1");
+    if (get("zoom_to_mouse").empty())
+        set_bool("zoom_to_mouse", false);
 
-    if (get("show_splash_screen").empty())
-        set("show_splash_screen", "1");
-
-    if (get("restore_win_position").empty())
-        set("restore_win_position", "1");       // allowed values - "1", "0", "crashed_at_..."
-
+//#ifdef SUPPORT_SHOW_HINTS
     if (get("show_hints").empty())
-        set("show_hints", "0");
+        set_bool("show_hints", true);
+//#endif
+    if (get("enable_multi_machine").empty())
+        set_bool("enable_multi_machine", false);
 
-    if (get("allow_auto_color_change").empty())
-        set("allow_auto_color_change", "1");
+    if (get("show_gcode_window").empty())
+        set_bool("show_gcode_window", true);
 
-    if (get("allow_ip_resolve").empty())
-        set("allow_ip_resolve", "1");
+    if (get("show_3d_navigator").empty())
+        set_bool("show_3d_navigator", true);
 
-    if (get("wifi_config_dialog_declined").empty())
-        set("wifi_config_dialog_declined", "0");
 
 #ifdef _WIN32
-    if (get("use_legacy_3DConnexion").empty())
-        set("use_legacy_3DConnexion", "0");
 
+//#ifdef SUPPORT_3D_CONNEXION
+    if (get("use_legacy_3DConnexion").empty())
+        set_bool("use_legacy_3DConnexion", true);
+//#endif
+
+#ifdef SUPPORT_DARK_MODE
     if (get("dark_color_mode").empty())
         set("dark_color_mode", "0");
+#endif
 
+//#ifdef SUPPORT_SYS_MENU
     if (get("sys_menu_enabled").empty())
         set("sys_menu_enabled", "1");
+//#endif
 #endif // _WIN32
 
+    // BBS
+    /*if (get("3mf_include_gcode").empty())
+        set_bool("3mf_include_gcode", true);*/
 
-    if (get("show_step_import_parameters").empty())
-        set("show_step_import_parameters", "1");
+    if (get("developer_mode").empty())
+        set_bool("developer_mode", false);
 
-    if (get("linear_precision").empty())
-        set("linear_precision", "0.005");
+    if (get("enable_ssl_for_mqtt").empty())
+        set_bool("enable_ssl_for_mqtt", true);
 
-    if (get("angle_precision").empty())
-        set("angle_precision", "1.");
+    if (get("enable_ssl_for_ftp").empty())
+        set_bool("enable_ssl_for_ftp", true);
+
+    if (get("log_severity_level").empty())
+        set("log_severity_level", "warning");
+
+    if (get("internal_developer_mode").empty())
+        set_bool("internal_developer_mode", false);
+
+    // BBS
+    if (get("preset_folder").empty())
+        set("preset_folder", "");
+
+    // BBS
+    if (get("slicer_uuid").empty()) {
+        boost::uuids::uuid uuid = boost::uuids::random_generator()();
+        set("slicer_uuid", to_string(uuid));
+    }
+
+    // Orca
+    if (get("stealth_mode").empty()) {
+        set_bool("stealth_mode", false);
+    }
+
+    if(get("check_stable_update_only").empty()) {
+        set_bool("check_stable_update_only", false);
+    }
+
+    // Orca
+    if(get("show_splash_screen").empty()) {
+        set_bool("show_splash_screen", true);
+    }
+
+    if (get("show_model_mesh").empty()) {
+        set_bool("show_model_mesh", false);
+    }
+
+    if (get("show_model_shadow").empty()) {
+        set_bool("show_model_shadow", true);
+    }
+
+    if (get("show_build_edges").empty()) {
+        set_bool("show_build_edgets", false);
+    }
+
+    if (get("show_daily_tips").empty()) {
+        set_bool("show_daily_tips", true);
+    }
+    //true is auto calculate
+    if (get("auto_calculate").empty()) {
+        set_bool("auto_calculate", true);
+    }
+
+    if (get("remember_printer_config").empty()) {
+        set_bool("remember_printer_config", true);
+    }
+
+    if (get("auto_calculate_when_filament_change").empty()){
+        set_bool("auto_calculate_when_filament_change", true);
+    }
+
+    if (get("show_home_page").empty()) {
+        set_bool("show_home_page", true);
+    }
+
+    if (get("show_printable_box").empty()) {
+        set_bool("show_printable_box", true);
+    }
+
+    if (get("units").empty()) {
+         set("units", "0");
+    }
+
+    if (get("sync_user_preset").empty()) {
+        set_bool("sync_user_preset", false);
+    }
+
+    if (get("keyboard_supported").empty()) {
+        set("keyboard_supported", std::string("none/alt/control/shift"));
+    }
+
+    if (get("mouse_supported").empty()) {
+        set("mouse_supported", "mouse left/mouse middle/mouse right");
+    }
+
+    if (get("privacy_version").empty()) {
+        set("privacy_version", "00.00.00.00");
+    }
+
+    if (get("rotate_view").empty()) {
+        set("rotate_view", "none/mouse left");
+    }
+
+    if (get("move_view").empty()) {
+        set("move_view", "none/mouse left");
+    }
+
+    if (get("zoom_view").empty()) {
+        set("zoom_view", "none/mouse left");
+    }
+
+    if (get("precise_control").empty()) {
+        set("precise_control", "none/mouse left");
+    }
+
+    if (get("download_path").empty()) {
+        set("download_path", "");
+    }
+
+    if (get("mouse_wheel").empty()) {
+        set("mouse_wheel", "0");
+    }
+    
+    if (get("max_recent_count").empty()) {
+        set("max_recent_count", "18");
+    }
+
+    // if (get("staff_pick_switch").empty()) {
+    //     set_bool("staff_pick_switch", false);
+    // }
+
+    if (get("sync_system_preset").empty()) {
+        set_bool("sync_system_preset", true);
+    }
+
+    if (get("backup_switch").empty() || get("version") < "01.06.00.00") {
+        set_bool("backup_switch", true);
+    }
+
+    if (get("backup_interval").empty()) {
+        set("backup_interval", "10");
+    }
+
+    if (get("curr_bed_type").empty()) {
+        set("curr_bed_type", "1");
+    }
+
+    if (get("sending_interval").empty()) {
+        set("sending_interval", "5");
+    }
+
+    if (get("max_send").empty()) {
+        set("max_send", "3");
+    }
+
+// #if BBL_RELEASE_TO_PUBLIC
+    if (get("iot_environment").empty()) {
+        set("iot_environment", "3");
+    }
+// #else
+//     if (get("iot_environment").empty()) {
+//         set("iot_environment", "1");
+//     }
+// #endif
+
+    if (get("allow_ip_resolve").empty())
+        set_bool("allow_ip_resolve", true);
+
+    if (get("presets", "filament_colors").empty()) {
+        set_str("presets", "filament_colors", "#F2754E");
+    }
+
+    if (get("print", "bed_leveling").empty()) {
+        set_str("print", "bed_leveling", "1");
+    }
+    if (get("print", "flow_cali").empty()) {
+        set_str("print", "flow_cali", "1");
+    }
+    if (get("print", "timelapse").empty()) {
+        set_str("print", "timelapse", "1");
+    }
 
     // Remove legacy window positions/sizes
-    erase("", "main_frame_maximized");
-    erase("", "main_frame_pos");
-    erase("", "main_frame_size");
-    erase("", "object_settings_maximized");
-    erase("", "object_settings_pos");
-    erase("", "object_settings_size");
-}
-
-void AppConfig::set_hardware_type(HardwareType hard) {
-    this->m_hardware = hard;
-    // Set default that depends on hardware type
-
-    //disable by default if amd graphic card detected, but can't know before the opengl is launched
-    if (get("compress_png_texture").empty() && (m_hardware&hHasGpu) != 0)
-        set("compress_png_texture", (m_hardware&hGpuAmd) == hGpuAmd ? "0" : "1");
-}
-
-void AppConfig::load_installed_repo(const boost::filesystem::path &directory) {
-    m_all_slic3r_installed.clear();
-    if (boost::filesystem::exists(directory / "installed.ini")) {
-        try {
-            boost::property_tree::ptree tree_ini;
-            boost::nowide::ifstream ifs;
-            ifs.imbue(boost::locale::generator()("en_US.UTF-8"));
-            ifs.open((directory / "installed.ini").string());
-            boost::property_tree::read_ini(ifs, tree_ini);
-            for (auto &section : tree_ini) {
-                m_all_slic3r_installed.emplace_back();
-                m_all_slic3r_installed.back().installed_name = section.first;
-                for (auto &key_value : section.second) {
-                    m_all_slic3r_installed.back().other_keys[key_value.first] = key_value.second
-                                                                                    .get_value<std::string>();
-                }
-                std::map<std::string, std::string> &entries = m_all_slic3r_installed.back().other_keys;
-                assert(entries.find("config_path") != entries.end());
-                assert(entries.find("exe_path") != entries.end());
-                assert(entries.find("version") != entries.end());
-                m_all_slic3r_installed.back().config_path = entries["config_path"];
-                m_all_slic3r_installed.back().exe_path = entries["exe_path"];
-                m_all_slic3r_installed.back().version = Semver(entries["version"]);
-            }
-        } catch (const std::ifstream::failure &err) {
-            BOOST_LOG_TRIVIAL(error) << "The config directory dictionary " << directory.string()
-                                     << " cannot be loaded. Reason: " << err.what();
-        } catch (const std::runtime_error &err) {
-            BOOST_LOG_TRIVIAL(error) << "Failed loading the " << directory.string()
-                                     << " file. Reason: " << err.what();
-        }
-    }
-    // load old plain repo
-    if (boost::filesystem::exists(directory / (SLIC3R_APP_KEY ".ini"))) {
-        boost::nowide::ifstream inifile((directory / (SLIC3R_APP_KEY ".ini")).string());
-        if (inifile.good()) {
-            std::string first_line;
-            std::getline(inifile, first_line);
-            assert(!first_line.empty() && first_line[0] == '#');
-            m_all_slic3r_installed.emplace_back();
-            ConfigurationEntry &data = m_all_slic3r_installed.back();
-            std::regex rgx(".* ([0-9]\\.[0-9]+\\.[0-9]+\\.[0-9]+) on.*");
-            std::smatch match;
-            if (std::regex_search(first_line, match, rgx) && match.size() > 0) {
-                data.version = Semver(match[1]);
-            } else {
-                data.version = Semver("1.0.0.0");
-            }
-            data.other_keys["installed_name"] = data.installed_name = first_line;
-            data.other_keys["config_path"] = (data.config_path = directory).string();
-            data.other_keys["config_path_relative"] = "0";
-            data.other_keys["exe_path"] = (data.exe_path = "").string();
-            data.other_keys["config_path"] = data.version.to_string();
-            data.other_keys["legacy"] = "1";
-        }
-    }
-}
-
-void AppConfig::save_installed_repo()
-{
-    if (! is_main_thread_active())
-        //in win11, it seems that the gui event thread isn't named 'slic3r_main'
-        BOOST_LOG_TRIVIAL(warning) << "AppConfig::save_installed_repo() from thread '" << (get_current_thread_name()?*get_current_thread_name():"UNKNOWN") << "' instead of 'slic3r_main'\n";
-        //throw CriticalException("Calling AppConfig::save() from a worker thread!");
-
-    boost::filesystem::path path(m_data_dir_root);
-    path = path / "installed.ini";
-
-    // The config is first written to a file with a PID suffix and then moved
-    // to avoid race conditions with multiple instances of Slic3r
-    std::string path_pid = (boost::format("%1%.%2%") % path.string() % get_current_pid()).str();
-
-    std::sort(m_all_slic3r_installed.begin(), m_all_slic3r_installed.end(), [](const ConfigurationEntry &a, const ConfigurationEntry &b) { return a.installed_name < b.installed_name; });
-    std::sort(m_all_slic3r_installed.begin(), m_all_slic3r_installed.end(), [](const ConfigurationEntry &a, const ConfigurationEntry &b) { return a.version < b.version; });
-
-    std::stringstream config_ss;
-    config_ss << "# Dictionary of all " SLIC3R_APP_NAME " installation" << std::endl;
-    // Write the other categories.
-    for (const ConfigurationEntry& installation : m_all_slic3r_installed) {
-        auto it_is_legacy = installation.other_keys.find("legacy");
-        if (it_is_legacy == installation.other_keys.end() || it_is_legacy->second == "0") {
-            config_ss << std::endl << "[" << installation.installed_name << "]" << std::endl;
-            for (const auto &kvp : installation.other_keys)
-                config_ss << kvp.first << " = " << kvp.second << std::endl;
-        }
-    }
-    // One empty line before md5
-    config_ss << std::endl;
-
-    std::string config_str = config_ss.str();
-    boost::nowide::ofstream c;
-    c.open(path_pid, std::ios::out | std::ios::trunc);
-    c << config_str;
-#ifdef WIN32
-    // WIN32 specific: The final "rename_file()" call is not safe in case of an application crash, there is no atomic "rename file" API
-    // provided by Windows (sic!). Therefore we save a MD5 checksum to be able to verify file corruption. In addition,
-    // we save the config file into a backup first before moving it to the final destination.
-    c << appconfig_md5_hash_line(config_str);
-#endif
-    c.close();
-    
-#ifdef WIN32
-    // Make a backup of the configuration file before copying it to the final destination.
-    std::string error_message;
-    std::string backup_path = (boost::format("%1%.bak") % path.string()).str();
-    // Copy configuration file with PID suffix into the configuration file with "bak" suffix.
-    if (copy_file(path_pid, backup_path, error_message, false) != SUCCESS)
-        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << backup_path << " failed. Failed to create a backup configuration.";
-#endif
-
-    // Rename the config atomically.
-    // On Windows, the rename is likely NOT atomic, thus it may fail if PrusaSlicer crashes on another thread in the meanwhile.
-    // To cope with that, we already made a backup of the config on Windows.
-    rename_file(path_pid, path.string());
-    m_dirty = false;
-
-    // ensure some options are in sync
-    set_header_generate_with_date(get("date_in_config_file") == "1");
-}
-
-boost::filesystem::path AppConfig::ConfigurationEntry::get_config_path(const std::string &data_dir_root) const {
-    if (auto it = other_keys.find("config_path_relative"); it != other_keys.end() && it->second == "1") {
-        return boost::filesystem::path(data_dir_root) / config_path;
-    } else {
-        return config_path;
-    }
-}
-
-bool AppConfig::init_root_data_dir(const std::string &default_app_data_path) {
-    if (!m_data_dir_root.empty()) {
-        assert(!m_data_dir.config_path.empty());
-        return false;
-    }
-
-    if (has_data_dir()) {
-        // set by command line arg 'datadir'
-        m_data_dir.other_keys["installed_name"] = m_data_dir.installed_name = "command_line";
-        m_data_dir.other_keys["config_path"] = (m_data_dir.config_path = data_dir()).string();
-        m_data_dir.other_keys["config_path_relative"] = "0";
-        m_data_dir.other_keys["exe_path"] = (m_data_dir.exe_path = binary_file().parent_path()).string();
-        m_data_dir.other_keys["exe_path_relative"] = "0";
-        m_data_dir.other_keys["version"] = (m_data_dir.version = Semver(SLIC3R_VERSION_FULL)).to_string();
-        return false;
-    }
-
-    // Set the Slic3r data directory at the Slic3r XS module.
-    // Unix: ~/ .Slic3rP
-    // Windows : "C:\Users\username\AppData\Roaming\Slic3r" or "C:\Documents and Settings\username\Application
-    // Data\Slic3r" Mac : "~/Library/Application Support/Slic3r"
-
-    // check if there is a "configuration" directory
-#ifdef __APPLE__
-    //... next to the app bundle on MacOs
-    if (boost::filesystem::exists(boost::filesystem::path{resources_dir()} / ".." / ".." / ".." / "configuration")) {
-        m_data_dir_root = ((boost::filesystem::path{resources_dir()} / ".." / ".." / ".." / "configuration").string());
-    } else
-#endif
-        //... next to the resources directory
-        if (boost::filesystem::exists(boost::filesystem::path{resources_dir()} / ".." / "configuration")) {
-        m_data_dir_root = ((boost::filesystem::path{resources_dir()} / ".." / "configuration").string());
-    } else {
-        // use system's data dir location
-        m_data_dir_root = (default_app_data_path);
-    }
-
-    if (!boost::filesystem::exists(m_data_dir_root)) {
-        boost::filesystem::create_directories(m_data_dir_root);
-    }
-
-    // then check the main version file
-    load_installed_repo(boost::filesystem::path(m_data_dir_root));
-
-    // find ourself inside m_all_slic3r_installed
-    std::vector<ConfigurationEntry*> same_version;
-    for (ConfigurationEntry &installed : m_all_slic3r_installed) {
-        if (installed.version == Semver(SLIC3R_VERSION_FULL)) {
-            same_version.push_back(&installed);
-        }
-    }
-    m_data_dir.config_path.clear();
-    for (ConfigurationEntry *installed : same_version) {
-        if (boost::filesystem::exists(installed->exe_path) && boost::filesystem::equivalent(binary_file().parent_path(), installed->exe_path)) {
-            m_data_dir = *installed;
-            set_data_dir(m_data_dir.get_config_path(this->get_root_data_dir()).string());
-        }
-    }
-
-    return true;
-}
-
-void AppConfig::set_new_installation(ConfigurationEntry new_install){
-    m_data_dir = new_install;
-    set_data_dir(m_data_dir.get_config_path(this->get_root_data_dir()).string());
-    this->m_all_slic3r_installed.push_back(new_install);
-    this->save_installed_repo();
-}
-
-void AppConfig::init_ui_layout() {
-    assert(has_data_dir());
-    boost::filesystem::path resources_dir_path = boost::filesystem::path(resources_dir()) / "ui_layout";
-    if (!boost::filesystem::is_directory(resources_dir_path)) {
-        //Error
-        throw new RuntimeError("error, can't find datadir '" + resources_dir_path.string() + "'");
-    }
-
-    auto get_versions = [](boost::filesystem::path& root_path, std::map<std::string, LayoutEntry>& name_2_version_description_path) {
-
-        for (const boost::filesystem::directory_entry& entry : boost::filesystem::directory_iterator(root_path)) {
-            if (boost::filesystem::is_directory(entry.path())) {
-                boost::filesystem::path version_path = entry.path() / "version.ini";
-                if (boost::filesystem::is_regular_file(version_path)) {
-                    try {
-                        boost::property_tree::ptree tree_ini;
-                        boost::nowide::ifstream ifs;
-                        ifs.imbue(boost::locale::generator()("en_US.UTF-8"));
-                        ifs.open(version_path.string());
-                        boost::property_tree::read_ini(ifs, tree_ini);
-                        std::string name = tree_ini.get<std::string>("name");
-                        assert(Semver::parse(tree_ini.get<std::string>("version")));
-                        Semver version = *Semver::parse(tree_ini.get<std::string>("version"));
-                        std::string description = tree_ini.get<std::string>("description");
-                        name_2_version_description_path[name] = LayoutEntry(name, description, entry.path(), version);
-                    }
-                    catch (const std::ifstream::failure& err) {
-                        BOOST_LOG_TRIVIAL(error) << "The layout file " << version_path.string() << " cannot be loaded. Reason: " << err.what();
-                    }
-                    catch (const std::runtime_error& err) {
-                        BOOST_LOG_TRIVIAL(error) << "Failed loading the " << version_path.string() << " file. Reason: " << err.what();
-                    }
-                }
-            }
-        }
-    };
-
-    //init
-    m_ui_layout.clear();
-
-    //get all boost::filesystem::path(resources_dir()) / "ui_layout" / XXX / "version.ini"
-    std::map<std::string, LayoutEntry> resources_map;
-    get_versions(resources_dir_path, resources_map);
-
-    //get all boost::filesystem::path(Slic3r::data_dir()) / "ui_layout" / XXX / "version.ini"
-    std::map<std::string, LayoutEntry> datadir_map;
-    boost::filesystem::path data_dir_path = boost::filesystem::path(Slic3r::data_dir()) / "ui_layout";
-    if (!boost::filesystem::is_directory(data_dir_path)) {
-        //note: called before the data_dir() is created
-        boost::filesystem::create_directories(data_dir_path);
-    } else {
-        get_versions(data_dir_path, datadir_map);
-    }
-    // TODO test the version of the datadir_map layout to see if compatible
-
-
-    //copy all resources that aren't in datadir or newer
-    std::string current_name = get("ui_layout");
-    bool find_current = false;
-    std::string error_message;
-    for (const auto& layout : resources_map) {
-        // don't use the datadir version, the one in my resources is the one adapated to my version.
-            datadir_map[layout.first] = layout.second;
-        }
-
-    //save installed
-    for (const auto& layout : datadir_map) {
-        m_ui_layout.push_back(layout.second);
-        if (layout.first == current_name)
-            find_current = true;
-    }
-
-    //set ui_layout to a default if not set
-    if (current_name.empty() || !find_current) {
-         auto default_layout = datadir_map.find("Standard");
-        if (default_layout == datadir_map.end()) {
-            default_layout = datadir_map.find("Default");
-        }
-        if (default_layout == datadir_map.end() && datadir_map.size() > 0) {
-            default_layout = datadir_map.begin();
-        }
-        if (default_layout != datadir_map.end()) {
-            set("ui_layout", default_layout->first);
-        } else {
-            throw new RuntimeError("Error, cannot find any layout for the gui.");
-        }
-    }
-
-    //get default color from the ini file
-
-    //try to load colors from ui file
-    m_tags.clear();
-    std::map<std::string, std::string> key2color = { {"Gui_color_dark", "cabe39"}, {"Gui_color", "eddc21"}, {"Gui_color_light", "ffee38"} };
-    boost::property_tree::ptree tree_colors;
-    boost::filesystem::path path_colors = boost::filesystem::path(layout_config_path()) / "colors.ini";
-    try {
-        boost::nowide::ifstream ifs;
-        ifs.imbue(boost::locale::generator()("en_US.UTF-8"));
-        ifs.open(path_colors.string());
-        boost::property_tree::read_ini(ifs, tree_colors);
-
-        for(std::map<std::string, std::string>::iterator it = key2color.begin(); it != key2color.end() ; ++it) {
-            std::string color_code = tree_colors.get<std::string>(it->first);
-            if (color_code.length() == 6)
-                it->second = color_code;
-            else if (color_code.length() == 7)
-                it->second = color_code.substr(1);
-        }
-        //tags
-        for (const auto& it : tree_colors) {
-            if (boost::starts_with(it.first, "Tag_")) {
-                std::string color_code = tree_colors.get<std::string>(it.first);
-                if (!color_code.empty()) {
-                    std::string tag = it.first.substr(4);
-                    color_code = (color_code[0] == '#' ? color_code : ("#" + color_code));
-
-                    // get/set into ConfigOptionDef
-                    auto it = ConfigOptionDef::names_2_tag_mode.find(tag);
-                    if (it == ConfigOptionDef::names_2_tag_mode.end()) {
-                        if (ConfigOptionDef::names_2_tag_mode.size() > 62) { //full
-                            continue;
-                        }
-                        ConfigOptionDef::names_2_tag_mode[tag] = (ConfigOptionMode)(((uint64_t)1) << ConfigOptionDef::names_2_tag_mode.size());
-                        it = ConfigOptionDef::names_2_tag_mode.find(tag);
-                    }
-                    m_tags.emplace_back(tag, tag, it->second, color_code);
-                    if (tag == "Simple")
-                        m_tags.back().description = L("Simple View Mode");
-                    if (tag == "Advanced")
-                        m_tags.back().description = L("Advanced View Mode");
-                    if (tag == "Expert")
-                        m_tags.back().description = L("Expert View Mode");
-                }
-            }
-        }
-    }
-    catch (const std::ifstream::failure& err) {
-        BOOST_LOG_TRIVIAL(error) << "The color file cannot be loaded. Reason: " << err.what() << ". \nFrom path: " << path_colors.string();
-    }
-    catch (const std::runtime_error& err) {
-        BOOST_LOG_TRIVIAL(error) << "Failed loading the color file. Reason: " << err.what() << ". \nFrom path: " << path_colors.string();
-    }
-
-    if (get("color_dark").empty())
-        set("color_dark", key2color["Gui_color_dark"]);
-
-    if (get("color").empty())
-        set("color", key2color["Gui_color"]);
-
-    if (get("color_light").empty())
-        set("color_light", key2color["Gui_color_light"]);
-
-    {
-        // try to load splashscreen from ui file
-        std::map<std::string, std::string> key2splashscreen = {{"splash_screen_editor", ""},
-                                                               {"splash_screen_gcodeviewer", ""}};
-        boost::property_tree::ptree tree_splashscreen;
-        boost::filesystem::path path_colors = boost::filesystem::path(layout_config_path()) / "colors.ini";
-        try {
-            boost::nowide::ifstream ifs;
-            ifs.imbue(boost::locale::generator()("en_US.UTF-8"));
-            ifs.open(path_colors.string());
-            boost::property_tree::read_ini(ifs, tree_splashscreen);
-
-            for (std::map<std::string, std::string>::iterator it = key2splashscreen.begin();
-                 it != key2splashscreen.end(); ++it) {
-                std::string splashscreen_filename = tree_splashscreen.get<std::string>(it->first);
-                it->second = splashscreen_filename;
-            }
-        } catch (const std::ifstream::failure &err) {
-            BOOST_LOG_TRIVIAL(error) << "The splashscreen file cannot be loaded. Reason: " << err.what()
-                                     << ". \nFrom path: " << path_colors.string();
-        } catch (const std::runtime_error &err) {
-            BOOST_LOG_TRIVIAL(error) << "Failed loading the splashscreen file. Reason: " << err.what()
-                                     << ". \nFrom path: " << path_colors.string();
-        }
-        m_default_splashscreen = {key2splashscreen["splash_screen_editor"],
-                                  key2splashscreen["splash_screen_gcodeviewer"]};
-
-        if (get("splash_screen_editor").empty())
-            set("splash_screen_editor", "default");
-
-        if (get("splash_screen_gcodeviewer").empty())
-            set("splash_screen_gcodeviewer", "default");
-
-        bool switch_to_random = get("show_splash_screen_random") == "1";
-        if (switch_to_random || key2splashscreen["splash_screen_editor"].empty())
-            set("splash_screen_editor", "random");
-        if (switch_to_random || key2splashscreen["splash_screen_gcodeviewer"].empty())
-            set("splash_screen_gcodeviewer", "random");
-        if (switch_to_random)
-            set("show_splash_screen_random", "0");
-    }
-
+    erase("app", "main_frame_maximized");
+    erase("app", "main_frame_pos");
+    erase("app", "main_frame_size");
+    erase("app", "object_settings_maximized");
+    erase("app", "object_settings_pos");
+    erase("app", "object_settings_size");
+    erase("app", "severity_level");
 }
 
 #ifdef WIN32
-std::string AppConfig::appconfig_md5_hash_line(const std::string_view data)
+static std::string appconfig_md5_hash_line(const std::string_view data)
 {
     //FIXME replace the two following includes with <boost/md5.hpp> after it becomes mainstream.
     // return boost::md5(data).hex_str_value();
@@ -838,10 +421,10 @@ std::string AppConfig::appconfig_md5_hash_line(const std::string_view data)
     assert(md5_digest_str.size() == 32);
     // This line will be emited at the end of the file.
     return "# MD5 checksum " + md5_digest_str + "\n";
-};
+}
 
 // Assume that the last line with the comment inside the config file contains a checksum and that the user didn't modify the config file.
-AppConfig::ConfigFileInfo AppConfig::check_config_file_and_verify_checksum(boost::nowide::ifstream &ifs)
+static bool verify_config_file_checksum(boost::nowide::ifstream &ifs)
 {
     auto read_whole_config_file = [&ifs]() -> std::string {
         std::stringstream ss;
@@ -850,8 +433,7 @@ AppConfig::ConfigFileInfo AppConfig::check_config_file_and_verify_checksum(boost
     };
 
     ifs.seekg(0, boost::nowide::ifstream::beg);
-    const std::string whole_config  = read_whole_config_file();
-    const bool        contains_null = whole_config.find_first_of('\0') != std::string::npos;
+    std::string whole_config = read_whole_config_file();
 
     // The checksum should be on the last line in the config file.
     if (size_t last_comment_pos = whole_config.find_last_of('#'); last_comment_pos != std::string::npos) {
@@ -860,110 +442,185 @@ AppConfig::ConfigFileInfo AppConfig::check_config_file_and_verify_checksum(boost
         // When the checksum isn't found, the checksum was not saved correctly, it was removed or it is an older config file without the checksum.
         // If the checksum is incorrect, then the file was either not saved correctly or modified.
         if (std::string_view(whole_config.c_str() + last_comment_pos, whole_config.size() - last_comment_pos) == appconfig_md5_hash_line({ whole_config.data(), last_comment_pos }))
-            return ConfigFileInfo{true, contains_null};
+            return true;
     }
-    return ConfigFileInfo{false, contains_null};
+    return false;
 }
 #endif
 
-std::string AppConfig::load(const std::string &path)
+
+
+#ifdef USE_JSON_CONFIG
+std::string AppConfig::load()
 {
-    this->reset();
+    json j;
 
     // 1) Read the complete config file into a boost::property_tree.
     namespace pt = boost::property_tree;
     pt::ptree tree;
     boost::nowide::ifstream ifs;
-    bool                    recovered = false;
+    bool recovered = false;
+    std::string error_message;
 
     try {
-        ifs.open(path);
+        ifs.open(AppConfig::loading_path());
+
 #ifdef WIN32
+        std::stringstream input_stream;
+        input_stream << ifs.rdbuf();
+        std::string total_string = input_stream.str();
+        size_t last_pos = total_string.find_last_of('}');
+        std::string left_string = total_string.substr(0, last_pos+1);
+        //skip the "\n"
+        std::string right_string = total_string.substr(last_pos+2);
+
+        std::string md5_str = appconfig_md5_hash_line({left_string.data()});
         // Verify the checksum of the config file without taking just for debugging purpose.
-        const ConfigFileInfo config_file_info = check_config_file_and_verify_checksum(ifs);
-        if (!config_file_info.correct_checksum)
-            BOOST_LOG_TRIVIAL(info)
-                << "The configuration file " << path
-                << " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
-
-        if (!config_file_info.correct_checksum && config_file_info.contains_null) {
-            BOOST_LOG_TRIVIAL(info) << "The configuration file " + path + " is corrupted, because it is contains null characters.";
-            throw Slic3r::CriticalException("The configuration file contains null characters.");
-        }
-
-        ifs.seekg(0, boost::nowide::ifstream::beg);
+        if (md5_str != right_string)
+            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
+            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+        j = json::parse(left_string);
+#else
+        ifs >> j;
 #endif
-        try {
-            pt::read_ini(ifs, tree);
-        } catch (pt::ptree_error& ex) {
-            throw Slic3r::CriticalException(ex.what());
-        }
-    } catch (Slic3r::CriticalException &ex) {
+    }
+    catch(nlohmann::detail::parse_error &err) {
 #ifdef WIN32
         // The configuration file is corrupted, try replacing it with the backup configuration.
         ifs.close();
-        std::string backup_path = (boost::format("%1%.bak") % path).str();
+        std::string backup_path = (boost::format("%1%.bak") % AppConfig::loading_path()).str();
         if (boost::filesystem::exists(backup_path)) {
             // Compute checksum of the configuration backup file and try to load configuration from it when the checksum is correct.
             boost::nowide::ifstream backup_ifs(backup_path);
-            if (const ConfigFileInfo config_file_info = check_config_file_and_verify_checksum(backup_ifs); !config_file_info.correct_checksum || config_file_info.contains_null) {
-                BOOST_LOG_TRIVIAL(error) << format(R"(Both "%1%" and "%2%" are corrupted. It isn't possible to restore configuration from the backup.)", path, backup_path);
+            std::stringstream back_input_stream;
+            back_input_stream << backup_ifs.rdbuf();
+            std::string back_total_string = back_input_stream.str();
+            size_t back_last_pos = back_total_string.find_last_of('}');
+            std::string back_left_string = back_total_string.substr(0, back_last_pos+1);
+            std::string back_right_string = back_total_string.substr(back_last_pos+2);
+
+            std::string back_md5_str = appconfig_md5_hash_line({back_left_string.data()});
+            // Verify the checksum of the config file without taking just for debugging purpose.
+            if (back_md5_str != back_right_string) {
+                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", AppConfig::loading_path(), backup_path);
                 backup_ifs.close();
                 boost::filesystem::remove(backup_path);
-            } else if (std::string error_message; copy_file(backup_path, path, error_message, false) != SUCCESS) {
-                BOOST_LOG_TRIVIAL(error) << format(R"(Configuration file "%1%" is corrupted. Failed to restore from backup "%2%": %3%)", path, backup_path, error_message);
-                backup_ifs.close();
-                boost::filesystem::remove(backup_path);
-            } else {
-                BOOST_LOG_TRIVIAL(info) << format(R"(Configuration file "%1%" was corrupted. It has been successfully restored from the backup "%2%".)", path, backup_path);
-                // Try parse configuration file after restore from backup.
-                try {
-                    ifs.open(path);
-                    pt::read_ini(ifs, tree);
-                    recovered = true;
-                } catch (pt::ptree_error& ex) {
-                    BOOST_LOG_TRIVIAL(info) << format(R"(Failed to parse configuration file "%1%" after it has been restored from backup: %2%)", path, ex.what());
-                }
             }
-        } else
-#endif // WIN32
-            BOOST_LOG_TRIVIAL(info) << format(R"(Failed to parse configuration file "%1%": %2%)", path, ex.what());
-        if (! recovered) {
-            // Report the initial error of parsing PrusaSlicer.ini.
-            // Error while parsing config file. We'll customize the error message and rethrow to be displayed.
-            // ! But to avoid the use of _utf8 (related to use of wxWidgets) 
-            // we will rethrow this exception from the place of load() call, if returned value wouldn't be empty
-            return ex.what();
+            else if (std::string error_message; copy_file(backup_path, AppConfig::loading_path(), error_message, false) != SUCCESS) {
+                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", AppConfig::loading_path(), backup_path, error_message);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else {
+                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", AppConfig::loading_path(), backup_path);
+                // Try parse configuration file after restore from backup.
+                j = json::parse(back_left_string);
+                recovered = true;
+            }
         }
+        else
+#endif // WIN32
+            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", AppConfig::loading_path(), err.what());
+
+        if (!recovered)
+            return err.what();
     }
 
-    // 2) Parse the property_tree, extract the sections and key / value pairs.
-    for (const auto &section : tree) {
-    	if (section.second.empty()) {
-    		// This may be a top level (no section) entry, or an empty section.
-    		std::string data = section.second.data();
-    		if (! data.empty())
-    			// If there is a non-empty data, then it must be a top-level (without a section) config entry.
-    			m_storage[""][section.first] = data;
-    	} else if (boost::starts_with(section.first, VENDOR_PREFIX)) {
-            // This is a vendor section listing enabled model / variants
-            const auto vendor_name = section.first.substr(VENDOR_PREFIX.size());
-            auto &vendor = m_vendors[vendor_name];
-            for (const auto &kvp : section.second) {
-                if (! boost::starts_with(kvp.first, MODEL_PREFIX)) { continue; }
-                const auto model_name = kvp.first.substr(MODEL_PREFIX.size());
-                std::vector<std::string> variants;
-                if (! unescape_strings_cstyle(kvp.second.data(), variants)) { continue; }
-                for (const auto &variant : variants) {
-                    vendor[model_name].insert(variant);
+    try {
+        for (auto it = j.begin(); it != j.end(); it++) {
+            if (it.key() == MODELS_STR) {
+                for (auto& j_model : it.value()) {
+                    // This is a vendor section listing enabled model / variants
+                    const auto vendor_name = j_model["vendor"].get<std::string>();
+                    auto& vendor = m_vendors[vendor_name];
+                    const auto model_name = j_model["model"].get<std::string>();
+                    std::vector<std::string> variants;
+                    if (!unescape_strings_cstyle(j_model["nozzle_diameter"], variants)) { continue; }
+                    for (const auto& variant : variants) {
+                        vendor[model_name].insert(variant);
+                    }
+                }
+            } else if (it.key() == SECTION_FILAMENTS) {
+                json j_filaments = it.value();
+                for (auto& element : j_filaments) {
+                    m_storage[it.key()][element] = "true";
+                }
+            } else if (it.key() == "presets") {
+                for (auto iter = it.value().begin(); iter != it.value().end(); iter++) {
+                    if (iter.key() == "filaments") {
+                        int idx = 0;
+                        for(auto& element: iter.value()) {
+                            if (idx == 0)
+                                m_storage[it.key()]["filament"] = element;
+                            else {
+                                auto n = std::to_string(idx);
+                                if (n.length() == 1) n = "0" + n;
+                                m_storage[it.key()]["filament_" + n] = element;
+                            }
+                            idx++;
+                        }
+                    } else {
+                        m_storage[it.key()][iter.key()] = iter.value().get<std::string>();
+                    }
+                }
+            } else if (it.key() == "calis") {
+                for (auto &calis_j : it.value()) {
+                    PrinterCaliInfo cali_info;
+                    if (calis_j.contains("dev_id"))
+                        cali_info.dev_id = calis_j["dev_id"].get<std::string>();
+                    if (calis_j.contains("cali_finished"))
+                        cali_info.cali_finished = bool(calis_j["cali_finished"].get<int>());
+                    if (calis_j.contains("flow_ratio"))
+                        cali_info.cache_flow_ratio = calis_j["flow_ratio"].get<float>();
+                    if (calis_j.contains("cache_flow_rate_calibration_type"))
+                        cali_info.cache_flow_rate_calibration_type = static_cast<FlowRatioCalibrationType>(calis_j["cache_flow_rate_calibration_type"].get<int>());
+                    if (calis_j.contains("presets")) {
+                        cali_info.selected_presets.clear();
+                        for (auto cali_it = calis_j["presets"].begin(); cali_it != calis_j["presets"].end(); cali_it++) {
+                            CaliPresetInfo preset_info;
+                            preset_info.tray_id     = cali_it.value()["tray_id"].get<int>();
+                            preset_info.nozzle_diameter = cali_it.value()["nozzle_diameter"].get<float>();
+                            preset_info.filament_id = cali_it.value()["filament_id"].get<std::string>();
+                            preset_info.setting_id  = cali_it.value()["setting_id"].get<std::string>();
+                            preset_info.name        = cali_it.value()["name"].get<std::string>();
+                            cali_info.selected_presets.push_back(preset_info);
+                        }
+                    }
+                    m_printer_cali_infos.emplace_back(cali_info);
+                }
+            } else if (it.key() == "orca_presets") {
+                for (auto& j_model : it.value()) {
+                    m_printer_settings[j_model["machine"].get<std::string>()] = j_model;
+                }
+            } else {
+                if (it.value().is_object()) {
+                    for (auto iter = it.value().begin(); iter != it.value().end(); iter++) {
+                        if (iter.value().is_boolean()) {
+                            if (iter.value()) {
+                                m_storage[it.key()][iter.key()] = "true";
+                            } else {
+                                m_storage[it.key()][iter.key()] = "false";
+                            }
+                        } else if (iter.key() == "filament_presets") {
+                            m_filament_presets = iter.value().get<std::vector<std::string>>();
+                        } else if (iter.key() == "filament_colors") {
+                            m_filament_colors = iter.value().get<std::vector<std::string>>();
+                        }
+                        else {
+                            if (iter.value().is_string())
+                                m_storage[it.key()][iter.key()] = iter.value().get<std::string>();
+                            else {
+                                BOOST_LOG_TRIVIAL(trace) << "load config warning...";
+                            }
+                        }
+                    }
                 }
             }
-    	} else {
-    		// This must be a section name. Read the entries of a section.
-    		std::map<std::string, std::string> &storage = m_storage[section.first];
-            for (auto &kvp : section.second)
-            	storage[kvp.first] = kvp.second.data();
         }
+    } catch(std::exception err) {
+        BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
+
+        return err.what();
     }
 
     // Figure out if datadir has legacy presets
@@ -971,10 +628,8 @@ std::string AppConfig::load(const std::string &path)
     m_legacy_datadir = false;
     if (ini_ver) {
         m_orig_version = *ini_ver;
-        // Make 1.40.0 alphas compare well
-        ini_ver->set_metadata(std::nullopt);
-        ini_ver->set_prerelease(std::nullopt);
-        m_legacy_datadir = ini_ver < Semver(1, 40, 0, 0);
+        ini_ver->set_metadata(boost::none);
+        ini_ver->set_prerelease(boost::none);
     }
 
     // Legacy conversion
@@ -993,22 +648,292 @@ std::string AppConfig::load(const std::string &path)
 
     // Override missing or keys with their defaults.
     this->set_defaults();
-    this->init_ui_layout();
     m_dirty = false;
     return "";
-}
-
-std::string AppConfig::load()
-{
-    return this->load(AppConfig::config_path());
 }
 
 void AppConfig::save()
 {
     if (! is_main_thread_active())
-            //in win11, it seems that the gui event thread isn't named 'slic3r_main'
-            BOOST_LOG_TRIVIAL(warning) << "AppConfig::save() from thread '" << (get_current_thread_name()?*get_current_thread_name():"UNKNOWN") << "' instead of 'slic3r_main'\n";
-            //throw CriticalException("Calling AppConfig::save() from a worker thread!");
+        throw CriticalException("Calling AppConfig::save() from a worker thread!");
+
+    // The config is first written to a file with a PID suffix and then moved
+    // to avoid race conditions with multiple instances of Slic3r
+    const auto path = config_path();
+    std::string path_pid = (boost::format("%1%.%2%") % path % get_current_pid()).str();
+
+    json j;
+
+    std::stringstream config_ss;
+    if (m_mode == EAppMode::Editor)
+        j["header"] = Slic3r::header_slic3r_generated();
+    else
+        j["header"] = Slic3r::header_gcodeviewer_generated();
+
+    // Make sure the "no" category is written first.
+    for (const auto& kvp : m_storage["app"]) {
+        if (kvp.second == "true") {
+            j["app"][kvp.first] = true;
+            continue;
+        }
+        if (kvp.second == "false") {
+            j["app"][kvp.first] = false;
+            continue;
+        }
+        j["app"][kvp.first] = kvp.second;
+    }
+
+    for (const auto &filament_preset : m_filament_presets) {
+        j["app"]["filament_presets"].push_back(filament_preset);
+    }
+
+    for (const auto &filament_color : m_filament_colors) {
+        j["app"]["filament_colors"].push_back(filament_color);
+    }
+
+    for (const auto &cali_info : m_printer_cali_infos) {
+        json cali_json;
+        cali_json["dev_id"]             = cali_info.dev_id;
+        cali_json["flow_ratio"]         = cali_info.cache_flow_ratio;
+        cali_json["cali_finished"]      = cali_info.cali_finished ? 1 : 0;
+        cali_json["cache_flow_rate_calibration_type"] = static_cast<int>(cali_info.cache_flow_rate_calibration_type);
+        for (auto filament_preset : cali_info.selected_presets) {
+            json preset_json;
+            preset_json["tray_id"] = filament_preset.tray_id;
+            preset_json["nozzle_diameter"]  = filament_preset.nozzle_diameter;
+            preset_json["filament_id"]      = filament_preset.filament_id;
+            preset_json["setting_id"]       = filament_preset.setting_id;
+            preset_json["name"]             = filament_preset.name;
+            cali_json["presets"].push_back(preset_json);
+        }
+        j["calis"].push_back(cali_json);
+    }
+
+    // Write the other categories.
+    for (const auto& category : m_storage) {
+        if (category.first.empty())
+            continue;
+        if (category.first == SECTION_FILAMENTS) {
+            json j_filaments;
+            for (const auto& kvp: category.second) {
+                j_filaments.push_back(kvp.first);
+            }
+            j[category.first] = j_filaments;
+            continue;
+        } else if (category.first == "presets") {
+            json j_filament_array;
+            for(const auto& kvp : category.second) {
+                if (boost::starts_with(kvp.first, "filament") && kvp.first != "filament_colors") {
+                    j_filament_array.push_back(kvp.second);
+                } else {
+                    j[category.first][kvp.first] = kvp.second;
+                }
+            }
+            j["presets"]["filaments"] = j_filament_array;
+            continue;
+        }
+        for (const auto& kvp : category.second) {
+            if (kvp.second == "true") {
+                j[category.first][kvp.first] = true;
+                continue;
+            }
+            if (kvp.second == "false") {
+                j[category.first][kvp.first] = false;
+                continue;
+            }
+            j[category.first][kvp.first] = kvp.second;
+        }
+    }
+
+    // Write vendor sections
+    for (const auto& vendor : m_vendors) {
+        size_t size_sum = 0;
+        for (const auto& model : vendor.second) { size_sum += model.second.size(); }
+        if (size_sum == 0) { continue; }
+
+        for (const auto& model : vendor.second) {
+            if (model.second.empty()) { continue; }
+            const std::vector<std::string> variants(model.second.begin(), model.second.end());
+            const auto escaped = escape_strings_cstyle(variants);
+            //j[VENDOR_PREFIX + vendor.first][MODEL_PREFIX + model.first] = escaped;
+            json j_model;
+            j_model["vendor"] = vendor.first;
+            j_model["model"] = model.first;
+            j_model["nozzle_diameter"] = escaped;
+            j[MODELS_STR].push_back(j_model);
+        }
+    }
+
+    // write machine settings
+    for (const auto& preset : m_printer_settings) {
+        j["orca_presets"].push_back(preset.second);
+    }
+    boost::nowide::ofstream c;
+    c.open(path_pid, std::ios::out | std::ios::trunc);
+    c << std::setw(4) << j << std::endl;
+
+#ifdef WIN32
+    // WIN32 specific: The final "rename_file()" call is not safe in case of an application crash, there is no atomic "rename file" API
+    // provided by Windows (sic!). Therefore we save a MD5 checksum to be able to verify file corruption. In addition,
+    // we save the config file into a backup first before moving it to the final destination.
+    c << appconfig_md5_hash_line({j.dump(4)});
+#endif
+
+    c.close();
+
+#ifdef WIN32
+    // Make a backup of the configuration file before copying it to the final destination.
+    std::string error_message;
+    std::string backup_path = (boost::format("%1%.bak") % path).str();
+    // Copy configuration file with PID suffix into the configuration file with "bak" suffix.
+    if (copy_file(path_pid, backup_path, error_message, false) != SUCCESS)
+        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << backup_path << " failed. Failed to create a backup configuration.";
+#endif
+
+    // Rename the config atomically.
+    // On Windows, the rename is likely NOT atomic, thus it may fail if PrusaSlicer crashes on another thread in the meanwhile.
+    // To cope with that, we already made a backup of the config on Windows.
+    rename_file(path_pid, path);
+    m_dirty = false;
+}
+
+#else
+
+std::string AppConfig::load()
+{
+    // 1) Read the complete config file into a boost::property_tree.
+    namespace pt = boost::property_tree;
+    pt::ptree tree;
+    boost::nowide::ifstream ifs;
+    bool                    recovered = false;
+
+    try {
+        ifs.open(AppConfig::loading_path());
+#ifdef WIN32
+        // Verify the checksum of the config file without taking just for debugging purpose.
+        if (!verify_config_file_checksum(ifs))
+            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
+            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+
+        ifs.seekg(0, boost::nowide::ifstream::beg);
+#endif
+        pt::read_ini(ifs, tree);
+    }
+    catch (pt::ptree_error& ex) {
+#ifdef WIN32
+        // The configuration file is corrupted, try replacing it with the backup configuration.
+        ifs.close();
+        std::string backup_path = (boost::format("%1%.bak") % AppConfig::loading_path()).str();
+        if (boost::filesystem::exists(backup_path)) {
+            // Compute checksum of the configuration backup file and try to load configuration from it when the checksum is correct.
+            boost::nowide::ifstream backup_ifs(backup_path);
+            if (!verify_config_file_checksum(backup_ifs)) {
+                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", AppConfig::loading_path(), backup_path);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else if (std::string error_message; copy_file(backup_path, AppConfig::loading_path(), error_message, false) != SUCCESS) {
+                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", AppConfig::loading_path(), backup_path, error_message);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else {
+                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", AppConfig::loading_path(), backup_path);
+                // Try parse configuration file after restore from backup.
+                try {
+                    ifs.open(AppConfig::loading_path());
+                    pt::read_ini(ifs, tree);
+                    recovered = true;
+                }
+                catch (pt::ptree_error& ex) {
+                    BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\" after it has been restored from backup: %2%", AppConfig::loading_path(), ex.what());
+                }
+            }
+        }
+        else
+#endif // WIN32
+            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", AppConfig::loading_path(), ex.what());
+        if (!recovered) {
+            // Report the initial error of parsing PrusaSlicer.ini.
+            // Error while parsing config file. We'll customize the error message and rethrow to be displayed.
+            // ! But to avoid the use of _utf8 (related to use of wxWidgets)
+            // we will rethrow this exception from the place of load() call, if returned value wouldn't be empty
+            /*
+            throw Slic3r::RuntimeError(
+                _utf8(L("Error parsing Prusa config file, it is probably corrupted. "
+                        "Try to manually delete the file to recover from the error. Your user profiles will not be affected.")) +
+                "\n\n" + AppConfig::config_path() + "\n\n" + ex.what());
+            */
+            return ex.what();
+        }
+    }
+
+    // 2) Parse the property_tree, extract the sections and key / value pairs.
+    for (const auto& section : tree) {
+        if (section.second.empty()) {
+            // This may be a top level (no section) entry, or an empty section.
+            std::string data = section.second.data();
+            if (!data.empty())
+                // If there is a non-empty data, then it must be a top-level (without a section) config entry.
+                m_storage[""][section.first] = data;
+        }
+        else if (boost::starts_with(section.first, VENDOR_PREFIX)) {
+            // This is a vendor section listing enabled model / variants
+            const auto vendor_name = section.first.substr(VENDOR_PREFIX.size());
+            auto& vendor = m_vendors[vendor_name];
+            for (const auto& kvp : section.second) {
+                if (!boost::starts_with(kvp.first, MODEL_PREFIX)) { continue; }
+                const auto model_name = kvp.first.substr(MODEL_PREFIX.size());
+                std::vector<std::string> variants;
+                if (!unescape_strings_cstyle(kvp.second.data(), variants)) { continue; }
+                for (const auto& variant : variants) {
+                    vendor[model_name].insert(variant);
+                }
+            }
+        }
+        else {
+            // This must be a section name. Read the entries of a section.
+            std::map<std::string, std::string>& storage = m_storage[section.first];
+            for (auto& kvp : section.second)
+                storage[kvp.first] = kvp.second.data();
+        }
+    }
+
+    // Figure out if datadir has legacy presets
+    auto ini_ver = Semver::parse(get("version"));
+    m_legacy_datadir = false;
+    if (ini_ver) {
+        m_orig_version = *ini_ver;
+        // Make 1.40.0 alphas compare well
+        ini_ver->set_metadata(boost::none);
+        ini_ver->set_prerelease(boost::none);
+        //m_legacy_datadir = ini_ver < Semver(1, 40, 0);
+    }
+
+    // Legacy conversion
+    if (m_mode == EAppMode::Editor) {
+        // Convert [extras] "physical_printer" to [presets] "physical_printer",
+        // remove the [extras] section if it becomes empty.
+        if (auto it_section = m_storage.find("extras"); it_section != m_storage.end()) {
+            if (auto it_physical_printer = it_section->second.find("physical_printer"); it_physical_printer != it_section->second.end()) {
+                m_storage["presets"]["physical_printer"] = it_physical_printer->second;
+                it_section->second.erase(it_physical_printer);
+            }
+            if (it_section->second.empty())
+                m_storage.erase(it_section);
+        }
+    }
+
+    // Override missing or keys with their defaults.
+    this->set_defaults();
+    m_dirty = false;
+    return "";
+}
+
+void AppConfig::save()
+{
+    if (! is_main_thread_active())
+        throw CriticalException("Calling AppConfig::save() from a worker thread!");
 
     // The config is first written to a file with a PID suffix and then moved
     // to avoid race conditions with multiple instances of Slic3r
@@ -1016,7 +941,6 @@ void AppConfig::save()
     std::string path_pid = (boost::format("%1%.%2%") % path % get_current_pid()).str();
 
     std::stringstream config_ss;
-    set_header_generate_with_date(get("date_in_config_file") == "1");
     if (m_mode == EAppMode::Editor)
         config_ss << "# " << Slic3r::header_slic3r_generated() << std::endl;
     else
@@ -1061,7 +985,7 @@ void AppConfig::save()
     c << appconfig_md5_hash_line(config_str);
 #endif
     c.close();
-    
+
 #ifdef WIN32
     // Make a backup of the configuration file before copying it to the final destination.
     std::string error_message;
@@ -1076,50 +1000,8 @@ void AppConfig::save()
     // To cope with that, we already made a backup of the config on Windows.
     rename_file(path_pid, path);
     m_dirty = false;
-
-    // ensure some options are in sync
-    set_header_generate_with_date(get("date_in_config_file") == "1");
 }
-
-bool AppConfig::erase(const std::string &section, const std::string &key)
-{       
-    if (auto it_storage = m_storage.find(section); it_storage != m_storage.end()) {
-        auto &section = it_storage->second;
-        auto it = section.find(key);
-        if (it != section.end()) {
-            section.erase(it);
-            m_dirty = true;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool AppConfig::set_section(const std::string &section, std::map<std::string, std::string> data)
-{ 
-    auto it_section = m_storage.find(section);
-    if (it_section == m_storage.end()) {
-        if (data.empty())
-            return false;
-        it_section = m_storage.insert({ section, {} }).first;
-    }
-    auto &dst = it_section->second;
-    if (dst == data)
-        return false;
-    dst = std::move(data);
-    m_dirty = true;
-    return true;
-}
-
-bool AppConfig::clear_section(const std::string &section)
-{ 
-    if (auto it_section = m_storage.find(section); it_section != m_storage.end() && ! it_section->second.empty()) {
-        it_section->second.clear();
-        m_dirty = true;
-        return true;
-    }
-    return false;
-}
+#endif
 
 bool AppConfig::get_variant(const std::string &vendor, const std::string &model, const std::string &variant) const
 {
@@ -1129,47 +1011,47 @@ bool AppConfig::get_variant(const std::string &vendor, const std::string &model,
     return it_m == it_v->second.end() ? false : it_m->second.find(variant) != it_m->second.end();
 }
 
-bool AppConfig::set_variant(const std::string &vendor, const std::string &model, const std::string &variant, bool enable)
+void AppConfig::set_variant(const std::string &vendor, const std::string &model, const std::string &variant, bool enable)
 {
     if (enable) {
-        if (get_variant(vendor, model, variant))
-            return false;
+        if (get_variant(vendor, model, variant)) { return; }
         m_vendors[vendor][model].insert(variant);
     } else {
         auto it_v = m_vendors.find(vendor);
-        if (it_v == m_vendors.end())
-            return false;
+        if (it_v == m_vendors.end()) { return; }
         auto it_m = it_v->second.find(model);
-        if (it_m == it_v->second.end())
-            return false;
+        if (it_m == it_v->second.end()) { return; }
         auto it_var = it_m->second.find(variant);
-        if (it_var == it_m->second.end())
-            return false;
+        if (it_var == it_m->second.end()) { return; }
         it_m->second.erase(it_var);
     }
     // If we got here, there was an update
     m_dirty = true;
-    return true;
 }
 
-bool AppConfig::set_vendors(const VendorMap &vendors)
+void AppConfig::set_vendors(const AppConfig &from)
 {
-    if (m_vendors != vendors) {
-        m_vendors = vendors;
-        m_dirty = true;
-        return true;
-    } else
-        return false;
+    m_vendors = from.m_vendors;
+    m_dirty = true;
 }
 
-bool AppConfig::set_vendors(VendorMap &&vendors)
+void AppConfig::save_printer_cali_infos(const PrinterCaliInfo &cali_info, bool need_change_status)
 {
-    if (m_vendors != vendors) {
-        m_vendors = std::move(vendors);
-        m_dirty = true;
-        return true;
-    } else
-        return false;
+    auto iter = std::find_if(m_printer_cali_infos.begin(), m_printer_cali_infos.end(), [&cali_info](const PrinterCaliInfo &cali_info_item) {
+        return cali_info_item.dev_id == cali_info.dev_id;
+    });
+
+    if (iter == m_printer_cali_infos.end()) {
+        m_printer_cali_infos.emplace_back(cali_info);
+    } else {
+        if (need_change_status) {
+            (*iter).cali_finished = cali_info.cali_finished;
+        }
+        (*iter).cache_flow_ratio = cali_info.cache_flow_ratio;
+        (*iter).selected_presets = cali_info.selected_presets;
+        (*iter).cache_flow_rate_calibration_type = cali_info.cache_flow_rate_calibration_type;
+    }
+    m_dirty = true;
 }
 
 std::string AppConfig::get_last_dir() const
@@ -1177,12 +1059,12 @@ std::string AppConfig::get_last_dir() const
     const auto it = m_storage.find("recent");
     if (it != m_storage.end()) {
         {
-            const auto it2 = it->second.find("skein_directory");
+            const auto it2 = it->second.find("last_opened_folder");
             if (it2 != it->second.end() && ! it2->second.empty())
                 return it2->second;
         }
         {
-            const auto it2 = it->second.find("config_directory");
+            const auto it2 = it->second.find("settings_folder");
             if (it2 != it->second.end() && ! it2->second.empty())
                 return it2->second;
         }
@@ -1204,58 +1086,42 @@ std::vector<std::string> AppConfig::get_recent_projects() const
     return ret;
 }
 
-bool AppConfig::set_recent_projects(const std::vector<std::string>& recent_projects)
+void AppConfig::set_recent_projects(const std::vector<std::string>& recent_projects)
 {
-    static constexpr const char *section = "recent_projects";
-    auto it_section = m_storage.find(section);
-    if (it_section == m_storage.end()) {
-        if (recent_projects.empty())
-            return false;
-        it_section = m_storage.insert({ std::string(section), {} }).first;
-    }
-    auto &dst = it_section->second;
+    auto it = m_storage.find("recent_projects");
+    if (it == m_storage.end())
+        it = m_storage.insert(std::map<std::string, std::map<std::string, std::string>>::value_type("recent_projects", std::map<std::string, std::string>())).first;
 
-    std::map<std::string, std::string> src;
+    it->second.clear();
     for (unsigned int i = 0; i < (unsigned int)recent_projects.size(); ++i)
-        src[std::to_string(i + 1)] = recent_projects[i];
-
-    if (src != dst) {
-        dst = std::move(src);
-        m_dirty = true;
-        return true;
-    } else
-        return false;
+    {
+        auto n = std::to_string(i + 1);
+        if (n.length() == 1) n = "0" + n;
+        it->second[n] = recent_projects[i];
+    }
 }
 
-bool AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone,
+void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone,
                                  float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz, bool invert_x, bool invert_y, bool invert_z, bool invert_yaw, bool invert_pitch, bool invert_roll)
 {
-    const std::string key = std::string("mouse_device:") + name;
-    auto it_section = m_storage.find(key);
-    if (it_section == m_storage.end())
-        it_section = m_storage.insert({ key, {} }).first;
-    auto &dst = it_section->second;
+    std::string key = std::string("mouse_device:") + name;
+    auto it = m_storage.find(key);
+    if (it == m_storage.end())
+        it = m_storage.insert(std::map<std::string, std::map<std::string, std::string>>::value_type(key, std::map<std::string, std::string>())).first;
 
-    std::map<std::string, std::string> src;
-    src["translation_speed"]    = float_to_string_decimal_point(translation_speed);
-    src["translation_deadzone"] = float_to_string_decimal_point(translation_deadzone);
-    src["rotation_speed"]       = float_to_string_decimal_point(rotation_speed);
-    src["rotation_deadzone"]    = float_to_string_decimal_point(rotation_deadzone);
-    src["zoom_speed"]           = float_to_string_decimal_point(zoom_speed);
-    src["swap_yz"]              = swap_yz ? "1" : "0";
-    src["invert_x"]             = invert_x ? "1" : "0";
-    src["invert_y"]             = invert_y ? "1" : "0";
-    src["invert_z"]             = invert_z ? "1" : "0";
-    src["invert_yaw"]           = invert_yaw ? "1" : "0";
-    src["invert_pitch"]         = invert_pitch ? "1" : "0";
-    src["invert_roll"]          = invert_roll ? "1" : "0";
-
-    if (src != dst) {
-        dst = std::move(src);
-        m_dirty = true;
-        return true;
-    } else
-        return false;
+    it->second.clear();
+    it->second["translation_speed"] = float_to_string_decimal_point(translation_speed);
+    it->second["translation_deadzone"] = float_to_string_decimal_point(translation_deadzone);
+    it->second["rotation_speed"] = float_to_string_decimal_point(rotation_speed);
+    it->second["rotation_deadzone"] = float_to_string_decimal_point(rotation_deadzone);
+    it->second["zoom_speed"] = float_to_string_decimal_point(zoom_speed);
+    it->second["swap_yz"] = swap_yz ? "1" : "0";
+    it->second["invert_x"] = invert_x ? "1" : "0";
+    it->second["invert_y"] = invert_y ? "1" : "0";
+    it->second["invert_z"] = invert_z ? "1" : "0";
+    it->second["invert_yaw"] = invert_yaw ? "1" : "0";
+    it->second["invert_pitch"] = invert_pitch ? "1" : "0";
+    it->second["invert_roll"] = invert_roll ? "1" : "0";
 }
 
 std::vector<std::string> AppConfig::get_mouse_device_names() const
@@ -1269,129 +1135,197 @@ std::vector<std::string> AppConfig::get_mouse_device_names() const
     return out;
 }
 
-bool AppConfig::update_config_dir(const std::string &dir)
+void AppConfig::update_config_dir(const std::string &dir)
 {
-    return this->set("recent", "config_directory", dir);
+    this->set("recent", "settings_folder", dir);
 }
 
-bool AppConfig::update_skein_dir(const std::string &dir)
+void AppConfig::update_skein_dir(const std::string &dir)
 {
     if (is_shapes_dir(dir))
-        return false; // do not save "shapes gallery" directory
-    return this->set("recent", "skein_directory", dir);
+        return; // do not save "shapes gallery" directory
+    this->set("recent", "last_opened_folder", dir);
+}
+/*
+std::string AppConfig::get_last_output_dir(const std::string &alt) const
+{
+
+    const auto it = m_storage.find("");
+    if (it != m_storage.end()) {
+        const auto it2 = it->second.find("last_export_path");
+        const auto it3 = it->second.find("remember_output_path");
+        if (it2 != it->second.end() && it3 != it->second.end() && ! it2->second.empty() && it3->second == "1")
+            return it2->second;
+    }
+    return alt;
 }
 
+void AppConfig::update_last_output_dir(const std::string &dir)
+{
+    this->set("", "last_export_path", dir);
+}
+*/
 std::string AppConfig::get_last_output_dir(const std::string& alt, const bool removable) const
 {
-	std::string s1 = (removable ? "last_output_path_removable" : "last_output_path");
-	std::string s2 = (removable ? "remember_output_path_removable" : "remember_output_path");
-	const auto it = m_storage.find("");
+	std::string s1 = ("last_export_path");
+	const auto it = m_storage.find("app");
 	if (it != m_storage.end()) {
 		const auto it2 = it->second.find(s1);
-		const auto it3 = it->second.find(s2);
-		if (it2 != it->second.end() && it3 != it->second.end() && !it2->second.empty() && it3->second == "1")
+		if (it2 != it->second.end() && !it2->second.empty())
 			return it2->second;
 	}
 	return is_shapes_dir(alt) ? get_last_dir() : alt;
 }
 
-bool AppConfig::update_last_output_dir(const std::string& dir, const bool removable)
+void AppConfig::update_last_output_dir(const std::string& dir, const bool removable)
 {
-	return this->set("", (removable ? "last_output_path_removable" : "last_output_path"), dir);
+	this->set("app", ("last_export_path"), dir);
 }
 
+// BBS: backup
+std::string AppConfig::get_last_backup_dir() const
+{
+	const auto it = m_storage.find("app");
+	if (it != m_storage.end()) {
+		const auto it2 = it->second.find("last_backup_path");
+		if (it2 != it->second.end())
+			return it2->second;
+	}
+	return "";
+}
+
+// BBS: backup
+void AppConfig::update_last_backup_dir(const std::string& dir)
+{
+	this->set("app", "last_backup_path", dir);
+    this->save();
+}
+
+std::string AppConfig::get_region()
+{
+// #if BBL_RELEASE_TO_PUBLIC
+    return this->get("region");
+// #else
+//     std::string sel = get("iot_environment");
+//     std::string region;
+//     if (sel == ENV_DEV_HOST)
+//         region = "ENV_CN_DEV";
+//     else if (sel == ENV_QAT_HOST)
+//         region = "ENV_CN_QA";
+//     else if (sel == ENV_PRE_HOST)
+//         region = "ENV_CN_PRE";
+//     if (region.empty())
+//         return this->get("region");
+//     return region;
+// #endif
+}
+
+std::string AppConfig::get_country_code()
+{
+    std::string region = get_region();
+// #if !BBL_RELEASE_TO_PUBLIC
+//     if (is_engineering_region()) { return region; }
+// #endif
+    if (region == "CHN" || region == "China")
+        return "CN";
+    else if (region == "USA")
+        return "US";
+    else if (region == "Asia-Pacific")
+        return "Others";
+    else if (region == "Europe")
+        return "US";
+    else if (region == "North America")
+        return "US";
+    else
+        return "Others";
+    return "";
+
+}
+
+bool AppConfig::is_engineering_region(){
+    std::string sel = get("iot_environment");
+    std::string region;
+    if (sel == ENV_DEV_HOST
+        || sel == ENV_QAT_HOST
+        ||sel == ENV_PRE_HOST)
+        return true;
+    return false;
+}
+
+void AppConfig::save_custom_color_to_config(const std::vector<std::string> &colors)
+{
+    auto set_colors = [](std::map<std::string, std::string> &data, const std::vector<std::string> &colors) {
+        for (size_t i = 0; i < colors.size(); i++) {
+            data[std::to_string(10 + i)] = colors[i]; // for map sort:10 begin
+        }
+    };
+    if (colors.size() > 0) {
+        if (!has_section("custom_color_list")) {
+            std::map<std::string, std::string> data;
+            set_colors(data, colors);
+            set_section("custom_color_list", data);
+        } else {
+            auto data        = get_section("custom_color_list");
+            auto data_modify = const_cast<std::map<std::string, std::string> *>(&data);
+            set_colors(*data_modify, colors);
+            set_section("custom_color_list", *data_modify);
+        }
+    }
+}
+
+std::vector<std::string> AppConfig::get_custom_color_from_config()
+{
+    std::vector<std::string> colors;
+    if (has_section("custom_color_list")) {
+        auto data = get_section("custom_color_list");
+        for (auto iter : data) {
+            colors.push_back(iter.second);
+        }
+    }
+    return colors;
+}
 
 void AppConfig::reset_selections()
 {
     auto it = m_storage.find("presets");
     if (it != m_storage.end()) {
-        it->second.erase("print");
-        it->second.erase("filament");
+        it->second.erase(PRESET_PRINT_NAME);
+        it->second.erase(PRESET_FILAMENT_NAME);
         it->second.erase("sla_print");
         it->second.erase("sla_material");
-        it->second.erase("printer");
+        it->second.erase(PRESET_PRINTER_NAME);
         it->second.erase("physical_printer");
         m_dirty = true;
     }
 }
 
-std::string AppConfig::config_path() const
+std::string AppConfig::config_path()
 {
+#ifdef USE_JSON_CONFIG
+    std::string path = (m_mode == EAppMode::Editor) ?
+        (boost::filesystem::path(Slic3r::data_dir()) / (SLIC3R_APP_KEY ".conf")).make_preferred().string() :
+        (boost::filesystem::path(Slic3r::data_dir()) / (GCODEVIEWER_APP_KEY ".conf")).make_preferred().string();
+#else
     std::string path = (m_mode == EAppMode::Editor) ?
         (boost::filesystem::path(Slic3r::data_dir()) / (SLIC3R_APP_KEY ".ini")).make_preferred().string() :
         (boost::filesystem::path(Slic3r::data_dir()) / (GCODEVIEWER_APP_KEY ".ini")).make_preferred().string();
+#endif
 
     return path;
 }
 
-boost::filesystem::path AppConfig::layout_config_path()
-{
-    return get_ui_layout().path.make_preferred();
-}
-AppConfig::LayoutEntry AppConfig::get_ui_layout()
-{
-    std::string layout_name = get("ui_layout");
-    for (const AppConfig::LayoutEntry& layout : get_ui_layouts()) {
-        if (layout_name == layout.name)
-            return layout;
-    }
-    if (!get_ui_layouts().empty())
-        return get_ui_layouts().front();
-    throw new RuntimeError("Error, no setting ui_layout.");
-}
-
-std::string AppConfig::splashscreen(bool is_editor) {
-
-    std::string file_name = is_editor
-        ? get("splash_screen_editor")
-        : get("splash_screen_gcodeviewer");
-
-    if (file_name == "default") {
-        file_name = is_editor ? m_default_splashscreen.first : m_default_splashscreen.second;
-    }
-    if (file_name == "icon") {
-        file_name = "";
-    }
-    
-    if (file_name == "random") {
-        std::vector<std::string> names;
-        //get all images in the spashscreen dir
-        for (const boost::filesystem::directory_entry& dir_entry : boost::filesystem::directory_iterator(boost::filesystem::path(Slic3r::resources_dir()) / "splashscreen"))
-            if (dir_entry.path().has_extension() && std::set<std::string>{ ".jpg", ".JPG", ".jpeg" }.count(dir_entry.path().extension().string()) > 0)
-                names.push_back(dir_entry.path().filename().string());
-        file_name = names[rand() % names.size()];
-    }
-
-    return file_name;
-}
-
-std::string AppConfig::version_check_url() const
+std::string AppConfig::version_check_url(bool stable_only/* = false*/) const
 {
     auto from_settings = get("version_check_url");
-    return from_settings.empty() ? VERSION_CHECK_URL : from_settings;
+    return from_settings.empty() ? stable_only ? VERSION_CHECK_URL_STABLE : VERSION_CHECK_URL : from_settings;
 }
 
-std::string AppConfig::index_archive_url() const
+std::string AppConfig::profile_update_url() const
 {
-#if 0  
-    // this code is for debug & testing purposes only - changed url wont get trough inner checks anyway. 
-    auto from_settings = get("index_archive_url");
-    return from_settings.empty() ? INDEX_ARCHIVE_URL : from_settings;
-#endif
-    return INDEX_ARCHIVE_URL;
+    return PROFILE_UPDATE_URL;
 }
 
-std::string AppConfig::profile_folder_url() const
-{
-#if 0   
-    // this code is for debug & testing purposes only - changed url wont get trough inner checks anyway. 
-    auto from_settings = get("profile_folder_url");
-    return from_settings.empty() ? PROFILE_FOLDER_URL : from_settings;
-#endif
-    return PROFILE_FOLDER_URL;
-}
-
-bool AppConfig::exists() const
+bool AppConfig::exists()
 {
     return boost::filesystem::exists(config_path());
 }

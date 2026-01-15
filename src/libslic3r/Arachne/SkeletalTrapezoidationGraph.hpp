@@ -10,11 +10,6 @@
 #include "SkeletalTrapezoidationEdge.hpp"
 #include "SkeletalTrapezoidationJoint.hpp"
 
-namespace Slic3r
-{
-class Line;
-};
-
 namespace Slic3r::Arachne
 {
 

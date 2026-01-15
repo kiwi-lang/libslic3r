@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2022 - 2023 Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 #define SRC_LIBSLIC3R_ALGORITHM_REGION_EXPANSION_HPP_
 
@@ -33,9 +29,9 @@ struct RegionExpansionParameters
 
     static RegionExpansionParameters build(
         // Scaled expansion value
-        coord_t             full_expansion,
+        float                full_expansion,
         // Expand by waves of expansion_step size (expansion_step is scaled).
-        coord_t             expansion_step,
+        float                expansion_step,
         // Don't take more than max_nr_steps for small expansion_step.
         size_t               max_nr_expansion_steps);
 };

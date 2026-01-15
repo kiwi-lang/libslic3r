@@ -1,8 +1,3 @@
-///|/ Copyright (c) Prusa Research 2016 - 2021 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_FillLine_hpp_
 #define slic3r_FillLine_hpp_
 
@@ -17,18 +12,16 @@ class Surface;
 class FillLine : public Fill
 {
 public:
-    FillLine() : Fill() { can_fill_surface_single = true; }
     Fill* clone() const override { return new FillLine(*this); };
     ~FillLine() override = default;
 
-	void init_spacing(double spacing, const FillParams& params) override;
 protected:
 	void _fill_surface_single(
 	    const FillParams                &params, 
 	    unsigned int                     thickness_layers,
 	    const std::pair<float, Point>   &direction, 
 	    ExPolygon    		             expolygon,
-	    Polylines                       &polylines_out) const override;
+	    Polylines                       &polylines_out) override;
 
 	coord_t _min_spacing;
 	coord_t _line_spacing;
@@ -42,7 +35,7 @@ protected:
 		return Line(Point(x - osc, y_min), Point(x + osc, y_max));
 	}
 
-	bool _can_connect(coord_t dist_X, coord_t dist_Y) const
+	bool _can_connect(coord_t dist_X, coord_t dist_Y)
 	{
 	    const auto TOLERANCE = coord_t(10 * SCALED_EPSILON);
     	return (dist_X >= (this->_line_spacing - this->_line_oscillation) - TOLERANCE)

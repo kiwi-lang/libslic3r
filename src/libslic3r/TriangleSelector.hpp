@@ -1,7 +1,3 @@
-///|/ Copyright (c) Prusa Research 2019 - 2021 Lukáš Hejl @hejllukas, Vojtěch Bubník @bubnikv, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef libslic3r_TriangleSelector_hpp_
 #define libslic3r_TriangleSelector_hpp_
 
@@ -11,11 +7,9 @@
 #include <cfloat>
 #include "Point.hpp"
 #include "TriangleMesh.hpp"
+#include "libslic3r/Model.hpp"
 
 namespace Slic3r {
-
-enum class EnforcerBlockerType : int8_t;
-
 
 // Following class holds information about selected triangles. It also has power
 // to recursively subdivide the triangles and make the selection finer.
@@ -29,7 +23,10 @@ public:
     enum CursorType {
         CIRCLE,
         SPHERE,
-        POINTER
+        POINTER,
+        // BBS
+        HEIGHT_RANGE,
+        GAP_FILL,
     };
 
     struct ClippingPlane
@@ -94,6 +91,11 @@ public:
                 return std::make_unique<TriangleSelector::Circle>(center, camera_pos, cursor_radius, trafo_matrix, clipping_plane);
         }
 
+        static std::unique_ptr<Cursor> cursor_factory(float z_world, const Vec3f& camera_pos, const float height, const Transform3d& trafo_matrix, const ClippingPlane& clipping_plane)
+        {
+            return std::make_unique<TriangleSelector::HeightRange>(z_world, camera_pos, height, trafo_matrix, clipping_plane);
+        }
+
     protected:
         explicit SinglePointCursor(const Vec3f &center_, const Vec3f &source_, float radius_world, const Transform3d &trafo_, const ClippingPlane &clipping_plane_);
 
@@ -153,6 +155,28 @@ public:
         }
     };
 
+    // BBS
+    class HeightRange : public SinglePointCursor
+    {
+    public:
+        HeightRange() = delete;
+        // BBS: set cursor_radius to 0.1 for high smooth edge
+        explicit HeightRange(float z_world_, const Vec3f& source_, float height_, const Transform3d& trafo_, const ClippingPlane& clipping_plane_)
+            : SinglePointCursor(Vec3f(0.f, 0.f, 0.f), source_, 1.f, trafo_, clipping_plane_), m_z_world(z_world_), m_height(height_) {}
+        ~HeightRange() override = default;
+
+        bool is_pointer_in_triangle(const Vec3f& p1, const Vec3f& p2, const Vec3f& p3) const override;
+        bool is_mesh_point_inside(const Vec3f& point) const override;
+        bool is_edge_inside_cursor(const Triangle& tr, const std::vector<Vertex>& vertices) const override;
+        bool is_facet_visible(int facet_idx, const std::vector<Vec3f>& face_normals) const override
+        {
+            return true;
+        }
+    private:
+        float m_z_world;
+        float m_height;
+    };
+
     class Capsule3D : public DoublePointCursor
     {
     public:
@@ -185,7 +209,7 @@ public:
     };
 
     std::pair<std::vector<Vec3i32>, std::vector<Vec3i32>> precompute_all_neighbors() const;
-    void precompute_all_neighbors_recursive(int facet_idx, const Vec3i32&neighbors, const Vec3i32 &neighbors_propagated, std::vector<Vec3i32> &neighbors_out, std::vector<Vec3i32> &neighbors_normal_out) const;
+    void precompute_all_neighbors_recursive(int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated, std::vector<Vec3i32> &neighbors_out, std::vector<Vec3i32> &neighbors_normal_out) const;
 
     // Set a limit to the edge length, below which the edge will not be split by select_patch().
     // Called by select_patch() internally. Made public for debugging purposes, see TriangleSelectorGUI::render_debug().
@@ -193,11 +217,11 @@ public:
 
     // Create new object on a TriangleMesh. The referenced mesh must
     // stay valid, a ptr to it is saved and used.
-    explicit TriangleSelector(const TriangleMesh& mesh);
+    explicit TriangleSelector(const TriangleMesh& mesh, float edge_limit = 0.6f);
 
     // Returns the facet_idx of the unsplit triangle containing the "hit". Returns -1 if the triangle isn't found.
     [[nodiscard]] int select_unsplit_triangle(const Vec3f &hit, int facet_idx) const;
-    [[nodiscard]] int select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i32&neighbors) const;
+    [[nodiscard]] int select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i32 &neighbors) const;
 
     // Select all triangles fully inside the circle, subdivide where needed.
     void select_patch(int                       facet_start,                   // facet of the original mesh (unsplit) that the hit point belongs to
@@ -218,6 +242,7 @@ public:
     void bucket_fill_select_triangles(const Vec3f         &hit,                        // point where to start
                                       int                  facet_start,                // facet of the original mesh (unsplit) that the hit point belongs to
                                       const ClippingPlane &clp,                        // Clipping plane to limit painting to not clipped facets only
+                                      float                seed_fill_angle,            // BBS: the maximal angle between two facets to be painted by the same color
                                       bool                 propagate,                  // if bucket fill is propagated to neighbor faces or if it fills the only facet of the modified mesh that the hit point belongs to.
                                       bool                 force_reselection = false); // force reselection of the triangle mesh even in cases that mouse is pointing on the selected triangle
 
@@ -230,6 +255,9 @@ public:
     indexed_triangle_set get_facets_strict(EnforcerBlockerType state) const;
     // Get edges around the selected area by seed fill.
     std::vector<Vec2i32> get_seed_fill_contour() const;
+
+    // BBS
+    void get_facets(std::vector<indexed_triangle_set>& facets_per_type) const;
 
     // Set facet of the mesh to a given state. Only works for original triangles.
     void set_facet(int facet_idx, EnforcerBlockerType state);
@@ -245,7 +273,7 @@ public:
     std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> serialize() const;
 
     // Load serialized data. Assumes that correct mesh is loaded.
-    void deserialize(const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> &data, bool needs_reset = true);
+    void deserialize(const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>>& data, bool needs_reset = true, EnforcerBlockerType max_ebt = EnforcerBlockerType::ExtruderMax);
 
     // For all triangles, remove the flag indicating that the triangle was selected by seed fill.
     void seed_fill_unselect_all_triangles();
@@ -282,7 +310,7 @@ protected:
         void set_division(int sides_to_split, int special_side_idx);
 
         // Get/set current state.
-        void set_state(EnforcerBlockerType type) { assert(! is_split()); state = type; }
+        void set_state(EnforcerBlockerType type) { assert(!is_split()); state = type; }
         EnforcerBlockerType get_state() const { assert(! is_split()); return state; }
 
         // Set if the triangle has been selected or unselected by seed fill.
@@ -322,12 +350,19 @@ protected:
         int ref_cnt;
     };
 
+    void append_touching_subtriangles(int itriangle, int vertexi, int vertexj, std::vector<int>& touching_subtriangles_out) const;
+    bool verify_triangle_neighbors(const Triangle& tr, const Vec3i32& neighbors) const;
+
+
     // Lists of vertices and triangles, both original and new
     std::vector<Vertex> m_vertices;
     std::vector<Triangle> m_triangles;
     const TriangleMesh &m_mesh;
     const std::vector<Vec3i32> m_neighbors;
     const std::vector<Vec3f> m_face_normals;
+
+    // BBS
+    float m_edge_limit = 0.6f;
 
     // Number of invalid triangles (to trigger garbage collection).
     int m_invalid_triangles;
@@ -346,15 +381,15 @@ protected:
     // Private functions:
 private:
     bool select_triangle(int facet_idx, EnforcerBlockerType type, bool triangle_splitting);
-    bool select_triangle_recursive(int facet_idx, const Vec3i32&neighbors, EnforcerBlockerType type, bool triangle_splitting);
+    bool select_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType type, bool triangle_splitting);
     void undivide_triangle(int facet_idx);
-    void split_triangle(int facet_idx, const Vec3i32&neighbors);
+    void split_triangle(int facet_idx, const Vec3i32 &neighbors);
     void remove_useless_children(int facet_idx); // No hidden meaning. Triangles are meant.
     bool is_facet_clipped(int facet_idx, const ClippingPlane &clp) const;
     int  push_triangle(int a, int b, int c, int source_triangle, EnforcerBlockerType state = EnforcerBlockerType{0});
-    void perform_split(int facet_idx, const Vec3i32&neighbors, EnforcerBlockerType old_state);
-    Vec3i32 child_neighbors(const Triangle &tr, const Vec3i32&neighbors, int child_idx) const;
-    Vec3i32 child_neighbors_propagated(const Triangle &tr, const Vec3i32&neighbors_propagated, int child_idx, const Vec3i32&child_neighbors) const;
+    void perform_split(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType old_state);
+    Vec3i32 child_neighbors(const Triangle &tr, const Vec3i32 &neighbors, int child_idx) const;
+    Vec3i32 child_neighbors_propagated(const Triangle &tr, const Vec3i32 &neighbors_propagated, int child_idx, const Vec3i32 &child_neighbors) const;
     // Return child of itriangle at a CCW oriented side (vertexi, vertexj), either first or 2nd part.
     // If itriangle == -1 or if the side sharing (vertexi, vertexj) is not split, return -1.
     enum class Partition {
@@ -370,22 +405,22 @@ private:
     static std::pair<int, int> triangle_subtriangles(const Triangle &tr, int vertexi, int vertexj);
     std::pair<int, int>        triangle_subtriangles(int itriangle, int vertexi, int vertexj) const;
 
-    void append_touching_subtriangles(int itriangle, int vertexi, int vertexj, std::vector<int> &touching_subtriangles_out) const;
+    //void append_touching_subtriangles(int itriangle, int vertexi, int vertexj, std::vector<int> &touching_subtriangles_out) const;
     void append_touching_edges(int itriangle, int vertexi, int vertexj, std::vector<Vec2i32> &touching_edges_out) const;
 
 #ifndef NDEBUG
-    bool verify_triangle_neighbors(const Triangle& tr, const Vec3i32& neighbors) const;
+    //bool verify_triangle_neighbors(const Triangle& tr, const Vec3i32& neighbors) const;
     bool verify_triangle_midpoints(const Triangle& tr) const;
 #endif // NDEBUG
 
     void get_facets_strict_recursive(
         const Triangle                              &tr,
-        const Vec3i32&neighbors,
+        const Vec3i32                                 &neighbors,
         EnforcerBlockerType                          state,
         std::vector<stl_triangle_vertex_indices>    &out_triangles) const;
-    void get_facets_split_by_tjoints(const Vec3i32&vertices, const Vec3i32&neighbors, std::vector<stl_triangle_vertex_indices> &out_triangles) const;
+    void get_facets_split_by_tjoints(const Vec3i32 &vertices, const Vec3i32 &neighbors, std::vector<stl_triangle_vertex_indices> &out_triangles) const;
 
-    void get_seed_fill_contour_recursive(int facet_idx, const Vec3i32&neighbors, const Vec3i32&neighbors_propagated, std::vector<Vec2i32> &edges_out) const;
+    void get_seed_fill_contour_recursive(int facet_idx, const Vec3i32 &neighbors, const Vec3i32 &neighbors_propagated, std::vector<Vec2i32> &edges_out) const;
 
     int m_free_triangles_head { -1 };
     int m_free_vertices_head { -1 };

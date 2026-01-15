@@ -1,17 +1,16 @@
-///|/ Copyright (c) Prusa Research 2021 - 2022 Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_Color_hpp_
 #define slic3r_Color_hpp_
 
+#include <vector>
+#include <string>
 #include <array>
 #include <algorithm>
 
-#include "Point.hpp"
-
 namespace Slic3r {
-
+using RGB = std::array<float, 3>;
+using RGBA = std::array<float, 4>;
+const RGBA UNDEFINE_COLOR = {0,0,0,0};
+bool  color_is_equal(const RGBA a, const RGBA &b);
 class ColorRGB
 {
 	std::array<float, 3> m_data{1.0f, 1.0f, 1.0f};
@@ -67,6 +66,7 @@ public:
 	static const ColorRGB REDISH()      { return { 1.0f, 0.5f, 0.5f }; }
 	static const ColorRGB YELLOW()      { return { 1.0f, 1.0f, 0.0f }; }
 	static const ColorRGB WHITE()       { return { 1.0f, 1.0f, 1.0f }; }
+    static const ColorRGB ORCA()		{ return {0.0f, 150.f / 255.0f, 136.0f / 255}; }
 
 	static const ColorRGB X()           { return { 0.75f, 0.0f, 0.0f }; }
 	static const ColorRGB Y()           { return { 0.0f, 0.75f, 0.0f }; }
@@ -85,12 +85,16 @@ public:
 
 	ColorRGBA& operator = (const ColorRGBA& other) { m_data = other.m_data; return *this; }
 
-	bool operator == (const ColorRGBA& other) const { return m_data == other.m_data; }
+	bool operator==(const ColorRGBA &other) const{
+        return color_is_equal(m_data, other.m_data);
+    }
 	bool operator != (const ColorRGBA& other) const { return !operator==(other); }
 	bool operator < (const ColorRGBA& other) const;
 	bool operator > (const ColorRGBA& other) const;
+    float  operator[](int i) const { return m_data[i]; }
+    float& operator[](int i) { return m_data[i]; }
 
-	ColorRGBA operator + (const ColorRGBA& other) const;
+    ColorRGBA operator + (const ColorRGBA& other) const;
 	ColorRGBA operator * (float value) const;
 
 	const float* const data() const { return m_data.data(); }
@@ -133,6 +137,7 @@ public:
 	static const ColorRGBA REDISH()      { return { 1.0f, 0.5f, 0.5f, 1.0f }; }
 	static const ColorRGBA YELLOW()      { return { 1.0f, 1.0f, 0.0f, 1.0f }; }
 	static const ColorRGBA WHITE()       { return { 1.0f, 1.0f, 1.0f, 1.0f }; }
+    static const ColorRGBA ORCA()        { return {0.0f, 150.f / 255.0f, 136.0f / 255, 1.0f}; }
 
 	static const ColorRGBA X()           { return { 0.75f, 0.0f, 0.0f, 1.0f }; }
 	static const ColorRGBA Y()           { return { 0.0f, 0.75f, 0.0f, 1.0f }; }
@@ -161,8 +166,6 @@ bool decode_color(const std::string& color_in, ColorRGBA& color_out);
 
 bool decode_colors(const std::vector<std::string>& colors_in, std::vector<ColorRGB>& colors_out);
 bool decode_colors(const std::vector<std::string>& colors_in, std::vector<ColorRGBA>& colors_out);
-    
-ColorRGBA get_a_color(size_t idx);
 
 std::string encode_color(const ColorRGB& color);
 std::string encode_color(const ColorRGBA& color);
@@ -170,58 +173,6 @@ std::string encode_color(const ColorRGBA& color);
 ColorRGB  to_rgb(const ColorRGBA& other_rgba);
 ColorRGBA to_rgba(const ColorRGB& other_rgb);
 ColorRGBA to_rgba(const ColorRGB& other_rgb, float alpha);
-
-typedef struct {
-	double h;       // angle in degrees
-	double s;       // a fraction between 0 and 1
-	double v;       // a fraction between 0 and 1
-} hsv;
-
-// Color mapping of a value into RGB false colors.
-inline Vec3f value_to_rgbf(float minimum, float maximum, float value) 
-{
-    float ratio = 2.0f * (value - minimum) / (maximum - minimum);
-    float b = std::max(0.0f, (1.0f - ratio));
-    float r = std::max(0.0f, (ratio - 1.0f));
-    float g = 1.0f - b - r;
-    return Vec3f { r, g, b };
-}
-
-//utility color methods
-hsv         rgb2hsv(const ColorRGB &in);
-ColorRGB    hsv2rgb(const hsv &in);
-uint32_t    hex2int(const std::string &hex);
-std::string int2hex(uint32_t int_color);
-ColorRGB    int2rgb(uint32_t int_color);
-uint32_t    rgb2int(const ColorRGB &rgb_color);
-uint32_t	change_endian_int24(uint32_t int_color);
-
-// Color mapping of a value into RGB false colors.
-inline Vec3i32 value_to_rgbi(float minimum, float maximum, float value)
-{
-    return (value_to_rgbf(minimum, maximum, value) * 255).cast<int>();
-}
-
-struct ColorReplace
-{
-    std::string color_to_replace_str;
-    ColorRGB   color_to_replace;
-    std::string   new_color_str;
-    ColorRGB   new_color;
-	// true if colorRGB exists, false if a string isn't a hash-color #00FF00
-	bool is_valid = false;
-};
-struct ColorReplaces{
-	std::vector<ColorReplace> changes;
-	void add(const std::string&, const std::string&);
-	void add(const ColorRGB&, const ColorRGB&);
-	void add(const uint32_t&, const uint32_t&);
-    void add(const std::string &sold, const uint32_t &inew);
-	std::optional<ColorReplace> has_key(const ColorRGB&) const;
-	std::optional<ColorReplace> has_value(const ColorRGB&) const;
-	std::optional<ColorReplace> has_key(const std::string&) const;
-	std::optional<ColorReplace> has_value(const std::string&) const;
-};
 
 ColorRGBA picking_decode(unsigned int id);
 unsigned int picking_encode(unsigned char r, unsigned char g, unsigned char b);

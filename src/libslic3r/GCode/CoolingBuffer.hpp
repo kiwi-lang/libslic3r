@@ -1,13 +1,3 @@
-///|/ Copyright (c) Prusa Research 2017 - 2022 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2016 Alessandro Ranellucci @alranel
-///|/
-///|/ ported from lib/Slic3r/GCode/CoolingBuffer.pm:
-///|/ Copyright (c) Prusa Research 2016 - 2017 Vojtěch Bubník @bubnikv
-///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
-///|/ Copyright (c) 2016 Chow Loong Jin @hyperair
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef slic3r_CoolingBuffer_hpp_
 #define slic3r_CoolingBuffer_hpp_
 
@@ -17,7 +7,7 @@
 
 namespace Slic3r {
 
-class GCodeGenerator;
+class GCode;
 class Layer;
 struct PerExtruderAdjustments;
 
@@ -32,18 +22,14 @@ struct PerExtruderAdjustments;
 //
 class CoolingBuffer {
 public:
-    CoolingBuffer(GCodeGenerator &gcodegen);
+    CoolingBuffer(GCode &gcodegen);
     void        reset(const Vec3d &position);
     void        set_current_extruder(unsigned int extruder_id) { m_current_extruder = extruder_id; }
-    /// process the layer: check the time and apply fan / speed change
-    /// append_time_only: if the layer is only support, then you can put this at true to not process the layer but just append its time to the next one.
-    std::string process_layer(std::string &&gcode, size_t layer_id, bool flush, bool append_time_only = false);
-    std::string process_layer(const std::string &gcode, size_t layer_id, bool flush)
-        { return this->process_layer(std::string(gcode), layer_id, flush); }
+    std::string process_layer(std::string &&gcode, size_t layer_id, bool flush);
 
 private:
 	CoolingBuffer& operator=(const CoolingBuffer&) = delete;
-    std::vector<PerExtruderAdjustments> parse_layer_gcode(const std::string &gcode, std::array<float, 7> &current_pos) const;
+    std::vector<PerExtruderAdjustments> parse_layer_gcode(const std::string &gcode, std::vector<float> &current_pos) const;
     float       calculate_layer_slowdown(std::vector<PerExtruderAdjustments> &per_extruder_adjustments);
     // Apply slow down over G-code lines stored in per_extruder_adjustments, enable fan if needed.
     // Returns the adjusted G-code.
@@ -52,30 +38,27 @@ private:
     // G-code snippet cached for the support layers preceding an object layer.
     std::string                 m_gcode;
     // Internal data.
+    // BBS: X,Y,Z,E,F,I,J
     std::vector<char>           m_axis;
-    enum AxisIdx : int {
-        X = 0, Y, Z, E, F, I, J, K, R, Count
-    };
-    std::array<float, 7>        m_current_pos;
+    std::vector<float>          m_current_pos;
     // Current known fan speed or -1 if not known yet.
     int                         m_fan_speed;
+    int                         m_additional_fan_speed;
     // Cached from GCodeWriter.
     // Printing extruder IDs, zero based.
     std::vector<unsigned int>   m_extruder_ids;
     // Highest of m_extruder_ids plus 1.
-    uint16_t                    m_num_extruders { 0 };
-    // Referencs GCodeGenerator::m_config, which is FullPrintConfig. While the PrintObjectConfig slice of FullPrintConfig is being modified,
+    unsigned int                m_num_extruders { 0 };
+    const std::string           m_toolchange_prefix;
+    // Referencs GCode::m_config, which is FullPrintConfig. While the PrintObjectConfig slice of FullPrintConfig is being modified,
     // the PrintConfig slice of FullPrintConfig is constant, thus no thread synchronization is required.
-    const FullPrintConfig      &m_config;
-    uint16_t                    m_current_extruder;
-
-    //saved previous unslowed layer 
-    std::map<size_t, float> saved_layer_time_support;
-    std::map<size_t, float> saved_layer_time_object;
-
+    const PrintConfig          &m_config;
+    unsigned int                m_current_extruder;
 
     // Old logic: proportional.
     bool                        m_cooling_logic_proportional = false;
+    //BBS: current fan speed
+    int                         m_current_fan_speed;
 };
 
 }

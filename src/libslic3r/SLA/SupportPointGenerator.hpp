@@ -1,15 +1,11 @@
-///|/ Copyright (c) Prusa Research 2020 - 2022 Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
 #ifndef SLA_SUPPORTPOINTGENERATOR_HPP
 #define SLA_SUPPORTPOINTGENERATOR_HPP
 
 #include <random>
 
-#include <libslic3r/AABBMesh.hpp>
-
 #include <libslic3r/SLA/SupportPoint.hpp>
+#include <libslic3r/SLA/IndexedMesh.hpp>
+
 #include <libslic3r/BoundingBox.hpp>
 #include <libslic3r/ClipperUtils.hpp>
 #include <libslic3r/Point.hpp>
@@ -32,10 +28,10 @@ public:
         inline float tear_pressure() const { return 1.f; }  // pressure that the display exerts    (the force unit per mm2)
     };
     
-    SupportPointGenerator(const AABBMesh& emesh, const std::vector<ExPolygons>& slices,
+    SupportPointGenerator(const IndexedMesh& emesh, const std::vector<ExPolygons>& slices,
                     const std::vector<float>& heights, const Config& config, std::function<void(void)> throw_on_cancel, std::function<void(int)> statusfn);
     
-    SupportPointGenerator(const AABBMesh& emesh, const Config& config, std::function<void(void)> throw_on_cancel, std::function<void(int)> statusfn);
+    SupportPointGenerator(const IndexedMesh& emesh, const Config& config, std::function<void(void)> throw_on_cancel, std::function<void(int)> statusfn);
     
     const std::vector<SupportPoint>& output() const { return m_output; }
     std::vector<SupportPoint>& output() { return m_output; }
@@ -88,7 +84,8 @@ public:
         float                                   overhangs_area = 0.f;
         
         bool overlaps(const Structure &rhs) const { 
-            return this->bbox.overlap(rhs.bbox) && this->polygon->overlaps(*rhs.polygon);
+            //FIXME ExPolygon::overlaps() shall be commutative, it is not!
+            return this->bbox.overlap(rhs.bbox) && (this->polygon->overlaps(*rhs.polygon) || rhs.polygon->overlaps(*this->polygon)); 
         }
         float overlap_area(const Structure &rhs) const { 
             double out = 0.;
@@ -220,7 +217,7 @@ private:
     static void output_structures(const std::vector<Structure> &structures);
 #endif // SLA_SUPPORTPOINTGEN_DEBUG
     
-    const AABBMesh& m_emesh;
+    const IndexedMesh& m_emesh;
     std::function<void(void)> m_throw_on_cancel;
     std::function<void(int)>  m_statusfn;
     
