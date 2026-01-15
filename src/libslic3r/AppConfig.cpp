@@ -8,6 +8,7 @@
 #include "Thread.hpp"
 #include "format.hpp"
 #include "nlohmann/json.hpp"
+#include "../slic3r/Utils/Http.hpp"
 
 #include <utility>
 #include <vector>
@@ -38,27 +39,33 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-static const std::string VERSION_CHECK_URL_STABLE = "https://api.github.com/repos/softfever/OrcaSlicer/releases/latest";
-static const std::string VERSION_CHECK_URL = "https://api.github.com/repos/softfever/OrcaSlicer/releases";
-static const std::string PROFILE_UPDATE_URL = "https://api.github.com/repos/OrcaSlicer/orcaslicer-profiles/releases/tags";
+static const std::string VERSION_CHECK_URL = "http://update.cn.sz3dp.com:20080/3dapp/public/Orca-Flashforge/appInfo.json";
+static const std::string PROFILE_UPDATE_URL = "http://update.cn.sz3dp.com:20080/3dapp/public/Orca-Flashforge/appInfo.json";
 static const std::string MODELS_STR = "models";
 
 const std::string AppConfig::SECTION_FILAMENTS = "filaments";
 const std::string AppConfig::SECTION_MATERIALS = "sla_materials";
-const std::string AppConfig::SECTION_EMBOSS_STYLE = "font";
+const std::string AppConfig::SECTION_EMBOSS_STYLE   = "font";
+const std::string AppConfig::SECTION_LOCAL_MACHINES = "local_machines";
+
+
+AppConfig::~AppConfig()
+{
+    m_local_machines.clear();
+}
 
 std::string AppConfig::get_language_code()
 {
     std::string get_lang = get("language");
-    if (get_lang.empty()) return "";
+    if (get_lang.empty())
+        return "";
 
-    if (get_lang == "zh_CN")
-    {
+    if (get_lang == "zh_CN") {
         get_lang = "zh-cn";
-    }
-    else
-    {
-        if (get_lang.length() >= 2) { get_lang = get_lang.substr(0, 2); }
+    } else {
+        if (get_lang.length() >= 2) {
+            get_lang = get_lang.substr(0, 2);
+        }
     }
 
     return get_lang;
@@ -83,6 +90,15 @@ std::string AppConfig::get_hms_host()
 // #endif
 }
 
+bool AppConfig::get_stealth_mode()
+{
+    // always return true when user did not finish setup wizard yet
+    if (!get_bool("firstguide","finish")) {
+        return true;
+    }
+    return get_bool("stealth_mode");
+}
+
 void AppConfig::reset()
 {
     m_storage.clear();
@@ -103,11 +119,6 @@ void AppConfig::set_defaults()
         // Disable background processing by default as it is not stable.
         if (get("background_processing").empty())
             set_bool("background_processing", false);
-#endif
-
-#ifdef SUPPORT_SHOW_DROP_PROJECT
-        if (get("show_drop_project_dialog").empty())
-            set_bool("show_drop_project_dialog", true);
 #endif
 
         if (get("drop_project_action").empty())
@@ -166,6 +177,9 @@ void AppConfig::set_defaults()
     if (get("use_perspective_camera").empty())
         set_bool("use_perspective_camera", true);
 
+    if (get("auto_perspective").empty())
+        set_bool("auto_perspective", false);
+
     if (get("use_free_camera").empty())
         set_bool("use_free_camera", false);
 
@@ -179,18 +193,20 @@ void AppConfig::set_defaults()
         set_bool("zoom_to_mouse", false);
 
 //#ifdef SUPPORT_SHOW_HINTS
-    if (get("show_hints").empty())
-        set_bool("show_hints", true);
+    //if (get("show_hints").empty())
+        set_bool("show_hints", false);
 //#endif
     if (get("enable_multi_machine").empty())
         set_bool("enable_multi_machine", false);
 
-    if (get("show_gcode_window").empty())
-        set_bool("show_gcode_window", true);
+    if (get("show_gcode_window_ff").empty())
+        set_bool("show_gcode_window_ff", false);
 
     if (get("show_3d_navigator").empty())
         set_bool("show_3d_navigator", true);
 
+    if (get("show_outline").empty())
+        set_bool("show_outline", false);
 
 #ifdef _WIN32
 
@@ -251,6 +267,10 @@ void AppConfig::set_defaults()
     // Orca
     if(get("show_splash_screen").empty()) {
         set_bool("show_splash_screen", true);
+    }
+
+    if(get("auto_arrange").empty()) {
+        set_bool("auto_arrange", true);
     }
 
     if (get("show_model_mesh").empty()) {
@@ -332,7 +352,11 @@ void AppConfig::set_defaults()
     if (get("mouse_wheel").empty()) {
         set("mouse_wheel", "0");
     }
-    
+
+    if (get(SETTING_PROJECT_LOAD_BEHAVIOUR).empty()) {
+        set(SETTING_PROJECT_LOAD_BEHAVIOUR, OPTION_PROJECT_LOAD_BEHAVIOUR_ASK_WHEN_RELEVANT);
+    }
+
     if (get("max_recent_count").empty()) {
         set("max_recent_count", "18");
     }
@@ -391,6 +415,7 @@ void AppConfig::set_defaults()
     if (get("print", "timelapse").empty()) {
         set_str("print", "timelapse", "1");
     }
+    set_version_check_url();
 
     // Remove legacy window positions/sizes
     erase("app", "main_frame_maximized");
@@ -400,6 +425,43 @@ void AppConfig::set_defaults()
     erase("app", "object_settings_pos");
     erase("app", "object_settings_size");
     erase("app", "severity_level");
+}
+
+void AppConfig::set_version_check_url()
+{
+    std::string url1 = "http://update.cn.sz3dp.com:20080/3dapp/public/Orca-Flashforge/appInfo.json";
+    std::string url2 = "http://www.ishare3d.com/3dapp/public/Orca-Flashforge/appInfo.json";
+#if 0
+    auto start1 = std::chrono::steady_clock::now();
+    double t1 = -1, t2 = -1;
+    Http::Ptr p1 = Http::get(url1)
+        .timeout_connect(5)
+        .on_complete([&](std::string body, unsigned status) {
+            auto end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> elapsed = end - start1;
+            t1 = elapsed.count();
+        })
+        .perform();
+
+    auto start2 = std::chrono::steady_clock::now();
+    Http::Ptr p2 = Http::get(url2)
+        .timeout_connect(5)
+        .on_complete([&](std::string body, unsigned status) {
+            auto end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> elapsed = end - start2;
+            t2 = elapsed.count();
+        })
+        .perform();
+
+    p1->joinThread();
+    p2->joinThread();
+
+    std::string quickerUrl = url1;
+    if (t1 != -1 && t2 != -1 && t1 > t2)
+        quickerUrl = url2;
+#else
+    set("version_check_url", url2);
+#endif
 }
 
 #ifdef WIN32
@@ -589,8 +651,21 @@ std::string AppConfig::load()
                     m_printer_cali_infos.emplace_back(cali_info);
                 }
             } else if (it.key() == "orca_presets") {
-                for (auto& j_model : it.value()) {
+                for (auto &j_model : it.value()) {
                     m_printer_settings[j_model["machine"].get<std::string>()] = j_model;
+                }
+            } else if (it.key() == SECTION_LOCAL_MACHINES) {
+                for (auto& j_machine : it.value()) {
+                    MacInfoMap info;
+                    info.emplace(std::make_pair("dev_id", j_machine["dev_id"].get<std::string>()));
+                    info.emplace(std::make_pair("dev_name", j_machine["dev_name"].get<std::string>()));
+                    if (j_machine.find("dev_placement") != j_machine.end()) {
+                        info.emplace(std::make_pair("dev_placement", j_machine["dev_placement"].get<std::string>()));
+                    }
+                    if (j_machine.find("dev_pid") != j_machine.end()) {
+                        info.emplace(std::make_pair("dev_pid", j_machine["dev_pid"].get<std::string>()));
+                    }
+                    m_local_machines_ff.push_back(info);
                 }
             } else {
                 if (it.value().is_object()) {
@@ -768,6 +843,24 @@ void AppConfig::save()
     for (const auto& preset : m_printer_settings) {
         j["orca_presets"].push_back(preset.second);
     }
+    
+    // write binding machines
+    for (const auto &mac : m_local_machines_ff) {
+        json j_mac;
+        auto it = mac.find("dev_id");
+        if (it != mac.end())
+            j_mac["dev_id"] = it->second;
+        it = mac.find("dev_name");
+        if (it != mac.end())
+            j_mac["dev_name"] = it->second;
+        it = mac.find("dev_placement");
+        if (it != mac.end())
+            j_mac["dev_placement"] = it->second;
+        it = mac.find("dev_pid");
+        if (it != mac.end())
+            j_mac["dev_pid"] = it->second;
+        j[SECTION_LOCAL_MACHINES].push_back(j_mac);
+    }
     boost::nowide::ofstream c;
     c.open(path_pid, std::ios::out | std::ios::trunc);
     c << std::setw(4) << j << std::endl;
@@ -776,7 +869,7 @@ void AppConfig::save()
     // WIN32 specific: The final "rename_file()" call is not safe in case of an application crash, there is no atomic "rename file" API
     // provided by Windows (sic!). Therefore we save a MD5 checksum to be able to verify file corruption. In addition,
     // we save the config file into a backup first before moving it to the final destination.
-    c << appconfig_md5_hash_line({j.dump(4)});
+    c << appconfig_md5_hash_line(j.dump(4));
 #endif
 
     c.close();
@@ -1252,6 +1345,56 @@ bool AppConfig::is_engineering_region(){
     return false;
 }
 
+void AppConfig::get_local_mahcines(LocalMacInfo& local_machines)
+{
+    local_machines.assign(m_local_machines_ff.begin(), m_local_machines_ff.end());
+}
+
+void AppConfig::save_bind_machine_to_config(const std::string& dev_id, const std::string& dev_name, const std::string& placement, const unsigned short& pid, bool modifyPlacement)
+{
+    bool update = false;
+    std::string pid_str = std::to_string(pid);
+    for (auto& mac : m_local_machines_ff) {
+        auto it = mac.find("dev_id");
+        if (it != mac.end() && it->second == dev_id) {
+            mac["dev_name"] = dev_name;
+            if (modifyPlacement) {
+                mac["dev_placement"] = placement;
+            }
+            mac["dev_pid"] = pid_str;
+            update = true;
+            break;
+        }
+    }
+
+    if (!update) {
+        MacInfoMap macInfo;
+        macInfo.emplace(std::make_pair("dev_id", dev_id));
+        macInfo.emplace(std::make_pair("dev_name", dev_name));
+        macInfo.emplace(std::make_pair("dev_placement", placement));
+        macInfo.emplace(std::make_pair("dev_pid", pid_str));
+        m_local_machines_ff.emplace_back(macInfo);
+    }
+    m_dirty = true;
+}
+
+void AppConfig::erase_local_machine(const std::string &dev_id, const std::string &dev_name)
+{
+    auto it_mac = m_local_machines_ff.begin();
+    for (; it_mac != m_local_machines_ff.end(); ++it_mac) {
+        const MacInfoMap &macInfo = *it_mac;
+        auto        it_id   = macInfo.find("dev_id");
+        auto        it_name = macInfo.find("dev_name");
+        if (it_id != macInfo.end() && it_name != macInfo.end()) {
+            if (it_id->second == dev_id && it_name->second == dev_name) {
+                m_local_machines_ff.erase(it_mac);
+                m_dirty = true;
+                break;
+            }
+        }
+    }
+}
+
 void AppConfig::save_custom_color_to_config(const std::vector<std::string> &colors)
 {
     auto set_colors = [](std::map<std::string, std::string> &data, const std::vector<std::string> &colors) {
@@ -1285,6 +1428,7 @@ std::vector<std::string> AppConfig::get_custom_color_from_config()
     return colors;
 }
 
+
 void AppConfig::reset_selections()
 {
     auto it = m_storage.find("presets");
@@ -1317,7 +1461,7 @@ std::string AppConfig::config_path()
 std::string AppConfig::version_check_url(bool stable_only/* = false*/) const
 {
     auto from_settings = get("version_check_url");
-    return from_settings.empty() ? stable_only ? VERSION_CHECK_URL_STABLE : VERSION_CHECK_URL : from_settings;
+    return from_settings.empty() ? VERSION_CHECK_URL : from_settings;
 }
 
 std::string AppConfig::profile_update_url() const

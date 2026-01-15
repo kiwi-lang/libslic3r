@@ -10,12 +10,14 @@
 #include "Slicing.hpp"
 #include "SLA/SupportPoint.hpp"
 #include "SLA/Hollowing.hpp"
+#include "BrimEarsPoint.hpp"
 #include "TriangleMesh.hpp"
 #include "CustomGCode.hpp"
 #include "calib.hpp"
 #include "enum_bitmask.hpp"
 #include "TextConfiguration.hpp"
 #include "EmbossShape.hpp"
+#include "TriangleSelector.hpp"
 
 //BBS: add bbs 3mf
 #include "Format/bbs_3mf.hpp"
@@ -382,9 +384,7 @@ public:
     // Holes to be drilled into the object so resin can flow out
     sla::DrainHoles         sla_drain_holes;
 
-    // Connectors to be added into the object before cut and are used to create a solid/negative volumes during a cut perform
-    CutConnectors           cut_connectors;
-    CutObjectBase           cut_id;
+    BrimPoints              brim_points;
 
     /* This vector accumulates the total translation applied to the object by the
         center_around_origin() method. Callers might want to apply the same translation
@@ -394,6 +394,10 @@ public:
 
     // BBS: save for compare with new load volumes
     std::vector<ObjectID>   volume_ids;
+
+    // Connectors to be added into the object before cut and are used to create a solid/negative volumes during a cut perform
+    CutConnectors cut_connectors;
+    CutObjectBase cut_id;
 
     Model*                  get_model() { return m_model; }
     const Model*            get_model() const { return m_model; }
@@ -672,7 +676,7 @@ private:
         Internal::StaticSerializationWrapper<ModelConfigObject const> config_wrapper(config);
         Internal::StaticSerializationWrapper<LayerHeightProfile const> layer_heigth_profile_wrapper(layer_height_profile);
         ar(name, module_name, input_file, instances, volumes, config_wrapper, layer_config_ranges, layer_heigth_profile_wrapper,
-            sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation,
+            sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation, brim_points,
             m_bounding_box_approx, m_bounding_box_approx_valid, 
             m_bounding_box_exact, m_bounding_box_exact_valid, m_min_max_z_valid,
             m_raw_bounding_box, m_raw_bounding_box_valid, m_raw_mesh_bounding_box, m_raw_mesh_bounding_box_valid,
@@ -685,7 +689,7 @@ private:
         // BBS: add backup, check modify
         SaveObjectGaurd gaurd(*this);
         ar(name, module_name, input_file, instances, volumes, config_wrapper, layer_config_ranges, layer_heigth_profile_wrapper,
-            sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation,
+            sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation, brim_points,
             m_bounding_box_approx, m_bounding_box_approx_valid, 
             m_bounding_box_exact, m_bounding_box_exact_valid, m_min_max_z_valid,
             m_raw_bounding_box, m_raw_bounding_box_valid, m_raw_mesh_bounding_box, m_raw_mesh_bounding_box_valid,
@@ -704,31 +708,6 @@ private:
     void update_min_max_z();
 };
 
-enum class EnforcerBlockerType : int8_t {
-    // Maximum is 3. The value is serialized in TriangleSelector into 2 bits.
-    NONE      = 0,
-    ENFORCER  = 1,
-    BLOCKER   = 2,
-    // Maximum is 15. The value is serialized in TriangleSelector into 6 bits using a 2 bit prefix code.
-    Extruder1 = ENFORCER,
-    Extruder2 = BLOCKER,
-    Extruder3,
-    Extruder4,
-    Extruder5,
-    Extruder6,
-    Extruder7,
-    Extruder8,
-    Extruder9,
-    Extruder10,
-    Extruder11,
-    Extruder12,
-    Extruder13,
-    Extruder14,
-    Extruder15,
-    Extruder16,
-    ExtruderMax = Extruder16
-};
-
 enum class ConversionType : int {
     CONV_TO_INCH,
     CONV_FROM_INCH,
@@ -745,9 +724,9 @@ enum class En3mfType : int {
 class FacetsAnnotation final : public ObjectWithTimestamp {
 public:
     // Assign the content if the timestamp differs, don't assign an ObjectID.
-    void assign(const FacetsAnnotation& rhs) { if (! this->timestamp_matches(rhs)) { m_data = rhs.m_data; this->copy_timestamp(rhs); } }
-    void assign(FacetsAnnotation&& rhs) { if (! this->timestamp_matches(rhs)) { m_data = std::move(rhs.m_data); this->copy_timestamp(rhs); } }
-    const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>>& get_data() const throw() { return m_data; }
+    void assign(const FacetsAnnotation &rhs) { if (! this->timestamp_matches(rhs)) { m_data = rhs.m_data; this->copy_timestamp(rhs); } }
+    void assign(FacetsAnnotation &&rhs) { if (! this->timestamp_matches(rhs)) { m_data = std::move(rhs.m_data); this->copy_timestamp(rhs); } }
+    const TriangleSelector::TriangleSplittingData &get_data() const noexcept { return m_data; }
     bool set(const TriangleSelector& selector);
     indexed_triangle_set get_facets(const ModelVolume& mv, EnforcerBlockerType type) const;
     // BBS
@@ -755,7 +734,7 @@ public:
     void set_enforcer_block_type_limit(const ModelVolume& mv, EnforcerBlockerType max_type);
     indexed_triangle_set get_facets_strict(const ModelVolume& mv, EnforcerBlockerType type) const;
     bool has_facets(const ModelVolume& mv, EnforcerBlockerType type) const;
-    bool empty() const { return m_data.first.empty(); }
+    bool empty() const { return m_data.triangles_to_split.empty(); }
 
     // Following method clears the config and increases its timestamp, so the deleted
     // state is considered changed from perspective of the undo/redo stack.
@@ -765,11 +744,11 @@ public:
     std::string get_triangle_as_string(int i) const;
 
     // Before deserialization, reserve space for n_triangles.
-    void reserve(int n_triangles) { m_data.first.reserve(n_triangles); }
+    void reserve(int n_triangles) { m_data.triangles_to_split.reserve(n_triangles); }
     // Deserialize triangles one by one, with strictly increasing triangle_id.
     void set_triangle_from_string(int triangle_id, const std::string& str);
     // After deserializing the last triangle, shrink data to fit.
-    void shrink_to_fit() { m_data.first.shrink_to_fit(); m_data.second.shrink_to_fit(); }
+    void shrink_to_fit() { m_data.triangles_to_split.shrink_to_fit(); m_data.bitstream.shrink_to_fit(); }
     bool equals(const FacetsAnnotation &other) const;
 
 private:
@@ -796,7 +775,7 @@ private:
         ar(cereal::base_class<ObjectWithTimestamp>(this), m_data);
     }
 
-    std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> m_data;
+    TriangleSelector::TriangleSplittingData m_data;
 
     // To access set_new_unique_id() when copy / pasting a ModelVolume.
     friend class ModelVolume;
@@ -1015,6 +994,10 @@ public:
     bool is_fdm_support_painted() const { return !this->supported_facets.empty(); }
     bool is_seam_painted() const { return !this->seam_facets.empty(); }
     bool is_mm_painted() const { return !this->mmu_segmentation_facets.empty(); }
+    
+    // Orca: Implement prusa's filament shrink compensation approach
+    // Returns 0-based indices of extruders painted by multi-material painting gizmo.
+     std::vector<size_t> get_extruders_from_multi_material_painting() const;
 
 protected:
 	friend class Print;
@@ -1322,7 +1305,7 @@ public:
     bool is_assemble_initialized() { return m_assemble_initialized; }
 
     //BBS
-    double get_auto_brim_width(double deltaT, double adhension) const;
+    double get_auto_brim_width(double deltaT, double adhesion) const;
     double get_auto_brim_width() const;
     // BBS
     Polygon convex_hull_2d();
@@ -1713,6 +1696,8 @@ bool model_custom_seam_data_changed(const ModelObject& mo, const ModelObject& mo
 // Test whether the now ModelObject has newer MMU segmentation data than the old one.
 // The function assumes that volumes list is synchronized.
 extern bool model_mmu_segmentation_data_changed(const ModelObject& mo, const ModelObject& mo_new);
+
+bool model_brim_points_data_changed(const ModelObject& mo, const ModelObject& mo_new);
 
 // If the model has multi-part objects, then it is currently not supported by the SLA mode.
 // Either the model cannot be loaded, or a SLA printer has to be activated.
