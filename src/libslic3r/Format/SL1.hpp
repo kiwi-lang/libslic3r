@@ -42,14 +42,14 @@ ConfigSubstitutions import_sla_archive(const std::string &zipfname, DynamicPrint
 
 ConfigSubstitutions import_sla_archive(
     const std::string &      zipfname,
-    Vec2i32                    windowsize,
+    Vec2i                    windowsize,
     indexed_triangle_set &   out,
     DynamicPrintConfig &     profile,
     std::function<bool(int)> progr = [](int) { return true; });
 
 inline ConfigSubstitutions import_sla_archive(
     const std::string &      zipfname,
-    Vec2i32                    windowsize,
+    Vec2i                    windowsize,
     indexed_triangle_set &   out,
     std::function<bool(int)> progr = [](int) { return true; })
 {

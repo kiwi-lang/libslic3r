@@ -20,8 +20,8 @@ class Polyline : public MultiPoint {
 public:
     Polyline() {};
     Polyline(const Polyline& other) : MultiPoint(other.points), fitting_result(other.fitting_result) {}
-    Polyline(Polyline &&other) : MultiPoint(std::move(other.points)), fitting_result(std::move(other.fitting_result))  {}
-    Polyline(std::initializer_list<Point> list) : MultiPoint(list) { 
+    Polyline(Polyline &&other) noexcept : MultiPoint(std::move(other.points)), fitting_result(std::move(other.fitting_result))  {}
+    Polyline(std::initializer_list<Point> list) : MultiPoint(list) {
         fitting_result.clear();
     }
     explicit Polyline(const Point &p1, const Point &p2) {
@@ -55,7 +55,7 @@ public:
         pl.fitting_result.clear();
 		return pl;
     }
-    
+
     void append(const Point &point) {
         //BBS: don't need to append same point
         if (!this->empty() && this->last_point() == point)
@@ -101,10 +101,12 @@ public:
     }
     void append(const Polyline& src);
     void append(Polyline&& src);
-  
+
+    Polyline rebase_at(size_t idx);
+
     Point& operator[](Points::size_type idx) { return this->points[idx]; }
     const Point& operator[](Points::size_type idx) const { return this->points[idx]; }
-  
+
     const Point& last_point() const override { return this->points.back(); }
     const Point& leftmost_point() const;
     Lines lines() const override;
@@ -120,8 +122,7 @@ public:
 //    template <class T> void simplify_by_visibility(const T &area);
     void split_at(Point &point, Polyline* p1, Polyline* p2) const;
     bool split_at_index(const size_t index, Polyline* p1, Polyline* p2) const;
-    bool split_at_length(const double length, Polyline* p1, Polyline* p2) const;
-
+    bool split_at_length(const double length, Polyline *p1, Polyline *p2) const;
     bool is_straight() const;
     bool is_closed() const { return this->points.front() == this->points.back(); }
 
@@ -129,7 +130,7 @@ public:
     std::vector<PathFittingData> fitting_result;
     //BBS: simplify points by arc fitting
     void simplify_by_fitting_arc(double tolerance);
-    //BBS: 
+    //BBS:
     Polylines equally_spaced_lines(double distance) const;
 
 private:
@@ -166,7 +167,7 @@ inline double total_length(const Polylines &polylines) {
     return total;
 }
 
-inline Lines to_lines(const Polyline &poly) 
+inline Lines to_lines(const Polyline &poly)
 {
     Lines lines;
     if (poly.points.size() >= 2) {
@@ -177,7 +178,7 @@ inline Lines to_lines(const Polyline &poly)
     return lines;
 }
 
-inline Lines to_lines(const Polylines &polys) 
+inline Lines to_lines(const Polylines &polys)
 {
     size_t n_lines = 0;
     for (size_t i = 0; i < polys.size(); ++ i)
@@ -211,12 +212,12 @@ inline Polylines to_polylines(std::vector<Points> &&paths)
     return out;
 }
 
-inline void polylines_append(Polylines &dst, const Polylines &src) 
-{ 
+inline void polylines_append(Polylines &dst, const Polylines &src)
+{
     dst.insert(dst.end(), src.begin(), src.end());
 }
 
-inline void polylines_append(Polylines &dst, Polylines &&src) 
+inline void polylines_append(Polylines &dst, Polylines &&src)
 {
     if (dst.empty()) {
         dst = std::move(src);
@@ -265,11 +266,8 @@ public:
         Polyline::clear();
         width.clear();
     }
-
-    // Make this closed ThickPolyline starting in the specified index.
-    // Be aware that this method can be applicable just for closed ThickPolyline.
-    // On open ThickPolyline make no effect.
-    void start_at_index(int index);
+    ThickPolyline rebase_at(size_t idx);
+    coordf_t get_width_at(size_t point_idx) const;
 
     std::vector<coordf_t> width;
     std::pair<bool,bool>  endpoints;

@@ -9,6 +9,7 @@ namespace Utils {
 
 // Should be thread safe.
 time_t get_current_time_utc();
+time_t get_current_milliseconds_time_utc();
 
 enum class TimeZone { local, utc };
 enum class TimeFormat { gcode, iso8601Z };
@@ -30,10 +31,6 @@ inline std::string utc_timestamp(time_t t)
 inline std::string utc_timestamp()
 {
     return utc_timestamp(get_current_time_utc());
-}
-
-inline std::string local_timestamp(TimeFormat fmt = TimeFormat::gcode) {
-     return time2str(get_current_time_utc(), TimeZone::local, fmt);
 }
 
 // String to time_t function. Returns time_t(-1) if fails to parse the input.

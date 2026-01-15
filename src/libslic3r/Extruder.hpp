@@ -17,8 +17,8 @@ public:
     void   reset() {
         // BBS
         if (m_share_extruder) {
-            m_share_E = 0.;
-            m_share_retracted = 0.;
+            m_share_E = { 0.,0.};
+            m_share_retracted = { 0.,0. };
         } else {
             m_E             = 0;
             m_retracted     = 0;
@@ -29,30 +29,18 @@ public:
 
     unsigned int id() const { return m_id; }
 
+    unsigned int extruder_id() const;
     double extrude(double dE);
     double retract(double length, double restart_extra);
     double unretract();
-    double E() const { return m_share_extruder ? m_share_E : m_E; }
-    void   reset_E() { m_E = 0.; m_share_E = 0.; }
+    double E() const { return m_share_extruder ? m_share_E[extruder_id()] : m_E; }
+    void   reset_E() { m_E = 0.; m_share_E[extruder_id()] = 0.; }
     double e_per_mm(double mm3_per_mm) const { return mm3_per_mm * m_e_per_mm3; }
     double e_per_mm3() const { return m_e_per_mm3; }
     // Used filament volume in mm^3.
     double extruded_volume() const;
     // Used filament length in mm.
     double used_filament() const;
-    
-    // Getters for the PlaceholderParser.
-    // Get current extruder position. Only applicable with absolute extruder addressing.
-    double position() const { return m_E; }
-    // Get current retraction value. Only non-negative values.
-    double retracted() const { return m_retracted; }
-    // Get extra retraction planned after
-    double restart_extra() const { return m_restart_extra; }
-    // Setters for the PlaceholderParser.
-    // Set current extruder position. Only applicable with absolute extruder addressing.
-    void   set_position(double e) { m_E = e; }
-    // Sets current retraction value & restart extra filament amount if retracted > 0.
-    void   set_retracted(double retracted, double restart_extra);
     
     double filament_diameter() const;
     double filament_crossection() const { return this->filament_diameter() * this->filament_diameter() * 0.25 * PI; }
@@ -67,9 +55,10 @@ public:
     double retract_restart_extra() const;
     double retract_length_toolchange() const;
     double retract_restart_extra_toolchange() const;
-    double travel_slope() const;
 
-    bool   use_firmware_retraction() const;
+    bool is_share_extruder() const { return m_share_extruder; }
+    double get_single_retracted_length() const { return m_retracted; }
+    double get_share_retracted_length() const { return m_share_retracted[extruder_id()]; }
 
 private:
     // Private constructor to create a key for a search in std::set.
@@ -79,7 +68,7 @@ private:
     GCodeConfig *m_config;
     // Print-wide global ID of this extruder.
     unsigned int m_id;
-    // Current state of the extruder axis, may be resetted if use_relative_e_distances.
+    // Current state of the extruder axis, may be resetted if use_relative_e_distance.
     double       m_E;
     // Current state of the extruder tachometer, used to output the extruded_volume() and used_filament() statistics.
     double       m_absolute_E;
@@ -92,8 +81,8 @@ private:
     // BBS.
     // Create shared E and retraction data for single extruder multi-material machine
     bool          m_share_extruder;
-    static double m_share_E;
-    static double m_share_retracted;
+    static std::vector<double> m_share_E;
+    static std::vector<double> m_share_retracted;
 };
 
 // Sort Extruder objects by the extruder id by default.

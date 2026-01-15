@@ -65,7 +65,6 @@ public:
     float   height()          const { return m_height; }
     // Spacing between the extrusion centerlines.
     float   spacing()         const { return m_spacing; }
-    void    set_spacing(float spacing) { m_spacing = spacing; }
     coord_t scaled_spacing()  const { return coord_t(scale_(m_spacing)); }
     // Nozzle diameter. 
     float   nozzle_diameter() const { return m_nozzle_diameter; }
@@ -82,6 +81,13 @@ public:
 
     bool operator==(const Flow &rhs) const { return m_width == rhs.m_width && m_height == rhs.m_height && m_nozzle_diameter == rhs.m_nozzle_diameter && m_bridge == rhs.m_bridge; }
 
+    bool operator!=(const Flow &rhs) const{
+        return m_width != rhs.m_width || m_height != rhs.m_height || m_nozzle_diameter != rhs.m_nozzle_diameter || m_bridge != rhs.m_bridge;
+    }
+
+    bool operator <(const Flow &rhs) const {
+        return this->mm3_per_mm() < rhs.mm3_per_mm();
+    }
     Flow        with_width (float width)  const { 
         assert(! m_bridge); 
         return Flow(width, m_height, rounded_rectangle_extrusion_spacing(width, m_height), m_nozzle_diameter, m_bridge);
@@ -98,7 +104,7 @@ public:
 
     static Flow bridging_flow(float dmr, float nozzle_diameter) { return Flow { dmr, dmr, bridge_extrusion_spacing(dmr), nozzle_diameter, true }; }
 
-    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height);
+    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloat &width, float nozzle_diameter, float height);
 
     // Spacing of extrusions with rounded extrusion model.
     static float rounded_rectangle_extrusion_spacing(float width, float height);

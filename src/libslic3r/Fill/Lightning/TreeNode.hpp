@@ -18,7 +18,7 @@
 namespace Slic3r::FillLightning
 {
 
-inline coord_t locator_cell_size() { return scaled<coord_t>(4.); }
+constexpr auto locator_cell_size = scaled<coord_t>(4.);
 
 class Node;
 

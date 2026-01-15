@@ -5,7 +5,7 @@
 #define CURAENGINE_WALLTOOLPATHS_H
 
 #include <memory>
-#include <ankerl/unordered_dense.h>
+#include <unordered_set>
 
 #include "BeadingStrategy/BeadingStrategyFactory.hpp"
 #include "utils/ExtrusionLine.hpp"
@@ -16,24 +16,20 @@ namespace Slic3r::Arachne
 {
 
 constexpr bool    fill_outline_gaps                        = true;
-inline coord_t    meshfix_maximum_resolution() { return scaled<coord_t>(0.5); }
-inline coord_t    meshfix_maximum_deviation() { return scaled<coord_t>(0.025); }
-inline coord_t    meshfix_maximum_extrusion_area_deviation() { return scaled<coord_t>(2.); }
+constexpr coord_t meshfix_maximum_resolution               = scaled<coord_t>(0.5);
+constexpr coord_t meshfix_maximum_deviation                = scaled<coord_t>(0.025);
+constexpr coord_t meshfix_maximum_extrusion_area_deviation = scaled<coord_t>(2.);
 
 class WallToolPathsParams
 {
 public:
     float   min_bead_width;
     float   min_feature_size;
-    float   min_length_factor;
     float   wall_transition_length;
     float   wall_transition_angle;
     float   wall_transition_filter_deviation;
     int     wall_distribution_count;
-    bool    is_top_or_bottom_layer;
 };
-
-WallToolPathsParams make_paths_params(const int layer_id, const PrintObjectConfig &print_object_config, const PrintConfig &print_config);
 
 class WallToolPaths
 {
@@ -48,6 +44,7 @@ public:
      */
     WallToolPaths(const Polygons& outline, coord_t bead_width_0, coord_t bead_width_x, size_t inset_count, coord_t wall_0_inset, coordf_t layer_height, const WallToolPathsParams &params);
 
+    void EnableHoleCompensation(bool enable, const std::vector<int>& hole_indices_);
     /*!
      * Generates the Toolpaths
      * \return A reference to the newly create  ToolPaths
@@ -81,14 +78,21 @@ public:
      */
     const Polygons& getInnerContour();
 
+    /**
+     * @brief Get the contour of outer wall path
+     * 
+     * Attention! The function is not completed now!
+     * 
+     * @return 
+    */
+    const Polygons& getFirstWallContour();
+
     /*!
      * Removes empty paths from the toolpaths
      * \param toolpaths the VariableWidthPaths generated with \p generate()
      * \return true if there are still paths left. If all toolpaths were removed it returns false
      */
     static bool removeEmptyToolPaths(std::vector<VariableWidthLines> &toolpaths);
-
-    using ExtrusionLineSet = ankerl::unordered_dense::set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>>;
 
     /*!
      * Get the order constraints of the insets when printing walls per region / hole.
@@ -98,7 +102,7 @@ public:
      *
      * \param outer_to_inner Whether the wall polygons with a lower inset_idx should go before those with a higher one.
      */
-    static ExtrusionLineSet getRegionOrder(const std::vector<ExtrusionLine *> &input, bool outer_to_inner);
+    static std::unordered_set<std::pair<const ExtrusionLine *, const ExtrusionLine *>, boost::hash<std::pair<const ExtrusionLine *, const ExtrusionLine *>>> getRegionOrder(const std::vector<ExtrusionLine *> &input, bool outer_to_inner);
 
 protected:
     /*!
@@ -111,7 +115,7 @@ protected:
     /*!
      * Remove polylines shorter than half the smallest line width along that polyline.
      */
-    void removeSmallLines(std::vector<VariableWidthLines> &toolpaths);
+    static void removeSmallLines(std::vector<VariableWidthLines> &toolpaths);
 
     /*!
      * Simplifies the variable-width toolpaths by calling the simplify on every line in the toolpath using the provided
@@ -136,7 +140,11 @@ private:
     bool toolpaths_generated; //<! Are the toolpaths generated
     std::vector<VariableWidthLines> toolpaths; //<! The generated toolpaths
     Polygons inner_contour;  //<! The inner contour of the generated toolpaths
+    Polygons first_wall_contour; //<! The contour of the first wall
     const WallToolPathsParams m_params;
+private:
+    bool enable_hole_compensation{ false };
+    std::vector<int> hole_indices;
 };
 
 } // namespace Slic3r::Arachne

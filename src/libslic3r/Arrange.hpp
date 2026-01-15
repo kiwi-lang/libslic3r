@@ -4,7 +4,7 @@
 #include "ExPolygon.hpp"
 #include "PrintConfig.hpp"
 
-#define BED_SHRINK_SEQ_PRINT 5
+#define BED_SHRINK_SEQ_PRINT 0
 
 namespace Slic3r {
 
@@ -61,7 +61,7 @@ struct ArrangePolygon {
     //BBS: add row/col for sudoku-style layout
     int       row{0};
     int       col{0};
-    std::vector<int> extrude_ids{};      /// extruder_id for least extruder switch
+    std::map<int, std::string> extrude_id_filament_types; /// extruder_id for least extruder switch, filament type for different material judge
     int filament_temp_type{ -1 };
     int       bed_temp{0};         ///bed temperature for different material judge
     int       print_temp{0};      ///print temperature for different material judge
@@ -126,8 +126,11 @@ struct ArrangeParams {
     bool  avoid_extrusion_cali_region         = true;
     bool  is_seq_print                        = false;
     bool  align_to_y_axis                     = false;
-    float bed_shrink_x = 1;
-    float bed_shrink_y = 1;
+    bool  save_svg                            = false;
+    bool  plate_has_tree_support              = false;
+    double brim_max                            = 0;
+    float bed_shrink_x = 0.0;
+    float bed_shrink_y = 0.0;
     float brim_skirt_distance = 0;
     float clearance_height_to_rod = 0;
     float clearance_height_to_lid = 0;
@@ -175,15 +178,13 @@ struct ArrangeParams {
 
 };
 
-void update_arrange_params(ArrangeParams& params, const DynamicPrintConfig* print_cfg, const ArrangePolygons& selected);
+void update_arrange_params(ArrangeParams& params, const DynamicPrintConfig & print_cfg, const ArrangePolygons& selected);
 
-void update_selected_items_inflation(ArrangePolygons& selected, const DynamicPrintConfig* print_cfg, ArrangeParams& params);
+void update_selected_items_inflation(ArrangePolygons& selected, const DynamicPrintConfig & print_cfg, ArrangeParams& params);
 
-void update_unselected_items_inflation(ArrangePolygons& unselected, const DynamicPrintConfig* print_cfg, const ArrangeParams& params);
+void update_unselected_items_inflation(ArrangePolygons& unselected, const DynamicPrintConfig & print_cfg, const ArrangeParams& params);
 
-void update_selected_items_axis_align(ArrangePolygons& selected, const DynamicPrintConfig* print_cfg, const ArrangeParams& params);
-
-Points get_shrink_bedpts(const DynamicPrintConfig* print_cfg, const ArrangeParams& params);
+Points get_shrink_bedpts(const DynamicPrintConfig & print_cfg, const ArrangeParams& params);
 
 /**
  * \brief Arranges the input polygons.

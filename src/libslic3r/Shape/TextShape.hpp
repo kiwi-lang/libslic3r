@@ -4,8 +4,6 @@
 #include "libslic3r/TriangleMesh.hpp"
 
 namespace Slic3r {
-class TriangleMesh;
-
 struct TextResult
 {
     TriangleMesh text_mesh;
