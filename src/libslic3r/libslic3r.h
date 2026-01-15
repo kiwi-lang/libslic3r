@@ -2,10 +2,10 @@
 #define _libslic3r_h_
 
 #include "libslic3r_version.h"
-#define SLIC3R_APP_FULL_NAME "Orca Slicer"
-#define GCODEVIEWER_APP_NAME "OrcaSlicer G-code Viewer"
-#define GCODEVIEWER_APP_KEY  "OrcaSlicerGcodeViewer"
-#define GCODEVIEWER_BUILD_ID std::string("OrcaSlicer G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
+#define SLIC3R_APP_FULL_NAME "Orca-Flashforge"
+#define GCODEVIEWER_APP_NAME "Orca-Flashforge G-code Viewer"
+#define GCODEVIEWER_APP_KEY  "Orca-FlashforgeGcodeViewer"
+#define GCODEVIEWER_BUILD_ID std::string("Orca-Flashforge G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
 
 // this needs to be included early for MSVC (listing it in Build.PL is not enough)
 #include <memory>
@@ -61,10 +61,12 @@ static constexpr double SCALING_FACTOR_INTERNAL = 0.000001;
 static constexpr double SCALING_FACTOR_INTERNAL_LARGE_PRINTER = 0.00001;
 static constexpr double LARGE_BED_THRESHOLD = 2147;
 
+// Orca: maximum number of extruders is 64. For SEMM printers, it defines maximum filament number.
+static constexpr size_t MAXIMUM_EXTRUDER_NUMBER = 64;
+
 extern double SCALING_FACTOR;
-// for creating circles (for brim_ear)
-#define POLY_SIDES 24
 static constexpr double PI = 3.141592653589793238;
+#define POLY_SIDE_COUNT 24 // for brim ear circle
 // When extruding a closed loop, the loop is interrupted and shortened a bit to reduce the seam.
 // SoftFever: replaced by seam_gap now
 // static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15;
