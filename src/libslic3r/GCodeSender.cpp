@@ -1,7 +1,14 @@
+///|/ Copyright (c) Prusa Research 2016 - 2021 Vojtěch Bubník @bubnikv, Vojtěch Král @vojtechkral
+///|/ Copyright (c) Slic3r 2014 - 2016 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2016 Gregor Best
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #include "GCodeSender.hpp"
 #include <iostream>
 #include <istream>
 #include <string>
+#include <thread>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -41,20 +48,23 @@ struct termios2 {
 
 //#define DEBUG_SERIAL
 #ifdef DEBUG_SERIAL
+#include <cstdlib>
 #include <fstream>
 std::fstream fs;
 #endif
 
+#define KEEP_SENT 20
+
 namespace Slic3r {
 
-constexpr auto KEEP_SENT = 20;
-
-namespace asio = boost::asio;
-
 GCodeSender::GCodeSender()
-    : io(), serial(io), open(false),
-      connected(false), error(false), can_send(false), queue_paused(false), sent(0)
-{}
+    : io(), serial(io), can_send(false), sent(0), open(false), error(false),
+      connected(false), queue_paused(false)
+{
+#ifdef DEBUG_SERIAL
+    std::srand(std::time(nullptr));
+#endif
+}
 
 GCodeSender::~GCodeSender()
 {
@@ -65,25 +75,26 @@ bool
 GCodeSender::connect(std::string devname, unsigned int baud_rate)
 {
     this->disconnect();
+    
     this->set_error_status(false);
     try {
         this->serial.open(devname);
         
-        this->serial.set_option(asio::serial_port_base::parity(asio::serial_port_base::parity::odd));
-        this->serial.set_option(asio::serial_port_base::character_size(asio::serial_port_base::character_size(8)));
-        this->serial.set_option(asio::serial_port_base::flow_control(asio::serial_port_base::flow_control::none));
-        this->serial.set_option(asio::serial_port_base::stop_bits(asio::serial_port_base::stop_bits::one));
+        this->serial.set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::odd));
+        this->serial.set_option(boost::asio::serial_port_base::character_size(boost::asio::serial_port_base::character_size(8)));
+        this->serial.set_option(boost::asio::serial_port_base::flow_control(boost::asio::serial_port_base::flow_control::none));
+        this->serial.set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
         this->set_baud_rate(baud_rate);
     
         this->serial.close();
         this->serial.open(devname);
-        this->serial.set_option(asio::serial_port_base::parity(asio::serial_port_base::parity::none));
+        this->serial.set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
     
         // set baud rate again because set_option overwrote it
         this->set_baud_rate(baud_rate);
         this->open = true;
         this->reset();
-    } catch (boost::system::system_error &e) {
+    } catch (boost::system::system_error &) {
         this->set_error_status(true);
         return false;
     }
@@ -91,7 +102,7 @@ GCodeSender::connect(std::string devname, unsigned int baud_rate)
     // a reset firmware expect line numbers to start again from 1
     this->sent = 0;
     this->last_sent.clear();
-    
+
     /* Initialize debugger */
 #ifdef DEBUG_SERIAL
     fs.open("serial.txt", std::fstream::out | std::fstream::trunc);
@@ -102,13 +113,13 @@ GCodeSender::connect(std::string devname, unsigned int baud_rate)
     this->io.post(boost::bind(&GCodeSender::do_read, this));
     
     // start reading in the background thread
-    boost::thread t(boost::bind(&asio::io_service::run, &this->io));
+    boost::thread t(boost::bind(&boost::asio::io_service::run, &this->io));
     this->background_thread.swap(t);
     
-    // always send a M105 to check for connection because firmware might be silent on connect 
-    boost::this_thread::sleep(boost::posix_time::milliseconds(1000));
-    this->sent++;
-    this->send("M105", true);
+    // always send a M105 to check for connection because firmware might be silent on connect
+    //FIXME Vojtech: This is being sent too early, leading to line number synchronization issues,
+    // from which the GCodeSender never recovers.
+    // this->send("M105", true);
     
     return true;
 }
@@ -118,8 +129,8 @@ GCodeSender::set_baud_rate(unsigned int baud_rate)
 {
     try {
         // This does not support speeds > 115200
-        this->serial.set_option(asio::serial_port_base::baud_rate(baud_rate));
-    } catch (boost::system::system_error &e) {
+        this->serial.set_option(boost::asio::serial_port_base::baud_rate(baud_rate));
+    } catch (boost::system::system_error &) {
         boost::asio::serial_port::native_handle_type handle = this->serial.native_handle();
 
 #if __APPLE__
@@ -129,7 +140,7 @@ GCodeSender::set_baud_rate(unsigned int baud_rate)
         speed_t newSpeed = baud_rate;
         ioctl(handle, IOSSIOSPEED, &newSpeed);
         ::tcsetattr(handle, TCSANOW, &ios);
-#elif __linux
+#elif __linux__
         termios2 ios;
         if (ioctl(handle, TCGETS2, &ios))
             printf("Error in TCGETS2: %s\n", strerror(errno));
@@ -148,7 +159,7 @@ GCodeSender::set_baud_rate(unsigned int baud_rate)
 		if (::tcsetattr(handle, TCSAFLUSH, &ios) != 0)
 			printf("Failed to set baud rate: %s\n", strerror(errno));
 #else
-        //throw invalid_argument ("OS does not currently support custom bauds");
+        //throw Slic3r::InvalidArgument("OS does not currently support custom bauds");
 #endif
     }
 }
@@ -290,15 +301,15 @@ void
 GCodeSender::do_read()
 {
     // read one line
-    asio::async_read_until(
+    boost::asio::async_read_until(
         this->serial,
         this->read_buffer,
         '\n',
         boost::bind(
             &GCodeSender::on_read,
             this,
-            asio::placeholders::error,
-            asio::placeholders::bytes_transferred
+            boost::asio::placeholders::error,
+            boost::asio::placeholders::bytes_transferred
         )
     );
 }
@@ -359,15 +370,23 @@ GCodeSender::on_read(const boost::system::error_code& error,
             // extract the first number from line
             boost::algorithm::trim_left_if(line, !boost::algorithm::is_digit());
             size_t toresend = boost::lexical_cast<size_t>(line.substr(0, line.find_first_not_of("0123456789")));
-            toresend++; // N is 0-based
-            if (toresend >= this->sent - this->last_sent.size() && toresend < this->last_sent.size()) {
+            
+#ifdef DEBUG_SERIAL
+            fs << "!! line num out of sync: toresend = " << toresend << ", sent = " << sent << ", last_sent.size = " << last_sent.size() << std::endl;
+#endif
+
+            if (toresend > this->sent - this->last_sent.size() && toresend <= this->sent) {
                 {
                     boost::lock_guard<boost::mutex> l(this->queue_mutex);
                     
+                    const auto lines_to_resend = this->sent - toresend + 1;
+#ifdef DEBUG_SERIAL
+            fs << "!! resending " << lines_to_resend << " lines" << std::endl;
+#endif
                     // move the unsent lines to priqueue
                     this->priqueue.insert(
                         this->priqueue.begin(),  // insert at the beginning
-                        this->last_sent.begin() + toresend - (this->sent - this->last_sent.size()) - 1,
+                        this->last_sent.begin() + this->last_sent.size() - lines_to_resend,
                         this->last_sent.end()
                     );
                     
@@ -478,8 +497,14 @@ GCodeSender::do_send()
     if (line.empty()) return;
     
     // compute full line
-    std::string full_line = "N" + boost::lexical_cast<std::string>(this->sent) + " " + line;
-    this->sent++;
+    ++ this->sent;
+#ifndef DEBUG_SERIAL
+    const auto line_num = this->sent;
+#else
+    // In DEBUG_SERIAL mode, test line re-synchronization by sending bad line number 1/4 of the time
+    const auto line_num = std::rand() < RAND_MAX/4 ? 0 : this->sent;
+#endif
+    std::string full_line = "N" + boost::lexical_cast<std::string>(line_num) + " " + line;
     
     // calculate checksum
     int cs = 0;
@@ -498,14 +523,15 @@ GCodeSender::do_send()
     this->last_sent.push_back(line);
     this->can_send = false;
     
-    if (this->last_sent.size() > KEEP_SENT)
-        this->last_sent.erase(this->last_sent.begin(), this->last_sent.end() - KEEP_SENT);
+    while (this->last_sent.size() > KEEP_SENT) {
+        this->last_sent.pop_front();
+    }
     
-    // we can't supply asio::buffer(full_line) to async_write() because full_line is on the
+    // we can't supply boost::asio::buffer(full_line) to async_write() because full_line is on the
     // stack and the buffer would lose its underlying storage causing memory corruption
     std::ostream os(&this->write_buffer);
     os << full_line;
-    asio::async_write(this->serial, this->write_buffer, boost::bind(&GCodeSender::on_write, this, boost::asio::placeholders::error,
+    boost::asio::async_write(this->serial, this->write_buffer, boost::bind(&GCodeSender::on_write, this, boost::asio::placeholders::error,
                 boost::asio::placeholders::bytes_transferred));
 }
 
@@ -529,7 +555,7 @@ void
 GCodeSender::set_DTR(bool on)
 {
 #if defined(_WIN32) && !defined(__SYMBIAN32__)
-    asio::serial_port_service::native_handle_type handle = this->serial.native_handle();
+    boost::asio::serial_port_service::native_handle_type handle = this->serial.native_handle();
     if (on)
         EscapeCommFunction(handle, SETDTR);
     else
@@ -549,17 +575,12 @@ GCodeSender::set_DTR(bool on)
 void
 GCodeSender::reset()
 {
-    this->set_DTR(false);
-    boost::this_thread::sleep(boost::posix_time::milliseconds(200));
-    this->set_DTR(true);
-    boost::this_thread::sleep(boost::posix_time::milliseconds(200));
-    this->set_DTR(false);
-    boost::this_thread::sleep(boost::posix_time::milliseconds(1000));
-    {
-        boost::lock_guard<boost::mutex> l(this->queue_mutex);
-        this->can_send = true;
-    }
+    set_DTR(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    set_DTR(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    set_DTR(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
 
-}
-
+} // namespace Slic3r

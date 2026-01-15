@@ -1,78 +1,153 @@
+///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2014 - 2015 Alessandro Ranellucci @alranel
+///|/
+///|/ ported from lib/Slic3r/Flow.pm:
+///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2012 - 2014 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
 #ifndef slic3r_Flow_hpp_
 #define slic3r_Flow_hpp_
 
+#include <assert.h>
+#include <string>
+#include <cassert>
+
 #include "libslic3r.h"
-#include "ConfigBase.hpp"
-#include "ExtrusionEntity.hpp"
+#include "Config.hpp"
+#include "Exception.hpp"
+#include "ExtrusionRole.hpp"
 
 namespace Slic3r {
 
-constexpr auto BRIDGE_EXTRA_SPACING = 0.05;
-constexpr auto OVERLAP_FACTOR = 1.0;
+class PrintObject;
+class ConfigOptionFloatOrPercent;
+class ConfigOptionResolver;
 
-/// Enumeration for different flow roles
+// Extra spacing of bridge threads, in mm.
+#define BRIDGE_EXTRA_SPACING 0.05
+
 enum FlowRole {
-    frExternalPerimeter        = 0b1,
-    frPerimeter                = 0b10,
-    frInfill                   = 0b100,
-    frSolidInfill              = 0b1000,
-    frTopSolidInfill           = 0b10000,
-    frSupportMaterial          = 0b100000,
-    frSupportMaterialInterface = 0b1000000,
+    frExternalPerimeter,
+    frPerimeter,
+    frInfill,
+    frSolidInfill,
+    frTopSolidInfill,
+    frSupportMaterial,
+    frSupportMaterialInterface,
 };
 
+class FlowError : public Slic3r::InvalidArgument
+{
+public:
+	FlowError(const std::string& what_arg) : Slic3r::InvalidArgument(what_arg) {}
+	FlowError(const char* what_arg) : Slic3r::InvalidArgument(what_arg) {}
+};
 
-/// Represents material flow; provides methods to predict material spacing. 
+class FlowErrorNegativeSpacing : public FlowError
+{
+public:
+    FlowErrorNegativeSpacing();
+};
+
+class FlowErrorNegativeFlow : public FlowError
+{
+public:
+    FlowErrorNegativeFlow();
+};
+
+class FlowErrorMissingVariable : public FlowError
+{
+public:
+    FlowErrorMissingVariable(const std::string& what_arg) : FlowError(what_arg) {}
+};
+
 class Flow
 {
-    public:
-    float width, height, nozzle_diameter;
-    bool bridge;
-    
-    Flow(float _w, float _h, float _nd, bool _bridge = false)
-        : width(_w), height(_h), nozzle_diameter(_nd), bridge(_bridge) {};
+public:
+    Flow() = default;
+    Flow(float width, float height, float nozzle_diameter) :
+        Flow(width, height, rounded_rectangle_extrusion_spacing(width, height), nozzle_diameter, false) {}
 
-    /// Return the centerline spacing between two adjacent extrusions that have the same properties (width, etc).
-    /// Models as a rectangle with semicircles at the ends.
-    float spacing() const;
+    // Non bridging flow: Maximum width of an extrusion with semicircles at the ends.
+    // Bridging flow: Bridge thread diameter.
+    float   width()           const { return m_width; }
+    coord_t scaled_width()    const { return coord_t(scale_(m_width)); }
+    // Non bridging flow: Layer height.
+    // Bridging flow: Bridge thread diameter = layer height.
+    float   height()          const { return m_height; }
+    // Spacing between the extrusion centerlines.
+    float   spacing()         const { return m_spacing; }
+    coord_t scaled_spacing()  const { return coord_t(scale_(m_spacing)); }
+    // Nozzle diameter. 
+    float   nozzle_diameter() const { return m_nozzle_diameter; }
+    // Is it a bridge?
+    bool    bridge()          const { return m_bridge; }
+    // Cross section area of the extrusion.
+    double  mm3_per_mm()      const;
 
-    /// Return the centerline spacing between two Flow objects (current and some other flow).
-    /// \remark this->spacing(other) == other.spacing(this)
-    float spacing(const Flow &other) const;
-    void set_spacing(float spacing);
-    void set_solid_spacing(const coord_t total_width) {
-        this->set_spacing(Flow::solid_spacing(total_width, this->scaled_spacing()));
-    };
-    void set_solid_spacing(const coordf_t total_width) {
-        this->set_spacing(Flow::solid_spacing(total_width, (coordf_t)this->spacing()));
-    };
-    double mm3_per_mm() const;
-    coord_t scaled_width() const {
-        return scale_(this->width);
-    };
-    coord_t scaled_spacing() const {
-        return scale_(this->spacing());
-    };
-    coord_t scaled_spacing(const Flow &other) const {
-        return scale_(this->spacing(other));
-    };
-    
+    // Elephant foot compensation spacing to be used to detect narrow parts, where the elephant foot compensation cannot be applied.
+    // To be used on frExternalPerimeter only.
+    // Enable some perimeter squish (see INSET_OVERLAP_TOLERANCE).
+    // Here an overlap of 0.2x external perimeter spacing is allowed for by the elephant foot compensation.
+    coord_t scaled_elephant_foot_spacing() const { return coord_t(0.5f * float(this->scaled_width() + 0.6f * this->scaled_spacing())); }
 
-    /// Static method to build a Flow object from an extrusion width config setting and some other context properties
-    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height, float bridge_flow_ratio);
+    bool operator==(const Flow &rhs) const { return m_width == rhs.m_width && m_height == rhs.m_height && m_nozzle_diameter == rhs.m_nozzle_diameter && m_bridge == rhs.m_bridge; }
 
-    /// Static method to build a Flow object from a specified centerline spacing (center-to-center).
-    static Flow new_from_spacing(float spacing, float nozzle_diameter, float height, bool bridge);
-    template <class T> static T solid_spacing(const T total_width, const T spacing);
-    
-    private:
-    static float _bridge_width(float nozzle_diameter, float bridge_flow_ratio);
-    /// Calculate a relatively sane extrusion width, based on height and nozzle diameter.
-    /// Algorithm used does not play nice with layer heights < 0.1mm. 
-    /// To avoid extra headaches, min and max are capped at 105% and 125% of nozzle diameter.
-    static float _auto_width(FlowRole role, float nozzle_diameter, float height);
-    static float _width_from_spacing(float spacing, float nozzle_diameter, float height, bool bridge);
+    Flow        with_width (float width)  const { 
+        assert(! m_bridge); 
+        return Flow(width, m_height, rounded_rectangle_extrusion_spacing(width, m_height), m_nozzle_diameter, m_bridge);
+    }
+    Flow        with_height(float height) const { 
+        assert(! m_bridge); 
+        return Flow(m_width, height, rounded_rectangle_extrusion_spacing(m_width, height), m_nozzle_diameter, m_bridge);
+    }
+    // Adjust extrusion flow for new extrusion line spacing, maintaining the old spacing between extrusions.
+    Flow        with_spacing(float spacing) const;
+    // Adjust the width / height of a rounded extrusion model to reach the prescribed cross section area while maintaining extrusion spacing.
+    Flow        with_cross_section(float area) const;
+    Flow        with_flow_ratio(double ratio) const { return this->with_cross_section(this->mm3_per_mm() * ratio); }
+
+    static Flow bridging_flow(float dmr, float nozzle_diameter) { return Flow { dmr, dmr, bridge_extrusion_spacing(dmr), nozzle_diameter, true }; }
+
+    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height);
+
+    // Spacing of extrusions with rounded extrusion model.
+    static float rounded_rectangle_extrusion_spacing(float width, float height);
+    // Width of extrusions with rounded extrusion model.
+    static float rounded_rectangle_extrusion_width_from_spacing(float spacing, float height);
+    // Spacing of round thread extrusions.
+    static float bridge_extrusion_spacing(float dmr);
+
+    // Sane extrusion width defautl based on nozzle diameter.
+    // The defaults were derived from manual Prusa MK3 profiles.
+    static float auto_extrusion_width(FlowRole role, float nozzle_diameter);
+
+    // Extrusion width from full config, taking into account the defaults (when set to zero) and ratios (percentages).
+    // Precise value depends on layer index (1st layer vs. other layers vs. variable layer height),
+    // on active extruder etc. Therefore the value calculated by this function shall be used as a hint only.
+	static double extrusion_width(const std::string &opt_key, const ConfigOptionFloatOrPercent *opt, const ConfigOptionResolver &config, const unsigned int first_printing_extruder = 0);
+	static double extrusion_width(const std::string &opt_key, const ConfigOptionResolver &config, const unsigned int first_printing_extruder = 0);
+
+private:
+    Flow(float width, float height, float spacing, float nozzle_diameter, bool bridge) : 
+        m_width(width), m_height(height), m_spacing(spacing), m_nozzle_diameter(nozzle_diameter), m_bridge(bridge) 
+        { 
+            // Gap fill violates this condition.
+            //assert(width >= height); 
+        }
+
+    float       m_width { 0 };
+    float       m_height { 0 };
+    float       m_spacing { 0 };
+    float       m_nozzle_diameter { 0 };
+    bool        m_bridge { false };
 };
+
+extern Flow support_material_flow(const PrintObject *object, float layer_height = 0.f);
+extern Flow support_material_1st_layer_flow(const PrintObject *object, float layer_height = 0.f);
+extern Flow support_material_interface_flow(const PrintObject *object, float layer_height = 0.f);
 
 }
 

@@ -1,139 +1,89 @@
+///|/ Copyright (c) Prusa Research 2018 - 2022 Pavel Mikuš @Godrak, Lukáš Hejl @hejllukas, Filip Sykala @Jony01, Enrico Turri @enricoturri1966, Vojtěch Bubník @bubnikv, Tomáš Mészáros @tamasmeszaros, Lukáš Matěna @lukasmatena
+///|/ Copyright (c) Slic3r 2013 - 2016 Alessandro Ranellucci @alranel
+///|/ Copyright (c) 2014 Petr Ledvina @ledvinap
+///|/
+///|/ ported from lib/Slic3r/Line.pm:
+///|/ Copyright (c) Prusa Research 2022 Vojtěch Bubník @bubnikv
+///|/ Copyright (c) Slic3r 2011 - 2014 Alessandro Ranellucci @alranel
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#include <cmath>
+#include <limits>
+#include <cstdlib>
+#include <cstring>
+
 #include "Geometry.hpp"
 #include "Line.hpp"
-#include "Polyline.hpp"
-#include <algorithm>
-#include <cmath>
-#include <sstream>
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/Point.hpp"
+#include "libslic3r/libslic3r.h"
 
 namespace Slic3r {
 
-std::string
-Line::wkt() const
+Linef3 transform(const Linef3& line, const Transform3d& t)
 {
-    std::ostringstream ss;
-    ss << "LINESTRING(" << this->a.x << " " << this->a.y << ","
-        << this->b.x << " " << this->b.y << ")";
-    return ss.str();
+    typedef Eigen::Matrix<double, 3, 2> LineInMatrixForm;
+
+    LineInMatrixForm world_line;
+    ::memcpy((void*)world_line.col(0).data(), (const void*)line.a.data(), 3 * sizeof(double));
+    ::memcpy((void*)world_line.col(1).data(), (const void*)line.b.data(), 3 * sizeof(double));
+
+    LineInMatrixForm local_line = t * world_line.colwise().homogeneous();
+    return Linef3(Vec3d(local_line(0, 0), local_line(1, 0), local_line(2, 0)), Vec3d(local_line(0, 1), local_line(1, 1), local_line(2, 1)));
 }
 
-Line::operator Lines() const
+bool Line::intersection_infinite(const Line &other, Point* point) const
 {
-    Lines lines;
-    lines.push_back(*this);
-    return lines;
-}
-
-Line::operator Polyline() const
-{
-    Polyline pl;
-    pl.points.push_back(this->a);
-    pl.points.push_back(this->b);
-    return pl;
-}
-
-void
-Line::scale(double factor)
-{
-    this->a.scale(factor);
-    this->b.scale(factor);
-}
-
-void
-Line::translate(double x, double y)
-{
-    this->a.translate(x, y);
-    this->b.translate(x, y);
-}
-
-void
-Line::rotate(double angle, const Point &center)
-{
-    this->a.rotate(angle, center);
-    this->b.rotate(angle, center);
-}
-
-void
-Line::reverse()
-{
-    std::swap(this->a, this->b);
-}
-
-double
-Line::length() const
-{
-    return this->a.distance_to(this->b);
-}
-
-Point
-Line::midpoint() const
-{
-    return Point((this->a.x + this->b.x) / 2.0, (this->a.y + this->b.y) / 2.0);
-}
-
-void
-Line::point_at(double distance, Point* point) const
-{
-    double len = this->length();
-    *point = this->a;
-    if (this->a.x != this->b.x)
-        point->x = this->a.x + (this->b.x - this->a.x) * distance / len;
-    if (this->a.y != this->b.y)
-        point->y = this->a.y + (this->b.y - this->a.y) * distance / len;
-}
-
-Point
-Line::point_at(double distance) const
-{
-    Point p;
-    this->point_at(distance, &p);
-    return p;
-}
-
-bool
-Line::intersection_infinite(const Line &other, Point* point) const
-{
-    Vector x = this->a.vector_to(other.a);
-    Vector d1 = this->vector();
-    Vector d2 = other.vector();
-
-    double cross = d1.x * d2.y - d1.y * d2.x;
-    if (std::fabs(cross) < EPSILON)
+    Vec2d a1 = this->a.cast<double>();
+    Vec2d v12 = (other.a - this->a).cast<double>();
+    Vec2d v1 = (this->b - this->a).cast<double>();
+    Vec2d v2 = (other.b - other.a).cast<double>();
+    double denom = cross2(v1, v2);
+    if (std::fabs(denom) < EPSILON)
         return false;
-
-    double t1 = (x.x * d2.y - x.y * d2.x)/cross;
-    point->x = this->a.x + d1.x * t1;
-    point->y = this->a.y + d1.y * t1;
+    double t1 = cross2(v12, v2) / denom;
+    Vec2d result = (a1 + t1 * v1);
+    if (result.x() > std::numeric_limits<coord_t>::max() || result.x() < std::numeric_limits<coord_t>::lowest() ||
+        result.y() > std::numeric_limits<coord_t>::max() || result.y() < std::numeric_limits<coord_t>::lowest()) {
+        // Intersection has at least one of the coordinates much bigger (or smaller) than coord_t maximum value (or minimum).
+        // So it can not be stored into the Point without integer overflows. That could mean that input lines are parallel or near parallel.
+        return false;
+    }
+    *point = (result).cast<coord_t>();
     return true;
 }
 
-bool
-Line::coincides_with(const Line &line) const
+double Line::perp_distance_to(const Point &point) const
 {
-    return this->a.coincides_with(line.a) && this->b.coincides_with(line.b);
+    const Line  &line = *this;
+    const Vec2d  v  = (line.b - line.a).cast<double>();
+    const Vec2d  va = (point - line.a).cast<double>();
+    if (line.a == line.b)
+        return va.norm();
+    return std::abs(cross2(v, va)) / v.norm();
 }
 
-double
-Line::distance_to(const Point &point) const
-{
-    return point.distance_to(*this);
+double Line::perp_signed_distance_to(const Point &point) const {
+    // Sign is dependent on the line orientation.
+    // For CCW oriented polygon is possitive distace into shape and negative outside.
+    // For Line({0,0},{0,2}) and point {1,1} the distance is negative one(-1).
+    const Line &line = *this;
+    const Vec2d v = (line.b - line.a).cast<double>();
+    const Vec2d va = (point - line.a).cast<double>();
+    if (line.a == line.b)
+        return va.norm();
+    return cross2(v, va) / v.norm();
 }
 
-double
-Line::atan2_() const
-{
-    return atan2(this->b.y - this->a.y, this->b.x - this->a.x);
-}
-
-double
-Line::orientation() const
+double Line::orientation() const
 {
     double angle = this->atan2_();
     if (angle < 0) angle = 2*PI + angle;
     return angle;
 }
 
-double
-Line::direction() const
+double Line::direction() const
 {
     double atan2 = this->atan2_();
     return (fabs(atan2 - PI) < EPSILON) ? 0
@@ -141,98 +91,68 @@ Line::direction() const
         : atan2;
 }
 
-bool
-Line::parallel_to(double angle) const {
+bool Line::parallel_to(double angle) const
+{
     return Slic3r::Geometry::directions_parallel(this->direction(), angle);
 }
 
-bool
-Line::parallel_to(const Line &line) const {
-    return this->parallel_to(line.direction());
+bool Line::parallel_to(const Line& line) const
+{
+    const Vec2d v1 = (this->b - this->a).cast<double>();
+    const Vec2d v2 = (line.b - line.a).cast<double>();
+    return sqr(cross2(v1, v2)) < sqr(EPSILON) * v1.squaredNorm() * v2.squaredNorm();
 }
 
-Vector
-Line::vector() const
+bool Line::perpendicular_to(double angle) const
 {
-    return Vector(this->b.x - this->a.x, this->b.y - this->a.y);
+    return Slic3r::Geometry::directions_perpendicular(this->direction(), angle);
 }
 
-Vector
-Line::normal() const
+bool Line::perpendicular_to(const Line& line) const
 {
-    return Vector((this->b.y - this->a.y), -(this->b.x - this->a.x));
+    const Vec2d v1 = (this->b - this->a).cast<double>();
+    const Vec2d v2 = (line.b - line.a).cast<double>();
+    return sqr(v1.dot(v2)) < sqr(EPSILON) * v1.squaredNorm() * v2.squaredNorm();
 }
 
-void
-Line::extend_end(double distance)
+bool Line::intersection(const Line &l2, Point *intersection) const
 {
-    // relocate last point by extending the segment by the specified length
-    Line line = *this;
-    line.reverse();
-    this->b = line.point_at(-distance);
+    return line_alg::intersection(*this, l2, intersection);
 }
 
-void
-Line::extend_start(double distance)
+bool Line::clip_with_bbox(const BoundingBox &bbox)
 {
-    // relocate first point by extending the first segment by the specified length
-    this->a = this->point_at(-distance);
+	Vec2d x0clip, x1clip;
+	bool result = Geometry::liang_barsky_line_clipping<double>(this->a.cast<double>(), this->b.cast<double>(), BoundingBoxf(bbox.min.cast<double>(), bbox.max.cast<double>()), x0clip, x1clip);
+	if (result) {
+		this->a = x0clip.cast<coord_t>();
+		this->b = x1clip.cast<coord_t>();
+	}
+	return result;
 }
 
-bool
-Line::intersection(const Line& line, Point* intersection) const
+void Line::extend(double offset)
 {
-    double denom = ((double)(line.b.y - line.a.y)*(this->b.x - this->a.x)) -
-                   ((double)(line.b.x - line.a.x)*(this->b.y - this->a.y));
+    Vector offset_vector = (offset * this->vector().cast<double>().normalized()).cast<coord_t>();
+    this->a -= offset_vector;
+    this->b += offset_vector;
+}
 
-    double nume_a = ((double)(line.b.x - line.a.x)*(this->a.y - line.a.y)) -
-                    ((double)(line.b.y - line.a.y)*(this->a.x - line.a.x));
+Vec3d Linef3::intersect_plane(double z) const
+{
+    auto   v = (this->b - this->a).cast<double>();
+    double t = (z - this->a(2)) / v(2);
+    return Vec3d(this->a(0) + v(0) * t, this->a(1) + v(1) * t, z);
+}
 
-    double nume_b = ((double)(this->b.x - this->a.x)*(this->a.y - line.a.y)) -
-                    ((double)(this->b.y - this->a.y)*(this->a.x - line.a.x));
-    
-    if (fabs(denom) < EPSILON) {
-        if (fabs(nume_a) < EPSILON && fabs(nume_b) < EPSILON) {
-            return false; // coincident
-        }
-        return false; // parallel
+BoundingBox get_extents(const Lines &lines)
+{
+    BoundingBox bbox;
+    for (const Line &line : lines) {
+        bbox.merge(line.a);
+        bbox.merge(line.b);
     }
-
-    double ua = nume_a / denom;
-    double ub = nume_b / denom;
-
-    if (ua >= 0 && ua <= 1.0f && ub >= 0 && ub <= 1.0f)
-    {
-        // Get the intersection point.
-        intersection->x = this->a.x + ua*(this->b.x - this->a.x);
-        intersection->y = this->a.y + ua*(this->b.y - this->a.y);
-        return true;
-    }
-    
-    return false;  // not intersecting
+    return bbox;
 }
 
-double
-Line::ccw(const Point& point) const
-{
-    return point.ccw(*this);
-}
-
-Pointf3
-Linef3::intersect_plane(double z) const
-{
-    return Pointf3(
-        this->a.x + (this->b.x - this->a.x) * (z - this->a.z) / (this->b.z - this->a.z),
-        this->a.y + (this->b.y - this->a.y) * (z - this->a.z) / (this->b.z - this->a.z),
-        z
-    );
-}
-
-void
-Linef3::scale(double factor)
-{
-    this->a.scale(factor);
-    this->b.scale(factor);
-}
-
-}
+} // namespace Slic3r
